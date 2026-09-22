@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyAutoStart,
+  autoStartEnabled,
   linuxAutostartContents,
   linuxAutostartFile,
 } from "../../desktop/src/autostart.ts";
@@ -241,6 +242,28 @@ describe("start at login", () => {
     );
   });
 
+  it("asks Windows about the login item with the same arguments it set", () => {
+    // Windows stores a whole command line: asking without --hidden reports
+    // "off" even when ThreadLink really does start at login.
+    const seen: unknown[] = [];
+    const api = {
+      setLoginItemSettings: vi.fn(),
+      getLoginItemSettings: (options?: { args?: string[] }) => {
+        seen.push(options);
+        return { openAtLogin: options?.args?.includes("--hidden") ?? false };
+      },
+    };
+    expect(autoStartEnabled({ platform: "win32", api })).toBe(true);
+    expect(seen).toEqual([{ args: ["--hidden"] }]);
+  });
+
+  it("reports Linux autostart from the XDG file", () => {
+    dir = mkdtempSync(join(tmpdir(), "tl-autostart-"));
+    expect(autoStartEnabled({ platform: "linux", home: dir })).toBe(false);
+    applyAutoStart(true, { platform: "linux", home: dir, execPath: "/usr/bin/threadlink" });
+    expect(autoStartEnabled({ platform: "linux", home: dir })).toBe(true);
+  });
+
   it("writes and removes an XDG autostart entry on Linux", () => {
     dir = mkdtempSync(join(tmpdir(), "tl-autostart-"));
     applyAutoStart(true, { platform: "linux", home: dir, execPath: "/usr/bin/threadlink" });
@@ -264,5 +287,22 @@ describe("desktop settings", () => {
       notifications: false,
     });
     expect(loadSettings(dir)).toEqual({ autoStart: true, notifications: false });
+  });
+});
+
+describe("tray menu tidiness", () => {
+  it("never shows two dividers in a row or an empty label", () => {
+    // Signed in with nothing attached yet is the case that used to produce
+    // "status / detail / --- / --- / Open ThreadLink".
+    const bare = state({ snapshot: null });
+    for (const candidate of [bare, state({ signedIn: false }), state()]) {
+      const items = trayMenu(candidate);
+      expect(items[0].type).not.toBe("separator");
+      expect(items[items.length - 1].type).not.toBe("separator");
+      items.forEach((item, index) => {
+        if (item.type === "separator") expect(items[index - 1].type).not.toBe("separator");
+        else expect(item.label.trim()).not.toBe("");
+      });
+    }
   });
 });

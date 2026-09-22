@@ -220,7 +220,9 @@ describe("committed files contain no real-looking connection tokens", () => {
     const walk = (d: string): string[] =>
       readdirSync(d).flatMap((name) => {
         const p = join(d, name);
-        if (name === ".temp" || name === "node_modules") return [];
+        // Build output is generated from the sources we already scan, and the
+        // packaged app holds a whole Electron runtime.
+        if ([".temp", "node_modules", "dist", "release"].includes(name)) return [];
         return statSync(p).isDirectory() ? walk(p) : [p];
       });
     return walk(join(ROOT, dir));

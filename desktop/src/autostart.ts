@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -13,8 +13,15 @@ export type LoginItemApi = {
     openAsHidden?: boolean;
     args?: string[];
   }) => void;
-  getLoginItemSettings: () => { openAtLogin: boolean };
+  getLoginItemSettings: (options?: { args?: string[] }) => { openAtLogin: boolean };
 };
+
+/**
+ * Windows records the login item as a full command line, and Electron only
+ * reports it as enabled when it is asked with the same arguments it was set
+ * with. Asking without them always answers "off", however the setting stands.
+ */
+export const LOGIN_ARGS = ["--hidden"];
 
 export function linuxAutostartFile(home = homedir()): string {
   return join(home, ".config", "autostart", "threadlink.desktop");
@@ -56,6 +63,15 @@ export function applyAutoStart(
   options.api?.setLoginItemSettings({
     openAtLogin: enabled,
     openAsHidden: true,
-    args: ["--hidden"],
+    args: LOGIN_ARGS,
   });
+}
+
+/** What the operating system currently reports, not what we asked for. */
+export function autoStartEnabled(
+  options: { platform?: NodeJS.Platform; api?: LoginItemApi; home?: string } = {},
+): boolean {
+  const platform = options.platform ?? process.platform;
+  if (platform === "linux") return existsSync(linuxAutostartFile(options.home));
+  return options.api?.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin ?? false;
 }

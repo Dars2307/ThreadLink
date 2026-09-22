@@ -30,7 +30,7 @@ import {
   type EngineSnapshot,
 } from "threadlink";
 
-import { applyAutoStart } from "./autostart.js";
+import { applyAutoStart, autoStartEnabled } from "./autostart.js";
 import { notificationFor, statusLine, trayIconPixels, trayMenu, type AppState } from "./model.js";
 import { loadSettings, saveSettings } from "./settings.js";
 
@@ -49,6 +49,13 @@ const SMOKE = process.argv.includes("--smoke");
 /** Dev-only: `--capture <file>` saves a PNG of the window and exits (never in packaged builds). */
 const CAPTURE =
   process.argv.find((a) => a.startsWith("--capture="))?.slice("--capture=".length) ?? null;
+/**
+ * `--smoke-out=<file>` writes the smoke report to a file as well as stdout.
+ * A packaged Windows build is a GUI executable and has no console to write to,
+ * so this is the only way to read the report from an installed app.
+ */
+const SMOKE_OUT =
+  process.argv.find((a) => a.startsWith("--smoke-out="))?.slice("--smoke-out=".length) ?? null;
 const START_HIDDEN = process.argv.includes("--hidden");
 const DEFAULT_URL = process.env.THREADLINK_URL ?? "https://threadlink-mcp-preview.vercel.app";
 
@@ -411,8 +418,14 @@ if (!app.requestSingleInstanceLock()) {
         signedIn: state.signedIn,
         status: statusLine(state),
         menu: trayMenu(state).map((m) => ("label" in m ? m.label : "---")),
+        packaged: app.isPackaged,
+        autoStartEnabled: autoStartEnabled({ api: app }),
       };
       process.stdout.write(`SMOKE ${JSON.stringify(report)}\n`);
+      if (SMOKE_OUT) {
+        const { writeFileSync } = await import("node:fs");
+        writeFileSync(SMOKE_OUT, `SMOKE ${JSON.stringify(report)}\n`, "utf8");
+      }
       setTimeout(() => quit(), 500);
     }
   });

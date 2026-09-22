@@ -5,3 +5,8 @@ next-env.d.ts
 THREADLINK_MASTER_GUIDE.md
 CLAUDE.md
 AGENTS.md
+
+# build output
+runtime/dist
+desktop/dist
+desktop/release

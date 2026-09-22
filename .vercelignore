@@ -1,0 +1,13 @@
+# The Vercel build only needs the Next.js app. These top-level directories are
+# part of the repository but never imported by app code, and shipping them made
+# the build's type check follow tests/ into desktop/, whose `threadlink`
+# dependency is a local file: link that is not installed here.
+#
+# Patterns are anchored: an unanchored `supabase` would also drop lib/supabase/.
+/tests
+/desktop
+/runtime
+/supabase
+/docs
+/scripts
+/.next

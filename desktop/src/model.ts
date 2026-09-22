@@ -119,7 +119,20 @@ export function trayMenu(state: AppState): MenuItemModel[] {
   }
   items.push({ type: "separator" });
   items.push({ type: "action", id: "quit", label: "Quit ThreadLink" });
-  return items;
+  return tidy(items);
+}
+
+/**
+ * Drops empty labels and collapses runs of separators, so a menu with nothing
+ * attached yet does not show two dividers in a row.
+ */
+function tidy(items: MenuItemModel[]): MenuItemModel[] {
+  const kept = items.filter((item) => item.type === "separator" || item.label.trim().length > 0);
+  return kept.filter(
+    (item, index) =>
+      item.type !== "separator" ||
+      (index > 0 && index < kept.length - 1 && kept[index - 1]?.type !== "separator"),
+  );
 }
 
 const TONE_RGB: Record<StatusTone, [number, number, number]> = {
