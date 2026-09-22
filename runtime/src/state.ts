@@ -4,6 +4,13 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
+import {
+  BUILD_CHANNEL,
+  canonicalizeBaseUrl,
+  type CanonicalizeResult,
+  type ThreadLinkChannel,
+} from "./endpoints.ts";
+
 /**
  * Non-secret local Runtime state, stored OUTSIDE any repository:
  *   Windows  %APPDATA%\ThreadLink\runtime
@@ -79,6 +86,24 @@ async function writeJson(file: string, value: unknown): Promise<void> {
 
 export async function loadConfig(configDir: string): Promise<RuntimeConfig> {
   return (await readJson<RuntimeConfig>(join(configDir, "config.json"))) ?? {};
+}
+
+/**
+ * Upgrades a stored generated deployment hostname to the canonical address for
+ * this build, and writes it back so it is fixed once and for all. Everything
+ * else in the configuration - the Runtime ID, its label, its workspaces and
+ * their sessions - is left untouched, so identity survives the move.
+ */
+export async function migrateBaseUrl(
+  configDir: string,
+  channel: ThreadLinkChannel = BUILD_CHANNEL,
+): Promise<CanonicalizeResult> {
+  const config = await loadConfig(configDir);
+  const result = canonicalizeBaseUrl(config.baseUrl, channel);
+  if (result.changed || config.baseUrl !== result.url) {
+    await saveConfig(configDir, { baseUrl: result.url });
+  }
+  return result;
 }
 
 export async function saveConfig(configDir: string, patch: RuntimeConfig): Promise<RuntimeConfig> {

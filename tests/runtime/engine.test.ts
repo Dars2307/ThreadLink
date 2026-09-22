@@ -301,3 +301,41 @@ describe("ThreadLink Runtime engine", () => {
     expect(api.approvePairing).toHaveBeenCalledWith(sid, "tllnk_1");
   });
 });
+
+describe("when ThreadLink cannot be reached", () => {
+  it("stops on an address that is not ThreadLink, instead of retrying forever", async () => {
+    const { api } = fakeApi();
+    // An old deployment serving its not-found page: retrying cannot fix it.
+    api.registerRuntime.mockRejectedValue(new ApiError(200, "not-threadlink"));
+    const e = engine(api, fakeAdapter().adapter, {
+      sleep: async () => {},
+      baseUrlLabel: "threadlink-iz4qemadi-ash-murrays-projects.vercel.app",
+    });
+    expect(await e.run(new AbortController().signal)).toBe("wrong-address");
+    const snap = e.snapshot();
+    expect(snap.needsAttention).toBe(true);
+    expect(snap.detail).toMatch(/threadlink-iz4qemadi.*is not answering as ThreadLink/);
+  });
+
+  it("keeps retrying a network outage but asks for help once it drags on", async () => {
+    const { api } = fakeApi();
+    api.registerRuntime.mockRejectedValue(new ApiError(0, "network"));
+    const stop = new AbortController();
+    const e = engine(api, fakeAdapter().adapter, { sleep: async () => {} });
+    const seen: { attention: boolean; detail: string | null }[] = [];
+    e.on((event) => {
+      if (event.type === "snapshot" && event.snapshot.status === "offline") {
+        seen.push({ attention: event.snapshot.needsAttention, detail: event.snapshot.detail });
+        if (event.snapshot.needsAttention) stop.abort();
+      }
+    });
+    await e.run(stop.signal);
+    // It keeps trying (never terminates on its own) but eventually says so.
+    expect(seen[0]).toMatchObject({
+      attention: false,
+      detail: "Can't reach ThreadLink. Retrying…",
+    });
+    expect(seen.at(-1)?.attention).toBe(true);
+    expect(seen.at(-1)?.detail).toMatch(/Still can't reach ThreadLink/);
+  });
+});

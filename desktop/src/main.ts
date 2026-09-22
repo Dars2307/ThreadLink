@@ -15,9 +15,12 @@ import {
   Tray,
 } from "electron";
 import {
+  canonicalBaseUrl,
+  canonicalizeBaseUrl,
   createEngine,
   defaultConfigDir,
   loadConfig,
+  migrateBaseUrl,
   RuntimeEngine,
   runtimeContext,
   saveConfig,
@@ -57,7 +60,11 @@ const CAPTURE =
 const SMOKE_OUT =
   process.argv.find((a) => a.startsWith("--smoke-out="))?.slice("--smoke-out=".length) ?? null;
 const START_HIDDEN = process.argv.includes("--hidden");
-const DEFAULT_URL = process.env.THREADLINK_URL ?? "https://threadlink-mcp-preview.vercel.app";
+/**
+ * The stable hostname for the channel this build targets. Never a generated
+ * Vercel deployment URL: those are frozen snapshots of one old build.
+ */
+const DEFAULT_URL = process.env.THREADLINK_URL ?? canonicalBaseUrl();
 
 const ctx = runtimeContext(defaultConfigDir());
 const state: AppState = {
@@ -66,6 +73,7 @@ const state: AppState = {
   snapshot: null,
   pendingSignIn: null,
   error: null,
+  notice: null,
   localPaused: false,
   settings: loadSettings(ctx.configDir),
 };
@@ -179,7 +187,11 @@ function notify(event: EngineEvent) {
 function onEngineEvent(event: EngineEvent) {
   if (event.type === "snapshot") {
     state.snapshot = event.snapshot as EngineSnapshot;
-    if (event.snapshot.status === "signed-out" || event.snapshot.status === "revoked")
+    if (
+      event.snapshot.status === "signed-out" ||
+      event.snapshot.status === "revoked" ||
+      event.snapshot.status === "wrong-address"
+    )
       state.signedIn = false;
     broadcast();
     return;
@@ -204,7 +216,11 @@ function onEngineEvent(event: EngineEvent) {
 
 async function startEngine() {
   if (!api) return;
-  engine = createEngine(ctx, api, { kind: "desktop", permissionMode: "plan" });
+  engine = createEngine(ctx, api, {
+    kind: "desktop",
+    permissionMode: "plan",
+    baseUrlLabel: state.baseUrl ? new URL(state.baseUrl).host : undefined,
+  });
   engine.on(onEngineEvent);
   abort = new AbortController();
   engineRun = engine.run(abort.signal).catch((error: unknown) => {
@@ -227,6 +243,13 @@ function setPaused(paused: boolean) {
 }
 
 async function connect(): Promise<void> {
+  // Upgrade a stored generated deployment hostname before anything uses it.
+  // The Runtime ID, its workspaces and their sessions are untouched, so the
+  // same conversations and links keep working at the new address.
+  const migration = await migrateBaseUrl(ctx.configDir);
+  if (migration.changed && migration.previous) {
+    state.notice = `ThreadLink moved to its permanent address (${new URL(migration.url).host}).`;
+  }
   api = await signedInApi(ctx).catch(() => null);
   state.baseUrl = (await loadConfig(ctx.configDir)).baseUrl ?? DEFAULT_URL;
   state.signedIn = Boolean(api);
@@ -243,9 +266,11 @@ function handlers() {
   ipcMain.handle("state:get", () => state);
 
   ipcMain.handle("signin:start", async (_e, rawUrl: unknown) => {
-    const url = validateBaseUrl(asString(rawUrl, 512) ?? DEFAULT_URL);
+    // Whatever the box says, never store a generated deployment hostname.
+    const url = validateBaseUrl(canonicalizeBaseUrl(asString(rawUrl, 512) ?? DEFAULT_URL).url);
     signInAbort = new AbortController();
     state.error = null;
+    state.notice = null;
     try {
       const ok = await signIn(ctx, url, `ThreadLink on ${hostname()}`, {
         signal: signInAbort.signal,

@@ -15,6 +15,19 @@ function ago(iso) {
   return s < 172800 ? "yesterday" : `${Math.round(s / 86400)} days ago`;
 }
 
+/** Trouble the user can act on, rather than something to sit and watch. */
+function attention(s) {
+  const snap = s.snapshot;
+  if (!snap) return null;
+  if (snap.status === "wrong-address")
+    return "This computer was pointed at an old ThreadLink address. Sign in again to finish moving to the current one.";
+  if (snap.status === "signed-out") return "This computer's ThreadLink sign-in has expired.";
+  if (snap.status === "revoked") return "This computer was disconnected in ThreadLink.";
+  if (snap.status === "offline" && snap.needsAttention)
+    return "ThreadLink is not answering. It is still retrying — you can also sign in again now.";
+  return null;
+}
+
 function statusOf(s) {
   if (!s.signedIn) return { title: "Not connected", tone: "warn", detail: "" };
   const snap = s.snapshot;
@@ -43,10 +56,12 @@ function render() {
   const status = statusOf(state);
   el("status-title").textContent = status.title;
   el("status-dot").className = `dot ${status.tone}`;
-  el("footer-detail").textContent = state.error ?? status.detail ?? "";
+  el("footer-detail").textContent = state.error ?? state.notice ?? status.detail ?? "";
 
   view.replaceChildren();
   if (state.pendingSignIn) return renderWaiting();
+  const why = attention(state);
+  if (why) return renderReconnect(why);
   if (!state.signedIn) return renderSignIn();
   const attached = (state.snapshot?.workspaces ?? []).flatMap((w) => w.conversations);
   return attached.length ? renderReady() : renderSetup();
@@ -59,6 +74,17 @@ function renderSignIn() {
     el("signin").disabled = true;
     el("signin").textContent = "Opening your browser…";
     await api.signIn(el("base-url").value.trim());
+  });
+}
+
+function renderReconnect(why) {
+  view.append(tpl("reconnect"));
+  el("reconnect-why").textContent = why;
+  el("reconnect-url").value = state.baseUrl ?? "";
+  el("reconnect").addEventListener("click", async () => {
+    el("reconnect").disabled = true;
+    el("reconnect").textContent = "Opening your browser…";
+    await api.signIn(el("reconnect-url").value.trim());
   });
 }
 

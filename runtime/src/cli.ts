@@ -16,6 +16,8 @@ import {
   signOut,
   signedInApi,
   storedBaseUrl,
+  canonicalBaseUrl,
+  canonicalizeBaseUrl,
   validateBaseUrl,
 } from "./index.ts";
 import { saveConfig } from "./state.ts";
@@ -105,13 +107,28 @@ function openBrowser(url: string, baseUrl: string) {
   }
 }
 
+/**
+ * A generated Vercel deployment hostname is a frozen snapshot of one old
+ * build, so it is upgraded to the stable address for this channel wherever it
+ * comes from: --url, the stored config, or the prompt.
+ */
+function canonical(raw: string): string {
+  const result = canonicalizeBaseUrl(raw);
+  if (result.changed && result.previous) {
+    process.stdout.write(
+      `That address is one build's temporary URL. Using ${result.url} instead.
+`,
+    );
+  }
+  return validateBaseUrl(result.url);
+}
+
 async function baseUrl(): Promise<string> {
-  if (values.url) return validateBaseUrl(values.url);
+  if (values.url) return canonical(values.url);
   const stored = await storedBaseUrl(ctx);
   if (stored) return stored;
-  const typed = await ask("ThreadLink address (https://...): ");
-  if (!typed) throw new Error("No ThreadLink address. Pass --url https://...");
-  return validateBaseUrl(typed);
+  const typed = await ask(`ThreadLink address [${canonicalBaseUrl()}]: `);
+  return canonical(typed || canonicalBaseUrl());
 }
 
 async function ensureSignedIn(url: string): Promise<ThreadLinkApi> {

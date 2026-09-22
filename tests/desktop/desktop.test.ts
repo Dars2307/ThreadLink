@@ -57,6 +57,7 @@ const snapshot = (over: Record<string, unknown> = {}) =>
     pendingLinks: [],
     lastHeartbeatAt: "2026-09-22T12:00:00Z",
     tasksCompleted: 0,
+    needsAttention: false,
     ...over,
   }) as unknown as AppState["snapshot"];
 
@@ -304,5 +305,23 @@ describe("tray menu tidiness", () => {
         else expect(item.label.trim()).not.toBe("");
       });
     }
+  });
+});
+
+describe("when this computer is pointed at the wrong address", () => {
+  it("offers a reconnect rather than an endless Reconnecting…", () => {
+    expect(statusLine(state({ snapshot: snapshot({ status: "wrong-address" }) }))).toMatchObject({
+      title: "Reconnect ThreadLink",
+    });
+  });
+
+  it("says Reconnecting… only while the outage still looks momentary", () => {
+    const brief = statusLine(state({ snapshot: snapshot({ status: "offline" }) }));
+    expect(brief.title).toBe("Reconnecting…");
+    const dragging = statusLine(
+      state({ snapshot: snapshot({ status: "offline", needsAttention: true }) }),
+    );
+    expect(dragging.title).toBe("Can't reach ThreadLink");
+    expect(dragging.detail).toMatch(/reconnect/i);
   });
 });

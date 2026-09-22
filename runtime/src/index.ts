@@ -21,6 +21,7 @@ import {
 import { RuntimeEngine } from "./engine.ts";
 import type { EngineOptions } from "./engine.ts";
 import { detectIdentity, type RuntimeKind } from "./platform.ts";
+import { canonicalizeBaseUrl } from "./endpoints.ts";
 import { defaultConfigDir, loadConfig, saveConfig } from "./state.ts";
 
 export { ApiError, ThreadLinkApi, validateBaseUrl } from "./api.ts";
@@ -31,7 +32,15 @@ export { RuntimeEngine } from "./engine.ts";
 export type * from "./engine.ts";
 export { detectIdentity, remoteEnvironment, runtimePlatform } from "./platform.ts";
 export type * from "./platform.ts";
-export { defaultConfigDir, loadConfig, saveConfig } from "./state.ts";
+export { defaultConfigDir, loadConfig, migrateBaseUrl, saveConfig } from "./state.ts";
+export {
+  BUILD_CHANNEL,
+  CANONICAL_BASE_URL,
+  canonicalBaseUrl,
+  canonicalizeBaseUrl,
+  isGeneratedDeploymentHost,
+} from "./endpoints.ts";
+export type { CanonicalizeResult, ThreadLinkChannel } from "./endpoints.ts";
 export { maskSessionId } from "./claude-sessions.ts";
 
 export const RUNTIME_VERSION = "0.6.6";
@@ -47,7 +56,9 @@ export function runtimeContext(configDir = defaultConfigDir()): RuntimeContext {
 
 export async function storedBaseUrl(ctx: RuntimeContext): Promise<string | null> {
   const raw = process.env.THREADLINK_URL ?? (await loadConfig(ctx.configDir)).baseUrl;
-  return raw ? validateBaseUrl(raw) : null;
+  if (!raw) return null;
+  // A generated deployment hostname is an old build frozen in time: upgrade it.
+  return validateBaseUrl(canonicalizeBaseUrl(raw).url);
 }
 
 /**

@@ -100,6 +100,13 @@ export class ThreadLinkApi {
     } catch {
       json = null;
     }
+    // A ThreadLink API always answers with JSON. HTML here means the address
+    // points at something else - typically an old deployment that predates this
+    // endpoint, and serves its not-found page instead. Say so plainly rather
+    // than handing the caller an empty object.
+    if (json === null && text.trim() !== "") {
+      throw new ApiError(response.status, "not-threadlink");
+    }
     if (!response.ok) {
       const kind =
         json && typeof json === "object" && "error" in json ? String(json.error) : "error";

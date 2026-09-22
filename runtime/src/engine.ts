@@ -36,7 +36,16 @@ import { processNextTask } from "./worker.ts";
  */
 
 export type EngineStatus =
-  "idle" | "starting" | "online" | "offline" | "paused" | "signed-out" | "revoked" | "stopped";
+  | "idle"
+  | "starting"
+  | "online"
+  | "offline"
+  | "paused"
+  | "signed-out"
+  | "revoked"
+  | "stopped"
+  /** The address does not serve ThreadLink, so retrying cannot help. */
+  | "wrong-address";
 
 export type ConversationView = {
   provider: "claude-code";
@@ -73,6 +82,12 @@ export type EngineSnapshot = {
   pendingLinks: PendingLink[];
   lastHeartbeatAt: string | null;
   tasksCompleted: number;
+  /**
+   * True once the trouble has lasted long enough that the user should be
+   * offered a way out (sign in again / check the address) instead of watching
+   * "Reconnecting..." forever. The engine keeps retrying regardless.
+   */
+  needsAttention: boolean;
 };
 
 export type EngineEvent =
@@ -112,6 +127,8 @@ export type EngineOptions = {
   adapters: ProviderAdapter[];
   identity: RuntimeIdentity;
   version: string;
+  /** The ThreadLink address, for messages the user reads. Never a credential. */
+  baseUrlLabel?: string;
   log?: (message: string) => void;
   heartbeatMs?: number;
   linkPollMs?: number;
@@ -147,6 +164,7 @@ export class RuntimeEngine {
   readonly #claimRef = `runtime-${randomUUID()}`;
   #status: EngineStatus = "idle";
   #detail: string | null = null;
+  #needsAttention = false;
   #runtime: RuntimeView | null = null;
   #providers: EngineSnapshot["providers"] = [];
   #capabilities: Record<string, string> = {};
@@ -169,6 +187,7 @@ export class RuntimeEngine {
       permissionMode: "plan",
       taskHeartbeatMs: 60_000,
       repo: (path) => repoInfo(path),
+      baseUrlLabel: "This address",
       ...options,
     };
   }
@@ -191,10 +210,12 @@ export class RuntimeEngine {
     }
   }
 
-  #setStatus(status: EngineStatus, detail: string | null = null) {
-    const changed = status !== this.#status || detail !== this.#detail;
+  #setStatus(status: EngineStatus, detail: string | null = null, needsAttention = false) {
+    const changed =
+      status !== this.#status || detail !== this.#detail || needsAttention !== this.#needsAttention;
     this.#status = status;
     this.#detail = detail;
+    this.#needsAttention = needsAttention;
     if (changed) this.#emit({ type: "snapshot", snapshot: this.snapshot() });
   }
 
@@ -229,6 +250,7 @@ export class RuntimeEngine {
       pendingLinks: this.#pending,
       lastHeartbeatAt: this.#lastHeartbeat ? new Date(this.#lastHeartbeat).toISOString() : null,
       tasksCompleted: this.#tasksCompleted,
+      needsAttention: this.#needsAttention,
     };
   }
 
@@ -573,16 +595,37 @@ export class RuntimeEngine {
           delay = processed ? 250 : nextDelay(Math.min(idle, 4), this.#o.backoff, this.#o.random);
         } catch (error) {
           if (error instanceof ApiError && error.status === 401) {
-            this.#setStatus("signed-out", "ThreadLink sign-in is no longer valid. Sign in again.");
+            this.#setStatus(
+              "signed-out",
+              "ThreadLink sign-in is no longer valid. Sign in again.",
+              true,
+            );
             return "signed-out";
           }
           if (error instanceof ApiError && error.status === 403) {
-            this.#setStatus("revoked", "This Runtime was disconnected in ThreadLink.");
+            this.#setStatus("revoked", "This Runtime was disconnected in ThreadLink.", true);
             return "revoked";
+          }
+          if (error instanceof ApiError && error.kind === "not-threadlink") {
+            // Retrying cannot fix an address that serves something else.
+            this.#setStatus(
+              "wrong-address",
+              `${this.#o.baseUrlLabel} is not answering as ThreadLink. Reconnect to continue.`,
+              true,
+            );
+            return "wrong-address";
           }
           failures++;
           if (isNetworkError(error) || !(error instanceof ApiError)) {
-            this.#setStatus("offline", "Can't reach ThreadLink. Retrying…");
+            // Keep retrying, but after a while stop pretending it is momentary.
+            const stuck = failures >= 6;
+            this.#setStatus(
+              "offline",
+              stuck
+                ? "Still can't reach ThreadLink. Check your connection, or reconnect."
+                : "Can't reach ThreadLink. Retrying…",
+              stuck,
+            );
             ready = ready && failures < 3; // re-register after repeated failures (reboot/sleep)
           } else {
             this.#o.log?.(`runtime error (${error.status} ${error.kind})`);

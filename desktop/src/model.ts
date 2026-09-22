@@ -11,6 +11,8 @@ export type AppState = {
   snapshot: EngineSnapshot | null;
   pendingSignIn: { userCode: string; url: string } | null;
   error: string | null;
+  /** A one-off, non-error message, e.g. that the address was upgraded. */
+  notice?: string | null;
   localPaused: boolean;
   settings: { autoStart: boolean; notifications: boolean };
 };
@@ -49,7 +51,19 @@ export function statusLine(state: AppState): { title: string; detail: string; to
         tone: "warn",
       };
     case "offline":
-      return { title: "Reconnecting…", detail: "Can't reach ThreadLink", tone: "warn" };
+      return snap.needsAttention
+        ? {
+            title: "Can't reach ThreadLink",
+            detail: "Still trying. You can reconnect to fix this now.",
+            tone: "warn",
+          }
+        : { title: "Reconnecting…", detail: "Can't reach ThreadLink", tone: "warn" };
+    case "wrong-address":
+      return {
+        title: "Reconnect ThreadLink",
+        detail: "This computer was pointed at an old ThreadLink address",
+        tone: "warn",
+      };
     case "signed-out":
       return { title: "Sign in again", detail: "ThreadLink sign-in expired", tone: "warn" };
     case "revoked":
