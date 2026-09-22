@@ -1,0 +1,7 @@
+.next
+node_modules
+package-lock.json
+next-env.d.ts
+THREADLINK_MASTER_GUIDE.md
+CLAUDE.md
+AGENTS.md

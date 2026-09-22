@@ -1,0 +1,33 @@
+# ThreadLink Roadmap
+
+Mirrors §28 of [`THREADLINK_MASTER_GUIDE.md`](../THREADLINK_MASTER_GUIDE.md). Each phase stops for
+review before the next begins.
+
+The frog: a real authenticated task travels from the ChatGPT-side connection to the correct Claude
+Code execution agent, and the real result returns through ThreadLink to the correct origin, with
+ownership isolation intact.
+
+| Phase | Name                                  | Win condition                                                                               | Status   |
+| ----- | ------------------------------------- | ------------------------------------------------------------------------------------------- | -------- |
+| 0 + 1 | Repository bootstrap + Clerk identity | App scaffolded; a user can authenticate and the backend resolves the correct Clerk identity | **Done** |
+| 2     | Supabase schema + RLS                 | User-owned resources persist; cross-user access tests are denied                            | Next     |
+| 3     | Connection registry                   | ChatGPT-side and Claude Code-side connections register under the authenticated user         | Planned  |
+| 4     | Session bindings + pairing            | One ChatGPT binding securely links to one Claude Code binding                               | Planned  |
+| 5     | MCP routing                           | `send_to_agent` creates and routes a task to the linked Claude Code destination             | Planned  |
+| 6     | Claude Code bridge                    | Local bridge receives the task and returns status/results                                   | Planned  |
+| 7     | End-to-end proof                      | One real task completes the round trip                                                      | Planned  |
+| 8     | Deployment + hardening                | Reproducible Vercel deploy, correct secrets, security tests pass, revocation works          | Planned  |
+
+## Alpha scope
+
+One user account, Clerk auth, one ChatGPT connection, one Claude Code connection, one ThreadLink
+pairing, task/message dispatch, return routing, task state, audit log, artifact references,
+Supabase Postgres + RLS, remote MCP endpoint, local Claude Code bridge, Vercel deployment.
+
+## After alpha (not in scope now)
+
+- Additional adapters: Codex, Nova, Claude chat, other MCP-capable clients
+- Workspaces/organisations, role-based permissions, explicit cross-user collaboration
+- Multi-step orchestration chains
+- Project-level event stream, capability model, production approvals
+- Railway/Redis/queues only if the alpha proves them necessary
