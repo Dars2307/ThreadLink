@@ -16,7 +16,9 @@
     "test:db": "supabase test db",
     "test:all": "npm run test && npm run test:db && npm run test:integration",
     "db:start": "supabase start",
-    "db:reset:local": "supabase db reset --local"
+    "db:reset:local": "supabase db reset --local",
+    "dev:local-db": "node scripts/dev-local-supabase.mjs",
+    "test:e2e": "vitest run --config vitest.e2e.config.mts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.4",

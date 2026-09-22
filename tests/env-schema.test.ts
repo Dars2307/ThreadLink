@@ -15,6 +15,7 @@ const base = {
   CLERK_SECRET_KEY: "sk_test_placeholder",
   SUPABASE_SECRET_KEY: "sb_secret_placeholder",
   DATABASE_URL: "postgresql://user:pass@localhost:5432/postgres",
+  THREADLINK_CONNECTION_SECRET: "test-only-connection-secret-0123456789abcdefghij",
 };
 
 function fakeJwt(payload: object): string {
@@ -66,6 +67,23 @@ describe("serverEnvSchema", () => {
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: fakeJwt({ role: "anon" }),
     });
     expect(result.success).toBe(true);
+  });
+
+  it("requires a long THREADLINK_CONNECTION_SECRET", () => {
+    expect(
+      serverEnvSchema.safeParse({ ...base, THREADLINK_CONNECTION_SECRET: "short" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects reusing a Clerk or Supabase secret as the connection secret", () => {
+    const reused = "sk_test_placeholder_that_is_long_enough_for_the_length_rule_xx";
+    expect(
+      serverEnvSchema.safeParse({
+        ...base,
+        CLERK_SECRET_KEY: reused,
+        THREADLINK_CONNECTION_SECRET: reused,
+      }).success,
+    ).toBe(false);
   });
 
   it("forbids THREADLINK_ALLOW_INSECURE_DEV in production", () => {

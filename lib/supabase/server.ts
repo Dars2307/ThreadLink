@@ -26,3 +26,16 @@ export function createUserSupabaseClient(): SupabaseClient {
     },
   });
 }
+
+/**
+ * Supabase client with NO user identity (runs as `anon`, fully subject to RLS
+ * and grants). Used only to call `authenticate_connection`, the one function
+ * `anon` may execute, for clients that present a connection token instead of
+ * a Clerk session. It can read no tenant tables.
+ */
+export function createAnonymousSupabaseClient(): SupabaseClient {
+  const env = getServerEnv();
+  return createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createConnectionInputSchema,
+  ALPHA_ROLE_FOR_PLATFORM,
+  registerConnectionInputSchema,
   OwnershipViolationError,
   parseOwnedConnections,
 } from "@/lib/connections/model";
@@ -26,27 +27,32 @@ function row(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("createConnectionInputSchema", () => {
-  it.each([
-    { platform: "chatgpt", role: "controller" },
-    { platform: "claude-code", role: "agent", displayName: "Laptop" },
-  ])("accepts %o", (input) => {
-    expect(createConnectionInputSchema.safeParse(input).success).toBe(true);
-  });
+describe("registerConnectionInputSchema", () => {
+  it.each([{ platform: "chatgpt" }, { platform: "claude-code", displayName: "Laptop" }])(
+    "accepts %o",
+    (input) => {
+      expect(registerConnectionInputSchema.safeParse(input).success).toBe(true);
+    },
+  );
 
   it.each(["codex", "nova", "ChatGPT", "claude_code", "", null])(
     "rejects platform %o",
     (platform) => {
-      expect(createConnectionInputSchema.safeParse({ platform, role: "agent" }).success).toBe(
+      expect(registerConnectionInputSchema.safeParse({ platform }).success).toBe(false);
+    },
+  );
+
+  it.each(["controller", "agent", "admin"])(
+    "rejects caller-chosen role %o (derived server-side)",
+    (role) => {
+      expect(registerConnectionInputSchema.safeParse({ platform: "chatgpt", role }).success).toBe(
         false,
       );
     },
   );
 
-  it.each(["admin", "owner", "Controller", ""])("rejects role %o", (role) => {
-    expect(createConnectionInputSchema.safeParse({ platform: "chatgpt", role }).success).toBe(
-      false,
-    );
+  it("derives the Alpha role from the platform", () => {
+    expect(ALPHA_ROLE_FOR_PLATFORM).toEqual({ chatgpt: "controller", "claude-code": "agent" });
   });
 
   it.each([
@@ -57,8 +63,11 @@ describe("createConnectionInputSchema", () => {
     "id",
     "status",
     "revoked_at",
+    "token",
+    "token_hash",
+    "tokenHash",
   ])("rejects client-supplied %s (ownership/lifecycle cannot be passed in)", (key) => {
-    const result = createConnectionInputSchema.safeParse({
+    const result = registerConnectionInputSchema.safeParse({
       platform: "chatgpt",
       role: "controller",
       [key]: key === "status" ? "active" : OTHER,
@@ -67,9 +76,8 @@ describe("createConnectionInputSchema", () => {
   });
 
   it("rejects over-long display names", () => {
-    const result = createConnectionInputSchema.safeParse({
+    const result = registerConnectionInputSchema.safeParse({
       platform: "chatgpt",
-      role: "controller",
       displayName: "x".repeat(101),
     });
     expect(result.success).toBe(false);

@@ -4,47 +4,34 @@ import type { ThreadLinkUser } from "@/lib/auth/provision";
 
 import {
   CONNECTION_COLUMNS,
-  createConnectionInputSchema,
+  CREDENTIAL_METADATA_COLUMNS,
   parseOwnedConnections,
   type Connection,
 } from "./model";
 
 /**
- * Connection queries. Always called with a USER-SCOPED client (RLS enforced)
- * and the ThreadLink user resolved from the verified session.
- *
- * Owner IDs are never sent on writes: the database derives `owner_user_id`
- * from the JWT. Results are re-checked against `user.id`.
+ * Connection reads. Always called with a USER-SCOPED client (RLS enforced)
+ * and the ThreadLink user resolved from the verified session. Results are
+ * re-checked against `user.id`. Writes go through ./registration.ts.
  */
-
 export async function listConnections(
   db: SupabaseClient,
   user: ThreadLinkUser,
 ): Promise<Connection[]> {
   const { data, error } = await db
     .from("connections")
-    .select(CONNECTION_COLUMNS)
+    .select(`${CONNECTION_COLUMNS}, connection_credentials(${CREDENTIAL_METADATA_COLUMNS})`)
     .order("created_at", { ascending: true });
   if (error) throw new Error("Failed to load connections");
-  return parseOwnedConnections(data, user.id);
-}
 
-export async function createConnection(
-  db: SupabaseClient,
-  user: ThreadLinkUser,
-  rawInput: unknown,
-): Promise<Connection> {
-  const input = createConnectionInputSchema.parse(rawInput);
-  const { data, error } = await db
-    .from("connections")
-    .insert({
-      platform: input.platform,
-      role: input.role,
-      display_name: input.displayName ?? null,
-    })
-    .select(CONNECTION_COLUMNS)
-    .single();
-  if (error) throw new Error("Failed to create connection");
-  const [connection] = parseOwnedConnections([data], user.id);
-  return connection;
+  const rows = (data ?? []).map((row) => {
+    const { connection_credentials: credentials, ...rest } = row as Record<string, unknown> & {
+      connection_credentials?: { created_at: string }[] | null;
+    };
+    const latest = [...(credentials ?? [])].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    )[0];
+    return { ...rest, credential: latest ?? null };
+  });
+  return parseOwnedConnections(rows, user.id);
 }

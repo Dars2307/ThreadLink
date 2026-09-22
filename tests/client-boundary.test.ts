@@ -34,6 +34,14 @@ const SERVER_ONLY_MODULES = [
   "@/lib/auth/identity",
   "@/lib/auth/threadlink-user",
   "@/lib/connections/repository",
+  "@/lib/connections/require-connection",
+];
+
+/** Pure modules that must still never be bundled for the browser (node:crypto, token logic). */
+const SERVER_SIDE_MODULES = [
+  "@/lib/connections/credentials",
+  "@/lib/connections/authenticate",
+  "@/lib/connections/registration",
 ];
 
 /**
@@ -51,8 +59,10 @@ describe("client/server boundary", () => {
   it.each(clientFiles.map((file) => [file.path, file.source]))(
     "%s does not reference server secrets or server-only modules",
     (_path, source) => {
-      expect(source).not.toMatch(/CLERK_SECRET_KEY|SUPABASE_SECRET_KEY|DATABASE_URL/);
-      for (const mod of SERVER_ONLY_MODULES) {
+      expect(source).not.toMatch(
+        /CLERK_SECRET_KEY|SUPABASE_SECRET_KEY|DATABASE_URL|THREADLINK_CONNECTION_SECRET/,
+      );
+      for (const mod of [...SERVER_ONLY_MODULES, ...SERVER_SIDE_MODULES]) {
         expect(source).not.toContain(`"${mod}"`);
       }
     },
@@ -101,6 +111,45 @@ describe("client/server boundary", () => {
         /process\.env\.(CLERK_SECRET_KEY|SUPABASE_SECRET_KEY|DATABASE_URL)/.test(source),
       )
       .map(({ path }) => path);
+    expect(offenders).toEqual([]);
+  });
+
+  it("THREADLINK_CONNECTION_SECRET is read only via the validated server env", () => {
+    const users = files
+      .filter(({ source }) => /process\.env\.THREADLINK_CONNECTION_SECRET/.test(source))
+      .map(({ path }) => path);
+    expect(users).toEqual([]);
+  });
+
+  it("every connection-token route handler calls requireConnection()", () => {
+    const routes = files.filter(({ path }) => /^app\/api\/connection\/.+\/route\.ts$/.test(path));
+    expect(routes.length).toBeGreaterThan(0);
+    for (const route of routes) {
+      expect(route.source, route.path).toMatch(/await requireConnection\(request\)/);
+    }
+  });
+});
+
+describe("committed files contain no real-looking connection tokens", () => {
+  const SCAN_DIRS = ["app", "components", "lib", "tests", "docs", "supabase"];
+  const scanned = SCAN_DIRS.flatMap((dir) => {
+    const walk = (d: string): string[] =>
+      readdirSync(d).flatMap((name) => {
+        const p = join(d, name);
+        if (name === ".temp" || name === "node_modules") return [];
+        return statSync(p).isDirectory() ? walk(p) : [p];
+      });
+    return walk(join(ROOT, dir));
+  });
+
+  it("scans a meaningful number of files", () => {
+    expect(scanned.length).toBeGreaterThan(20);
+  });
+
+  it("no file contains a full tlc_ token (tests generate tokens at runtime)", () => {
+    const offenders = scanned
+      .filter((path) => /tlc_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/.test(readFileSync(path, "utf8")))
+      .map((path) => relative(ROOT, path));
     expect(offenders).toEqual([]);
   });
 });

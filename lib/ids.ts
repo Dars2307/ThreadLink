@@ -8,6 +8,8 @@
 export const ID_PREFIXES = {
   user: "tlusr",
   connection: "tlcon",
+  credential: "tlcrd",
+  auditEvent: "tlevt",
   // Reserved for later phases:
   sessionBinding: "tlses",
   threadLink: "tllnk",

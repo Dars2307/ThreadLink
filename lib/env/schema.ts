@@ -37,6 +37,11 @@ export const serverEnvSchema = publicEnvSchema
     DATABASE_URL: nonEmpty.refine((value) => /^postgres(ql)?:\/\//.test(value), {
       message: "must be a postgres:// or postgresql:// connection string",
     }),
+    // Server-side HMAC key ("pepper") for connection-credential hashes. At least
+    // 32 bytes of CSPRNG output; rotating it invalidates every issued credential.
+    THREADLINK_CONNECTION_SECRET: nonEmpty.refine((value) => value.length >= 43, {
+      message: "must be at least 32 random bytes (43+ base64url characters)",
+    }),
     THREADLINK_ENV: z.string().trim().optional(),
     THREADLINK_ALLOW_INSECURE_DEV: z
       .enum(["true", "false", ""])
@@ -44,6 +49,16 @@ export const serverEnvSchema = publicEnvSchema
       .transform((value) => value === "true"),
   })
   .superRefine((env, ctx) => {
+    if (
+      env.THREADLINK_CONNECTION_SECRET === env.CLERK_SECRET_KEY ||
+      env.THREADLINK_CONNECTION_SECRET === env.SUPABASE_SECRET_KEY
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["THREADLINK_CONNECTION_SECRET"],
+        message: "must be a dedicated secret, not a reused Clerk/Supabase key",
+      });
+    }
     if (env.NODE_ENV === "production" && env.THREADLINK_ALLOW_INSECURE_DEV) {
       ctx.addIssue({
         code: "custom",

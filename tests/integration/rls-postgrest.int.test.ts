@@ -5,7 +5,11 @@ import { SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 
 import { provisionThreadLinkUser, type ThreadLinkUser } from "@/lib/auth/provision";
-import { createConnection, listConnections } from "@/lib/connections/queries";
+import { listConnections } from "@/lib/connections/queries";
+import { registerConnection } from "@/lib/connections/registration";
+
+// Test-only HMAC key; never a real secret.
+const TEST_CONNECTION_SECRET = "integration-test-connection-secret-0123456789abcdef";
 
 /**
  * End-to-end tenant isolation through the real stack:
@@ -115,21 +119,28 @@ describe("connections isolation through PostgREST", () => {
   let connectionB: string;
 
   beforeAll(async () => {
-    const created = await createConnection(dbB, userB, { platform: "chatgpt", role: "controller" });
-    connectionB = created.id;
+    const { connection } = await registerConnection(
+      dbB,
+      userB,
+      { platform: "chatgpt" },
+      TEST_CONNECTION_SECRET,
+    );
+    connectionB = connection.id;
   });
 
-  it("User A can create and read their own connection", async () => {
-    const created = await createConnection(dbA, userA, {
-      platform: "claude-code",
-      role: "agent",
-      displayName: "Alice laptop",
-    });
-    expect(created.ownerUserId).toBe(userA.id);
-    expect(created.id).toMatch(/^tlcon_[0-9a-f]{32}$/);
+  it("User A can register and read their own connection", async () => {
+    const { connection } = await registerConnection(
+      dbA,
+      userA,
+      { platform: "claude-code", displayName: "Alice laptop" },
+      TEST_CONNECTION_SECRET,
+    );
+    expect(connection.ownerUserId).toBe(userA.id);
+    expect(connection.id).toMatch(/^tlcon_[0-9a-f]{32}$/);
 
     const mine = await listConnections(dbA, userA);
-    expect(mine.map((connection) => connection.id)).toEqual([created.id]);
+    expect(mine.map((c) => c.id)).toEqual([connection.id]);
+    expect(mine[0].credential?.tokenPrefix).toMatch(/^tlc_[A-Za-z0-9_-]{6}$/);
   });
 
   it("User A cannot read User B's profile or connections", async () => {
@@ -141,7 +152,7 @@ describe("connections isolation through PostgREST", () => {
     expect(byOwner.data).toEqual([]);
   });
 
-  it("User A cannot modify or delete User B's connection", async () => {
+  it("User A cannot modify, revoke or delete User B's connection", async () => {
     const updated = await dbA
       .from("connections")
       .update({ display_name: "pwned" })
@@ -149,18 +160,21 @@ describe("connections isolation through PostgREST", () => {
       .select("id");
     expect(updated.data).toEqual([]);
 
-    const deleted = await dbA.from("connections").delete().eq("id", connectionB).select("id");
-    expect(deleted.data).toEqual([]);
+    const revoked = await dbA.rpc("revoke_connection", { p_connection_id: connectionB });
+    expect(revoked.error?.code).toBe("P0002");
+
+    const deleted = await dbA.from("connections").delete().eq("id", connectionB);
+    expect(deleted.error?.code).toBe("42501");
 
     const check = await admin
       .from("connections")
-      .select("display_name, owner_user_id")
+      .select("display_name, owner_user_id, status")
       .eq("id", connectionB)
       .single();
-    expect(check.data).toEqual({ display_name: null, owner_user_id: userB.id });
+    expect(check.data).toEqual({ display_name: null, owner_user_id: userB.id, status: "active" });
   });
 
-  it("User A cannot create a connection owned by User B", async () => {
+  it("direct INSERT is not permitted (registration function only)", async () => {
     const result = await dbA
       .from("connections")
       .insert({ owner_user_id: userB.id, platform: "chatgpt", role: "controller" });
@@ -169,11 +183,12 @@ describe("connections isolation through PostgREST", () => {
 
   it("application layer rejects ownership fields before reaching the database", async () => {
     await expect(
-      createConnection(dbA, userA, {
-        platform: "chatgpt",
-        role: "controller",
-        owner_user_id: userB.id,
-      }),
+      registerConnection(
+        dbA,
+        userA,
+        { platform: "chatgpt", owner_user_id: userB.id },
+        TEST_CONNECTION_SECRET,
+      ),
     ).rejects.toThrow();
   });
 });

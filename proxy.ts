@@ -9,8 +9,16 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
  */
 const isPublicRoute = createRouteMatcher(["/", "/sign-in(.*)", "/sign-up(.*)"]);
 
+/**
+ * Routes called by non-human clients (MCP, Claude Code bridge). They carry a
+ * ThreadLink connection token, not a Clerk session, so the Clerk gate is
+ * skipped here and EVERY handler under this prefix must call
+ * `requireConnection()` (enforced by tests/client-boundary.test.ts).
+ */
+const isConnectionRoute = createRouteMatcher(["/api/connection/(.*)"]);
+
 export default clerkMiddleware(async (auth, request) => {
-  if (!isPublicRoute(request)) {
+  if (!isPublicRoute(request) && !isConnectionRoute(request)) {
     await auth.protect();
   }
 });

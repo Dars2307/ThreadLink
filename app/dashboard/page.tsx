@@ -7,6 +7,8 @@ import { getIdentity } from "@/lib/auth/identity";
 import { requireThreadLinkUser, type ThreadLinkUser } from "@/lib/auth/threadlink-user";
 import type { Connection } from "@/lib/connections/model";
 import { listMyConnections } from "@/lib/connections/repository";
+import { RegisterConnectionForm } from "@/components/connections/register-connection-form";
+import { RevokeConnectionButton } from "@/components/connections/revoke-connection-button";
 import { maskIdentifier } from "@/lib/security/mask";
 
 export const metadata: Metadata = {
@@ -88,6 +90,7 @@ export default async function DashboardPage() {
       {account.ok ? (
         <div className="flex flex-col gap-3">
           <h2 className="text-lg font-semibold">Connections</h2>
+          <RegisterConnectionForm />
           {account.connections.length === 0 ? (
             <p className="text-foreground/60 text-sm">No connections yet</p>
           ) : (
@@ -95,14 +98,39 @@ export default async function DashboardPage() {
               {account.connections.map((connection) => (
                 <li
                   key={connection.id}
-                  className="rounded-md border border-black/10 px-4 py-3 dark:border-white/15"
+                  className="flex flex-col gap-2 rounded-md border border-black/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-white/15"
                 >
-                  <span className="font-medium">
-                    {connection.displayName ?? connection.platform}
-                  </span>{" "}
-                  <span className="text-foreground/60">
-                    · {connection.platform} · {connection.role} · {connection.status}
-                  </span>
+                  <div className="flex flex-col gap-1">
+                    <span className="font-medium">
+                      {connection.displayName ?? connection.platform}
+                    </span>
+                    <span className="text-foreground/60">
+                      {connection.platform} · {connection.role} ·{" "}
+                      <span
+                        className={
+                          connection.status === "revoked" ? "text-red-700 dark:text-red-400" : ""
+                        }
+                      >
+                        {connection.status}
+                      </span>
+                      {connection.credential ? (
+                        <>
+                          {" "}
+                          · <span className="font-mono">{connection.credential.tokenPrefix}…</span>
+                        </>
+                      ) : null}
+                    </span>
+                    <span className="text-foreground/50 text-xs">
+                      Created {formatDate(connection.createdAt)}
+                      {connection.lastSeenAt
+                        ? ` · Last used ${formatDate(connection.lastSeenAt)}`
+                        : " · Never used"}
+                      {connection.revokedAt ? ` · Revoked ${formatDate(connection.revokedAt)}` : ""}
+                    </span>
+                  </div>
+                  {connection.status === "active" || connection.status === "idle" ? (
+                    <RevokeConnectionButton connectionId={connection.id} />
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -121,5 +149,15 @@ export default async function DashboardPage() {
         </SignOutButton>
       </div>
     </section>
+  );
+}
+
+function formatDate(value: string): string {
+  return (
+    new Date(value).toLocaleString("en-GB", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "UTC",
+    }) + " UTC"
   );
 }

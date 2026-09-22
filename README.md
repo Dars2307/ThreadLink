@@ -49,7 +49,11 @@ Database and RLS tests run against a **local** disposable Supabase stack (Docker
 npm run db:start           # supabase start
 npm run test:db            # pgTAP RLS suite
 npm run test:integration   # app -> PostgREST -> RLS
+npm run dev:local-db       # Next.js on :3200 against local Supabase (separate terminal)
+npm run test:e2e           # HTTP connection-credential e2e against :3200
 ```
+
+`THREADLINK_CONNECTION_SECRET` must be set (see `.env.example`) or the server refuses to start.
 
 ## Scripts
 
@@ -89,4 +93,5 @@ docs/                     Architecture, security, roadmap
 - [docs/architecture.md](docs/architecture.md)
 - [docs/security.md](docs/security.md)
 - [docs/database.md](docs/database.md)
+- [docs/connections.md](docs/connections.md)
 - [docs/roadmap.md](docs/roadmap.md)

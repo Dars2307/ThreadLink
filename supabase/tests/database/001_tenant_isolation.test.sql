@@ -44,6 +44,11 @@ begin
 end;
 $$;
 
+-- Deterministic fake credential hash (64 hex). Tests never use real tokens.
+create function pg_temp.fake_hash(seed text) returns text language sql as $f$
+  select md5(seed) || md5(seed || ':2');
+$f$;
+
 grant execute on all functions in schema pg_temp to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
@@ -164,9 +169,8 @@ select results_eq(
 );
 
 select lives_ok(
-  $$ insert into public.connections (platform, role, display_name)
-     values ('claude-code', 'agent', 'Alice laptop') $$,
-  'User A can create a connection'
+  $$ select public.register_connection('claude-code', 'agent', 'Alice laptop', pg_temp.fake_hash('a1'), 'tlc_aaaaaa') $$,
+  'User A can register a connection'
 );
 
 select is(
@@ -222,15 +226,17 @@ select is(
   0,
   'User A cannot modify User B connection (0 rows affected)'
 );
-select is(
-  pg_temp.rows_affected($$ update public.connections set status = 'revoked' where id = (select id from b_conn) $$),
-  0,
-  'User A cannot revoke User B connection'
+select throws_ok(
+  $$ select public.revoke_connection((select id from b_conn)) $$,
+  'P0002',
+  null,
+  'User A cannot revoke User B connection (looks nonexistent)'
 );
-select is(
-  pg_temp.rows_affected($$ delete from public.connections where id = (select id from b_conn) $$),
-  0,
-  'User A cannot delete User B connection (0 rows affected)'
+select throws_ok(
+  $$ delete from public.connections where id = (select id from b_conn) $$,
+  '42501',
+  null,
+  'nobody can delete connections via the API (revocation history is preserved)'
 );
 
 select throws_ok(
@@ -263,41 +269,43 @@ select throws_ok(
 -- Validation and lifecycle
 -- ---------------------------------------------------------------------------
 select throws_ok(
-  $$ insert into public.connections (platform, role) values ('codex', 'agent') $$,
+  $$ select public.register_connection('codex', 'agent', null, pg_temp.fake_hash('x1'), 'tlc_xxxxx1') $$,
   '23514',
   null,
   'unknown platform is rejected'
 );
 select throws_ok(
-  $$ insert into public.connections (platform, role) values ('chatgpt', 'admin') $$,
+  $$ select public.register_connection('chatgpt', 'admin', null, pg_temp.fake_hash('x2'), 'tlc_xxxxx2') $$,
   '23514',
   null,
   'unknown role is rejected'
 );
 select throws_ok(
-  $$ update public.connections set status = 'superuser' $$,
-  '23514',
-  null,
-  'unknown status is rejected'
-);
-select throws_ok(
-  $$ insert into public.connections (platform, role, status) values ('chatgpt', 'controller', 'revoked') $$,
+  $$ update public.connections set status = 'active' $$,
   '42501',
   null,
-  'callers cannot choose initial status'
+  'callers cannot set status directly'
+);
+select throws_ok(
+  $$ insert into public.connections (platform, role) values ('chatgpt', 'controller') $$,
+  '42501',
+  null,
+  'direct INSERT is not permitted (registration function only)'
 );
 
-update public.connections set status = 'revoked' where display_name = 'Alice laptop 2';
+select public.revoke_connection((select id from public.connections where display_name = 'Alice laptop 2'));
 select isnt(
   (select revoked_at from public.connections where display_name = 'Alice laptop 2'),
   null,
   'revoking sets revoked_at'
 );
 select throws_ok(
-  $$ update public.connections set status = 'active' where display_name = 'Alice laptop 2' $$,
-  '42501',
+  $$ select public.rotate_connection_credential(
+       (select id from public.connections where display_name = 'Alice laptop 2'),
+       pg_temp.fake_hash('a1-reissue'), 'tlc_aaaaa2') $$,
+  '55000',
   null,
-  'revocation is terminal'
+  'revocation is terminal (cannot reissue a credential to a revoked connection)'
 );
 
 reset role;
@@ -339,10 +347,10 @@ reset role;
 
 select pg_temp.act_as_user('user_NotProvisioned3');
 select throws_ok(
-  $$ insert into public.connections (platform, role) values ('chatgpt', 'controller') $$,
+  $$ select public.register_connection('chatgpt', 'controller', null, pg_temp.fake_hash('np'), 'tlc_nnnnnn') $$,
+  '28000',
   null,
-  null,
-  'unprovisioned identity cannot create connections'
+  'unprovisioned identity cannot register connections'
 );
 reset role;
 

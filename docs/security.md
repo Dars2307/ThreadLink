@@ -74,6 +74,29 @@ ownership. A static test forbids filtering by `primary_email`/`display_name` in 
 Another user's resource behaves exactly like a nonexistent one: reads return empty results and
 updates/deletes affect zero rows. Errors shown to users are generic.
 
+## Client credentials (Phase 3)
+
+Non-human clients (ChatGPT integration, Claude Code bridge) authenticate with a ThreadLink
+connection credential, not a Clerk session. Full design: [connections.md](connections.md).
+
+| Control          | Implementation                                                                                                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Token entropy    | `tlc_` + 32 CSPRNG bytes (256 bits); opaque, no identity encoded                                                                                                                                 |
+| Storage          | HMAC-SHA256 with `THREADLINK_CONNECTION_SECRET` computed in the app; Postgres never sees the raw token; hash column not granted to any API role                                                  |
+| One-time display | Raw token returned once from the server action and held only in React state                                                                                                                      |
+| Verification     | `requireConnection()` → strict format check → HMAC → `authenticate_connection` → strict result parsing; one generic 401 for every failure                                                        |
+| No oracle        | Unknown, revoked and inactive credentials are indistinguishable; other users' connection IDs behave like nonexistent ones (`P0002`)                                                              |
+| Revocation       | Immediate, idempotent, terminal; history retained; direct status changes and deletes are not granted                                                                                             |
+| Rotation         | Replaces the single active credential atomically                                                                                                                                                 |
+| Usage metadata   | `last_used_at`/`last_seen_at` written only by `authenticate_connection`, throttled to once per 60 s                                                                                              |
+| Abuse limit      | 10 active connections per user, race-safe                                                                                                                                                        |
+| Route boundary   | `/api/connection/*` bypasses the Clerk gate; a static test requires `requireConnection(request)` in every handler there                                                                          |
+| Logging          | Failure reasons only (`missing`/`malformed`/`rejected`/`unavailable`); never tokens, hashes, headers or Clerk tokens. Tests assert tokens never reach console output, DB rows or committed files |
+| Audit            | Append-only `audit_events` for create/revoke/rotate/failed use of revoked credentials                                                                                                            |
+
+Failed authentications with _unknown_ tokens are logged to the server console but not written to
+the database, so anonymous callers cannot grow the audit table.
+
 ## Privileged client exception
 
 `createPrivilegedSupabaseClient()` (`lib/supabase/admin.ts`) uses `SUPABASE_SECRET_KEY` and
@@ -93,6 +116,13 @@ RLS and integration tests run only against the local disposable Supabase stack. 
 harness refuses any non-local API URL. Hosted projects receive only additive migrations after a
 read-only target check. See [database.md](database.md).
 
+## Connection secret
+
+`THREADLINK_CONNECTION_SECRET` is the HMAC key for credential hashes: server-only, validated
+(≥43 base64url chars, must not equal a Clerk/Supabase key), read only through `getServerEnv()`.
+It must be set separately in every environment (local, Vercel). Rotating it invalidates all issued
+connection credentials. `THREADLINK_ENCRYPTION_KEY` and `THREADLINK_HMAC_SECRET` remain unused.
+
 ## Supabase keys
 
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: safe for the browser; all access is subject to RLS.
@@ -110,8 +140,9 @@ read-only target check. See [database.md](database.md).
 ## Planned controls (later phases)
 
 - RLS + cross-user denial tests for every new tenant-owned table (bindings, links, tasks, messages).
-- Connection credentials and revocation enforcement in routing (Phases 3–4, 8).
+- Revocation enforcement in routing and MCP (Phases 4–5); signed requests/replay protection for bridge traffic if needed.
 - Disable Supabase Auth sign-ups on the hosted project so no parallel Supabase users can exist.
+- Per-IP rate limiting for `/api/connection/*` at deployment (Phase 8).
 - Request freshness/replay controls for bridge and agent requests: timestamps, nonces, expiry, and
   possibly per-connection signing keys, using established libraries only.
 - Content-Security-Policy tuned for Clerk.

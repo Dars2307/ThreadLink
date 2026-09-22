@@ -9,11 +9,12 @@ Clerk **third-party auth** integration.
 Schema lives in version-controlled SQL under `supabase/migrations/` (Supabase CLI conventions). The
 database is reconstructable from these files alone (`supabase db reset --local`).
 
-| File                                               | Contents                                                             |
-| -------------------------------------------------- | -------------------------------------------------------------------- |
-| `20260922000100_threadlink_private_foundation.sql` | `threadlink_private` schema, ID generator, verified-subject helper   |
-| `20260922000200_users.sql`                         | `public.users`, `current_user_id()`, `provision_current_user()`, RLS |
-| `20260922000300_connections.sql`                   | `public.connections`, lifecycle guard, column grants, RLS            |
+| File                                               | Contents                                                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `20260922000100_threadlink_private_foundation.sql` | `threadlink_private` schema, ID generator, verified-subject helper                                      |
+| `20260922000200_users.sql`                         | `public.users`, `current_user_id()`, `provision_current_user()`, RLS                                    |
+| `20260922000300_connections.sql`                   | `public.connections`, lifecycle guard, column grants, RLS                                               |
+| `20260922000400_connection_credentials.sql`        | credentials, audit events, register/revoke/rotate/authenticate functions; tightens `connections` grants |
 
 Rules:
 
@@ -26,12 +27,14 @@ Rules:
 
 ThreadLink IDs are `<prefix>_<32 lowercase hex>`, e.g. `tlusr_3f9c…`.
 
-| Prefix   | Entity          | Phase    |
-| -------- | --------------- | -------- |
-| `tlusr_` | ThreadLink user | 2        |
-| `tlcon_` | Connection      | 2        |
-| `tlses_` | Session binding | reserved |
-| `tllnk_` | ThreadLink      | reserved |
+| Prefix   | Entity                | Phase    |
+| -------- | --------------------- | -------- |
+| `tlusr_` | ThreadLink user       | 2        |
+| `tlcon_` | Connection            | 2        |
+| `tlcrd_` | Connection credential | 3        |
+| `tlevt_` | Audit event           | 3        |
+| `tlses_` | Session binding       | reserved |
+| `tllnk_` | ThreadLink            | reserved |
 
 - Generated only in the database by `threadlink_private.generate_id()` from `gen_random_uuid()`
   (UUIDv4, 122 bits from the server CSPRNG). No custom cryptography.
@@ -57,15 +60,19 @@ A trigger forbids changing `id`, `clerk_user_id` or `created_at`, even for privi
 
 ### `public.connections`
 
-| Column                                                   | Notes                                                                          |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `id`                                                     | `tlcon_…`                                                                      |
-| `owner_user_id`                                          | FK → `users.id`; **defaults to the verified caller**; immutable                |
-| `platform`                                               | `chatgpt` \| `claude-code`                                                     |
-| `role`                                                   | `controller` \| `agent`                                                        |
-| `status`                                                 | `active` \| `idle` \| `revoked` \| `retired`; `revoked`/`retired` are terminal |
-| `display_name`                                           | Cosmetic label, ≤100 chars                                                     |
-| `created_at`, `updated_at`, `last_seen_at`, `revoked_at` | `revoked_at` is set by trigger and must be present iff status is `revoked`     |
+| Column                                                   | Notes                                                                             |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `id`                                                     | `tlcon_…`                                                                         |
+| `owner_user_id`                                          | FK → `users.id`; set from the verified caller by `register_connection`; immutable |
+| `platform`                                               | `chatgpt` \| `claude-code`                                                        |
+| `role`                                                   | `controller` \| `agent`                                                           |
+| `status`                                                 | `active` \| `idle` \| `revoked` \| `retired`; `revoked`/`retired` are terminal    |
+| `display_name`                                           | Cosmetic label, ≤100 chars                                                        |
+| `created_at`, `updated_at`, `last_seen_at`, `revoked_at` | `revoked_at` is set by trigger and must be present iff status is `revoked`        |
+
+Since Phase 3, connections are created, revoked and rotated only through database functions, and
+carry credentials in `connection_credentials`. See [connections.md](connections.md) for the
+credential model, `connection_credentials` and `audit_events`.
 
 ## Identity mapping and provisioning
 
@@ -92,19 +99,19 @@ client and verifies the returned `clerk_user_id` equals the server-verified iden
 RLS is enabled on every `public` table. Supabase's broad default table grants are revoked and
 replaced with least-privilege grants:
 
-| Role            | `users`                         | `connections`                                                                                |
-| --------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
-| `anon`          | none                            | none                                                                                         |
-| `authenticated` | `SELECT`                        | `SELECT`; `INSERT (platform, role, display_name)`; `UPDATE (display_name, status)`; `DELETE` |
-| `service_role`  | Supabase default (bypasses RLS) | Supabase default (bypasses RLS)                                                              |
+| Role            | `users`                         | `connections`                                                               |
+| --------------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `anon`          | none                            | none                                                                        |
+| `authenticated` | `SELECT`                        | `SELECT`; `UPDATE (display_name)` (create/revoke/rotate via functions only) |
+| `service_role`  | Supabase default (bypasses RLS) | Supabase default (bypasses RLS)                                             |
 
 Policies (all `TO authenticated`, none `USING (true)`):
 
-| Policy                                         | Rule                                      |
-| ---------------------------------------------- | ----------------------------------------- |
-| `users_select_own`                             | `clerk_user_id = current_clerk_user_id()` |
-| `connections_{select,update,delete}_own`       | `owner_user_id = current_user_id()`       |
-| `connections_insert_own` / update `WITH CHECK` | `owner_user_id = current_user_id()`       |
+| Policy                                                         | Rule                                      |
+| -------------------------------------------------------------- | ----------------------------------------- |
+| `users_select_own`                                             | `clerk_user_id = current_clerk_user_id()` |
+| `connections_{select,update}_own` (+ update `WITH CHECK`)      | `owner_user_id = current_user_id()`       |
+| `connection_credentials_select_own`, `audit_events_select_own` | `owner_user_id = current_user_id()`       |
 
 A missing or malformed `sub` makes the helpers return `NULL`, so every comparison is false: deny.
 Other users' rows are indistinguishable from nonexistent rows (empty result / 0 rows affected).
@@ -115,9 +122,12 @@ without recursive RLS; it can only return the caller's own ID. Helpers live in t
 
 ## Testing
 
+HTTP e2e: `npm run dev:local-db` (Next.js on :3200 against the local stack with a test-only
+secret), then `npm run test:e2e`.
+
 | Command                    | What it proves                                                                                               | Target                              |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `npm run test:db`          | pgTAP: RLS/grants/policies as `anon`/`authenticated` roles with JWT claims (52 assertions)                   | local only                          |
+| `npm run test:db`          | pgTAP: RLS/grants/policies/credentials as `anon`/`authenticated` roles with JWT claims (115 assertions)      | local only                          |
 | `npm run test:integration` | App code → supabase-js → PostgREST → RLS with signed tokens, incl. forged tokens and concurrent provisioning | local only (refuses non-local URLs) |
 | `npm test`                 | Unit tests (no database)                                                                                     | none                                |
 

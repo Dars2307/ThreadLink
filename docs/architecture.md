@@ -29,7 +29,7 @@ ChatGPT (controller)                              Claude Code (execution agent)
 | Clerk               | Human authentication; canonical external identity     | Phase 1                      |
 | Next.js app         | Web UI, API routes, (later) remote MCP endpoint       | Phase 1                      |
 | Supabase Postgres   | Persistent state, RLS as second enforcement layer     | Phase 2 (users, connections) |
-| Connection registry | Per-platform connections owned by a user              | Phase 2 table; Phase 3 flows |
+| Connection registry | Per-platform connections + revocable credentials      | Phase 3                      |
 | Session bindings    | ThreadLink-owned canonical IDs for logical sessions   | Phase 4                      |
 | MCP routing         | `send_to_agent` and related tools                     | Phase 5                      |
 | Claude Code bridge  | Local process that receives tasks and returns results | Phase 6                      |
@@ -74,18 +74,32 @@ requireIdentity()                         verified Clerk session (fail closed)
 
 It takes no arguments, so callers cannot inject an identity. It is deduplicated per request.
 
-### Connections
+### Connections and client identity
 
-`lib/connections/` holds the model (`model.ts`: allowed platforms/roles/statuses, strict input
-schema that rejects ownership fields), queries (`queries.ts`) and server-only repository
-(`repository.ts`: `listMyConnections`, `createMyConnection`). Writes never send `owner_user_id`;
-the database derives it. Results are re-checked against the caller's `tlusr_` ID.
+Humans authenticate with Clerk; clients (ChatGPT integration, Claude Code bridge) authenticate
+with a revocable ThreadLink connection credential. See [connections.md](connections.md).
+
+`lib/connections/`:
+
+| Module                  | Role                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `model.ts`              | platforms/roles/statuses, strict registration input (role derived from platform) |
+| `credentials.ts`        | token generation, HMAC hashing, bearer parsing                                   |
+| `registration.ts`       | register / revoke / rotate via DB functions                                      |
+| `queries.ts`            | owner-scoped reads with non-secret credential metadata                           |
+| `authenticate.ts`       | pure connection-token verification core                                          |
+| `repository.ts`         | server-only wrappers bound to `requireThreadLinkUser()`                          |
+| `require-connection.ts` | server-only `requireConnection(request)` for client routes                       |
+
+Writes never send `owner_user_id`; the database derives it. Results are re-checked against the
+caller's `tlusr_` ID.
 
 ## Request protection
 
 1. **`proxy.ts`** (Next.js 16's replacement for `middleware.ts`) runs Clerk and **denies by
    default**: only `/`, `/sign-in*` and `/sign-up*` are public. New routes are protected
-   automatically.
+   automatically. `/api/connection/*` skips the Clerk gate because its callers present a
+   connection credential; every handler there must call `requireConnection()`.
 2. **Per-handler check**: protected pages/handlers call `getIdentity()` / `requireIdentity()` again
    (defence in depth), then perform resource authorization.
 3. **Postgres RLS** enforces ownership again at the database (Phase 2).
@@ -101,8 +115,9 @@ Supabase via third-party auth so RLS can read the Clerk user ID from `auth.jwt()
 | `lib/supabase/browser.ts` | publishable + Clerk token | enforced | browser     | client reads, if ever needed            |
 | `lib/supabase/admin.ts`   | secret                    | bypassed | server only | trusted system ops, always owner-scoped |
 
-The user-scoped server client is the normal data path. The privileged client currently has **no
-importers**; see [security.md](security.md#privileged-client-exception).
+The user-scoped server client is the normal data path. `createAnonymousSupabaseClient()` (publishable
+key, no identity) is used only to call `authenticate_connection`. The privileged client currently
+has **no importers**; see [security.md](security.md#privileged-client-exception).
 
 ## Environment
 
