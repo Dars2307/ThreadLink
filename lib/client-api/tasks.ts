@@ -77,7 +77,7 @@ export async function listInbox(
   );
 }
 
-type AgentStep = "claim_task" | "start_task";
+type AgentStep = "claim_task" | "start_task" | "renew_task_lease";
 
 async function agentStep(
   fn: AgentStep,
@@ -101,6 +101,28 @@ export const claimTask = (db: ClientDatabase, hash: string, taskId: unknown, inp
 
 export const startTask = (db: ClientDatabase, hash: string, taskId: unknown, input: unknown) =>
   agentStep("start_task", db, hash, taskId, input);
+
+/** Heartbeat: the claiming worker renews its lease (5 minutes from now). */
+export const renewTaskLease = (db: ClientDatabase, hash: string, taskId: unknown, input: unknown) =>
+  agentStep("renew_task_lease", db, hash, taskId, input);
+
+/** The controller session's own recent tasks (metadata only, newest first). */
+export async function listOriginTasks(
+  db: ClientDatabase,
+  credentialHash: string,
+  sessionId: unknown,
+  limit?: unknown,
+): Promise<TaskEnvelope[]> {
+  const id = validate(sessionIdSchema, sessionId);
+  const n = limit === null || limit === undefined ? 20 : Number(limit);
+  const parsedLimit = validate(z.number().int().min(1).max(50), n);
+  return call(
+    db,
+    "list_origin_tasks",
+    { p_token_hash: credentialHash, p_session_id: id, p_limit: parsedLimit },
+    (data) => z.array(z.unknown()).parse(data).map(parseEnvelope),
+  );
+}
 
 export async function reportProgress(
   db: ClientDatabase,

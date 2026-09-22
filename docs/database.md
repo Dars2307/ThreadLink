@@ -9,14 +9,15 @@ Clerk **third-party auth** integration.
 Schema lives in version-controlled SQL under `supabase/migrations/` (Supabase CLI conventions). The
 database is reconstructable from these files alone (`supabase db reset --local`).
 
-| File                                               | Contents                                                                                                                 |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `20260922000100_threadlink_private_foundation.sql` | `threadlink_private` schema, ID generator, verified-subject helper                                                       |
-| `20260922000200_users.sql`                         | `public.users`, `current_user_id()`, `provision_current_user()`, RLS                                                     |
-| `20260922000300_connections.sql`                   | `public.connections`, lifecycle guard, column grants, RLS                                                                |
-| `20260922000400_connection_credentials.sql`        | credentials, audit events, register/revoke/rotate/authenticate functions; tightens `connections` grants                  |
-| `20260922000500_sessions_and_pairing.sql`          | `session_bindings`, `thread_links`, session/pairing functions, revocation cascade; stores `sha256(HMAC)` for credentials |
-| `20260922000600_tasks_and_routing.sql`             | `tasks`, `messages`, `artifacts`, routing functions, link → task cancellation cascade                                    |
+| File                                               | Contents                                                                                                                             |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `20260922000100_threadlink_private_foundation.sql` | `threadlink_private` schema, ID generator, verified-subject helper                                                                   |
+| `20260922000200_users.sql`                         | `public.users`, `current_user_id()`, `provision_current_user()`, RLS                                                                 |
+| `20260922000300_connections.sql`                   | `public.connections`, lifecycle guard, column grants, RLS                                                                            |
+| `20260922000400_connection_credentials.sql`        | credentials, audit events, register/revoke/rotate/authenticate functions; tightens `connections` grants                              |
+| `20260922000500_sessions_and_pairing.sql`          | `session_bindings`, `thread_links`, session/pairing functions, revocation cascade; stores `sha256(HMAC)` for credentials             |
+| `20260922000600_tasks_and_routing.sql`             | `tasks`, `messages`, `artifacts`, routing functions, link → task cancellation cascade                                                |
+| `20260922000700_leases_oauth_and_client_ux.sql`    | task leases and retries, `oauth_clients`, `oauth_authorization_codes`, OAuth functions, owner pairing, origin task list, rate limits |
 
 Rules:
 

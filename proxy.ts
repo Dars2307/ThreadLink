@@ -10,6 +10,20 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 const isPublicRoute = createRouteMatcher(["/", "/sign-in(.*)", "/sign-up(.*)"]);
 
 /**
+ * OAuth/MCP endpoints called by MCP clients (ChatGPT) without a Clerk session:
+ * discovery metadata, dynamic registration, token exchange and the MCP
+ * endpoint (bearer connection credential). /oauth/authorize is NOT listed: the
+ * consent page requires a Clerk session.
+ */
+const isOAuthRoute = createRouteMatcher([
+  "/.well-known/oauth-protected-resource(.*)",
+  "/.well-known/oauth-authorization-server(.*)",
+  "/oauth/register",
+  "/oauth/token",
+  "/mcp",
+]);
+
+/**
  * Routes called by non-human clients (MCP, Claude Code bridge). They carry a
  * ThreadLink connection token, not a Clerk session, so the Clerk gate is
  * skipped here and EVERY handler under these prefixes must authenticate the
@@ -26,7 +40,7 @@ const isConnectionRoute = createRouteMatcher([
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
-  if (!isPublicRoute(request) && !isConnectionRoute(request)) {
+  if (!isPublicRoute(request) && !isConnectionRoute(request) && !isOAuthRoute(request)) {
     await auth.protect();
   }
 });

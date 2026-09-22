@@ -35,6 +35,8 @@ export const linkRowSchema = z.object({
   id: linkIdSchema,
   controller_session_id: sessionIdSchema,
   agent_session_id: sessionIdSchema,
+  controller_display_name: z.string().nullable().optional(),
+  agent_display_name: z.string().nullable().optional(),
   status: z.enum(LINK_STATUSES),
   revoked_reason: z.enum(LINK_REVOKED_REASONS).nullable(),
   requested_at: z.string(),
@@ -46,6 +48,8 @@ export type ThreadLinkView = {
   linkId: string;
   controllerSessionId: string;
   agentSessionId: string;
+  controllerDisplayName: string | null;
+  agentDisplayName: string | null;
   status: LinkStatus;
   revokedReason: (typeof LINK_REVOKED_REASONS)[number] | null;
   requestedAt: string;
@@ -58,6 +62,8 @@ export function toThreadLinkView(row: z.infer<typeof linkRowSchema>): ThreadLink
     linkId: row.id,
     controllerSessionId: row.controller_session_id,
     agentSessionId: row.agent_session_id,
+    controllerDisplayName: row.controller_display_name ?? null,
+    agentDisplayName: row.agent_display_name ?? null,
     status: row.status,
     revokedReason: row.revoked_reason,
     requestedAt: row.requested_at,

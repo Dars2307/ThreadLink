@@ -138,6 +138,33 @@ Full design: [routing.md](routing.md).
 
 A deliberately weakened exact-target check makes both the pgTAP and integration suites fail.
 
+## Real clients (Phase 6)
+
+Details: [mcp.md](mcp.md), [claude-code-bridge.md](claude-code-bridge.md).
+
+| Control                | Implementation                                                                                                                                                                                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MCP authentication     | OAuth 2.1 with ThreadLink as the authorization server. Clerk authenticates the human at consent; PKCE S256 is verified in Postgres; codes are single-use, last 5 minutes and are stored as sha256; the exact registered redirect URI and resource are required |
+| Access token           | A ThreadLink connection credential (`chatgpt`/`controller`), HMAC then sha256 at rest. Re-consent rotates it, and revocation gives `401` on `/mcp`                                                                                                             |
+| No privileged shortcut | `/mcp`, `/oauth/*` and `/.well-known/*` never import the privileged client (enforced by a static test)                                                                                                                                                         |
+| Clerk boundary         | `/oauth/authorize` stays behind Clerk. Only the metadata, `register`, `token` and `/mcp` endpoints bypass the Clerk gate, and each authenticates itself                                                                                                        |
+| Narrow tools           | 7 purpose-built tools, with no generic API proxy; an agent credential gets `403` on `/mcp`                                                                                                                                                                     |
+| Session binding        | No provider conversation ID is trusted or invented; `ensure_session` issues a random `sessionRef`. Losing it yields a new, unpaired session (fail closed)                                                                                                      |
+| Destination            | 0 links → `setup_required`; 1 → used; more than 1 → the user must choose. Pending links never route                                                                                                                                                            |
+| Leases                 | A 5-minute claim lease plus heartbeat; expiry requeues at most 3 attempts; a stale worker cannot complete (`409`), so results are exactly once                                                                                                                 |
+| Bridge credential      | Stored with DPAPI, Keychain or Secret Service; passed to helpers on stdin only; sent only in the `Authorization` header with redirects refused; env fallback carries a warning                                                                                 |
+| Bridge execution       | Official `claude -p` with no shell and the prompt on stdin; `plan` (read-only) permission mode by default; timeout and abort kill the process                                                                                                                  |
+| Rate limits            | Client registration 100 per hour; consent 20 per 10 minutes per user; 10 ChatGPT connections per user; 30 tasks per 10 minutes per session; 10 pending pairings per session; bridge polling backs off from 2 to 60 s                                           |
+
+Alpha limitations:
+
+- OAuth access tokens do not expire (they last until revoked or rotated), and there are no refresh
+  tokens.
+- Tasks are polled rather than pushed.
+- Anyone who holds an agent credential and the default permission mode can read, but not modify,
+  the workspace through Claude Code. Choosing another `--permission-mode` is an explicit opt-in to
+  changes.
+
 ## Privileged client exception
 
 `createPrivilegedSupabaseClient()` (`lib/supabase/admin.ts`) uses `SUPABASE_SECRET_KEY` and
@@ -180,8 +207,8 @@ connection credentials. `THREADLINK_ENCRYPTION_KEY` and `THREADLINK_HMAC_SECRET`
 
 ## Planned controls (later phases)
 
-- RLS + cross-user denial tests for every new tenant-owned table (bindings, links, tasks, messages).
-- Revocation enforcement in routing and MCP (Phases 4–5); signed requests/replay protection for bridge traffic if needed.
+- OAuth access-token expiry + refresh tokens; per-IP rate limiting at the edge (Phase 8).
+- Signed requests/replay protection for bridge traffic if needed.
 - Disable Supabase Auth sign-ups on the hosted project so no parallel Supabase users can exist.
 - Per-IP rate limiting for `/api/connection/*` at deployment (Phase 8).
 - Request freshness/replay controls for bridge and agent requests: timestamps, nonces, expiry, and

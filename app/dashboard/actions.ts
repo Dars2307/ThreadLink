@@ -6,7 +6,7 @@ import { ZodError } from "zod";
 import { registerMyConnection, revokeMyConnection } from "@/lib/connections/repository";
 import { ConnectionLimitError } from "@/lib/connections/registration";
 import { MAX_ACTIVE_CONNECTIONS } from "@/lib/connections/model";
-import { revokeMyThreadLink } from "@/lib/sessions/repository";
+import { requestMyPairing, revokeMyThreadLink } from "@/lib/sessions/repository";
 
 export type RegisterConnectionState =
   | { status: "idle" }
@@ -73,6 +73,16 @@ export async function revokeThreadLinkAction(formData: FormData): Promise<void> 
     await revokeMyThreadLink(formData.get("linkId"));
   } catch {
     // Generic by design; the list re-renders with the true state either way.
+  }
+  revalidatePath("/dashboard");
+}
+
+/** Owner-initiated pairing. Never active until the agent session approves it. */
+export async function requestPairingAction(formData: FormData): Promise<void> {
+  try {
+    await requestMyPairing(formData.get("controllerSessionId"), formData.get("agentSessionId"));
+  } catch {
+    // Generic; the dashboard re-renders with the true state.
   }
   revalidatePath("/dashboard");
 }

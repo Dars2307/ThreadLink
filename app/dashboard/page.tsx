@@ -10,6 +10,7 @@ import { listMyConnections } from "@/lib/connections/repository";
 import { RegisterConnectionForm } from "@/components/connections/register-connection-form";
 import { RevokeConnectionButton } from "@/components/connections/revoke-connection-button";
 import { RevokeLinkButton } from "@/components/connections/revoke-link-button";
+import { requestPairingAction } from "@/app/dashboard/actions";
 import type { ThreadLinkView } from "@/lib/pairing/model";
 import { maskIdentifier } from "@/lib/security/mask";
 import type { OwnerSession } from "@/lib/sessions/queries";
@@ -28,6 +29,7 @@ type AccountState =
       sessions: OwnerSession[];
       links: ThreadLinkView[];
       tasks: RecentTask[];
+      renderedAt: number;
     }
   | { ok: false };
 
@@ -40,7 +42,7 @@ async function loadAccount(): Promise<AccountState> {
       listMyThreadLinks(),
       listMyRecentTasks(),
     ]);
-    return { ok: true, user, connections, sessions, links, tasks };
+    return { ok: true, user, connections, sessions, links, tasks, renderedAt: Date.now() };
   } catch {
     // Fail closed without leaking why (auth, database or mapping failure).
     return { ok: false };
@@ -108,7 +110,7 @@ export default async function DashboardPage() {
 
       {account.ok ? (
         <div className="flex flex-col gap-3">
-          <h2 className="text-lg font-semibold">Connections</h2>
+          <h2 className="text-lg font-semibold">Connected Clients</h2>
           <RegisterConnectionForm />
           {account.connections.length === 0 ? (
             <p className="text-foreground/60 text-sm">No connections yet</p>
@@ -157,7 +159,7 @@ export default async function DashboardPage() {
         </div>
       ) : null}
 
-      {account.ok ? <SessionsSection sessions={account.sessions} /> : null}
+      {account.ok ? <SessionsSection sessions={account.sessions} now={account.renderedAt} /> : null}
       {account.ok ? <LinksSection links={account.links} sessions={account.sessions} /> : null}
       {account.ok ? <TasksSection tasks={account.tasks} sessions={account.sessions} /> : null}
 
@@ -185,7 +187,7 @@ function formatDate(value: string): string {
   );
 }
 
-function SessionsSection({ sessions }: { sessions: OwnerSession[] }) {
+function SessionsSection({ sessions, now }: { sessions: OwnerSession[]; now: number }) {
   return (
     <div className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">Sessions</h2>
@@ -202,6 +204,9 @@ function SessionsSection({ sessions }: { sessions: OwnerSession[] }) {
               <span className="text-foreground/60">
                 <span className="font-mono">{maskIdentifier(session.sessionId, 6)}</span> ·{" "}
                 {session.platform} · {session.role} · {session.status}
+                {session.role === "agent" ? (
+                  <BridgeStatus lastSeenAt={session.lastSeenAt} now={now} />
+                ) : null}
               </span>
             </li>
           ))}
@@ -212,38 +217,107 @@ function SessionsSection({ sessions }: { sessions: OwnerSession[] }) {
 }
 
 function LinksSection({ links, sessions }: { links: ThreadLinkView[]; sessions: OwnerSession[] }) {
-  const label = (id: string) => {
+  const label = (id: string, fallback: string | null) => {
     const session = sessions.find((s) => s.sessionId === id);
-    return `${session?.displayName ?? "session"} (${maskIdentifier(id, 6)})`;
+    return `${session?.displayName ?? fallback ?? "session"} (${maskIdentifier(id, 6)})`;
   };
+  const usable = (s: OwnerSession) => s.status === "active" || s.status === "idle";
+  const controllers = sessions.filter((s) => s.role === "controller" && usable(s));
+  const agents = sessions.filter((s) => s.role === "agent" && usable(s));
+  const pending = links.filter((l) => l.status === "pending");
+  const active = links.filter((l) => l.status === "active");
+  const revoked = links.filter((l) => l.status === "revoked").length;
+
+  const row = (link: ThreadLinkView) => (
+    <li
+      key={link.linkId}
+      className="flex flex-col gap-2 rounded-md border border-black/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-white/15"
+    >
+      <div className="flex flex-col gap-1">
+        <span className="font-mono">{maskIdentifier(link.linkId, 6)}</span>
+        <span className="text-foreground/60">
+          Controller: {label(link.controllerSessionId, link.controllerDisplayName)} → Agent:{" "}
+          {label(link.agentSessionId, link.agentDisplayName)}
+        </span>
+      </div>
+      <RevokeLinkButton linkId={link.linkId} />
+    </li>
+  );
+
   return (
-    <div className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold">Thread Links</h2>
-      {links.length === 0 ? (
-        <p className="text-foreground/60 text-sm">No thread links yet</p>
-      ) : (
-        <ul className="flex flex-col gap-2 text-sm">
-          {links.map((link) => (
-            <li
-              key={link.linkId}
-              className="flex flex-col gap-2 rounded-md border border-black/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-white/15"
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Pair sessions</h2>
+        {controllers.length === 0 || agents.length === 0 ? (
+          <p className="text-foreground/60 text-sm">
+            Pairing needs an active ChatGPT (controller) session and an active Claude Code (agent)
+            session. Call ensure_session from ChatGPT and start the bridge first.
+          </p>
+        ) : (
+          <form
+            action={requestPairingAction}
+            className="flex flex-col gap-3 rounded-lg border border-black/10 p-4 sm:flex-row sm:items-end dark:border-white/15"
+          >
+            <label className="flex flex-1 flex-col gap-1 text-sm">
+              <span className="text-foreground/60">Controller session</span>
+              <select
+                name="controllerSessionId"
+                className="bg-background rounded-md border border-black/15 px-3 py-2 dark:border-white/20"
+              >
+                {controllers.map((s) => (
+                  <option key={s.sessionId} value={s.sessionId}>
+                    {label(s.sessionId, null)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-1 flex-col gap-1 text-sm">
+              <span className="text-foreground/60">Agent session</span>
+              <select
+                name="agentSessionId"
+                className="bg-background rounded-md border border-black/15 px-3 py-2 dark:border-white/20"
+              >
+                {agents.map((s) => (
+                  <option key={s.sessionId} value={s.sessionId}>
+                    {label(s.sessionId, null)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="submit"
+              className="bg-foreground text-background rounded-md px-4 py-2 text-sm font-medium"
             >
-              <div className="flex flex-col gap-1">
-                <span className="font-mono">{maskIdentifier(link.linkId, 6)}</span>
-                <span className="text-foreground/60">
-                  Controller: {label(link.controllerSessionId)} → Agent:{" "}
-                  {label(link.agentSessionId)}
-                </span>
-                <span className="text-foreground/60">
-                  {link.status}
-                  {link.revokedReason ? ` · ${link.revokedReason.replaceAll("_", " ")}` : ""}
-                </span>
-              </div>
-              {link.status !== "revoked" ? <RevokeLinkButton linkId={link.linkId} /> : null}
-            </li>
-          ))}
-        </ul>
-      )}
+              Request pairing
+            </button>
+          </form>
+        )}
+        <p className="text-foreground/50 text-xs">
+          Requests stay pending until approved on the agent side with{" "}
+          <code>threadlink-bridge approve</code>.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Pending Pairings</h2>
+        {pending.length === 0 ? (
+          <p className="text-foreground/60 text-sm">No pending pairings</p>
+        ) : (
+          <ul className="flex flex-col gap-2 text-sm">{pending.map(row)}</ul>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Active Links</h2>
+        {active.length === 0 ? (
+          <p className="text-foreground/60 text-sm">No active links</p>
+        ) : (
+          <ul className="flex flex-col gap-2 text-sm">{active.map(row)}</ul>
+        )}
+        {revoked > 0 ? (
+          <p className="text-foreground/50 text-xs">{revoked} revoked link(s) kept in history.</p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -281,5 +355,21 @@ function TasksSection({ tasks, sessions }: { tasks: RecentTask[]; sessions: Owne
         </ul>
       )}
     </div>
+  );
+}
+
+/** Bridge status: agent sessions are touched on every inbox poll (throttled to 60 s). */
+function BridgeStatus({ lastSeenAt, now }: { lastSeenAt: string | null; now: number }) {
+  const online = lastSeenAt !== null && now - new Date(lastSeenAt).getTime() < 3 * 60_000;
+  const text = online
+    ? "online"
+    : lastSeenAt
+      ? "last seen " + formatDate(lastSeenAt)
+      : "never seen";
+  return (
+    <span className={online ? "text-green-700 dark:text-green-400" : "text-foreground/50"}>
+      {" "}
+      · bridge {text}
+    </span>
   );
 }

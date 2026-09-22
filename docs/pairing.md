@@ -67,6 +67,11 @@ merge conversations or copy history; it is the authorized routing relationship f
 A controller session may hold links to several agents (and vice versa); Phase 4 does not assume
 one-to-one.
 
+**Phase 6 UX:** the owner starts pairing from the dashboard (_Pair sessions_ →
+`owner_request_pairing`, Clerk-authenticated, same checks as `request_pairing`), and the exact
+agent session approves it from the bridge (`bridge … pending` / `approve <tllnk_…>`). Nothing is
+ever auto-paired or auto-approved. At most 10 pending requests per controller session.
+
 ### Lifecycle
 
 ```text

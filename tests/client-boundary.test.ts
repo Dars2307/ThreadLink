@@ -37,6 +37,9 @@ const SERVER_ONLY_MODULES = [
   "@/lib/connections/require-connection",
   "@/lib/client-api/handler",
   "@/lib/sessions/repository",
+  "@/lib/oauth/server",
+  "@/lib/oauth/authorize",
+  "@/lib/mcp/server",
 ];
 
 /** Pure modules that must still never be bundled for the browser (node:crypto, token logic). */
@@ -127,7 +130,7 @@ describe("client/server boundary", () => {
     // proxy.ts skips the Clerk gate for exactly these prefixes; each handler
     // must authenticate the connection itself.
     const routes = files.filter(({ path }) => /^app\/api\/.+\/route\.ts$/.test(path));
-    expect(routes.length).toBeGreaterThanOrEqual(17);
+    expect(routes.length).toBeGreaterThanOrEqual(18);
     for (const route of routes) {
       expect(route.path).toMatch(
         /^app\/api\/(connection|session|pairing|tasks)\/(.+\/)?route\.ts$/,
@@ -157,6 +160,40 @@ describe("client/server boundary", () => {
     );
   });
 
+  it("proxy.ts leaves only the OAuth protocol endpoints and /mcp outside Clerk", () => {
+    const proxy = readFileSync(join(ROOT, "proxy.ts"), "utf8");
+    const block = /isOAuthRoute = createRouteMatcher\(\[([^\]]*)\]\)/.exec(proxy)?.[1] ?? "";
+    const patterns = [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+    expect(patterns).toEqual(
+      [
+        "/.well-known/oauth-authorization-server(.*)",
+        "/.well-known/oauth-protected-resource(.*)",
+        "/mcp",
+        "/oauth/register",
+        "/oauth/token",
+      ].sort(),
+    );
+    // The consent page must stay behind Clerk.
+    expect(patterns).not.toContain("/oauth/authorize");
+  });
+
+  it("/mcp authenticates the bearer connection credential and requires a controller", () => {
+    const route = files.find((f) => f.path === "app/mcp/route.ts")!.source;
+    expect(route).toMatch(/requireConnectionContext\(request\)/);
+    expect(route).toMatch(/role !== "controller"/);
+    expect(route).not.toMatch(/createPrivilegedSupabaseClient|supabase\/admin/);
+  });
+
+  it("OAuth routes never use the privileged client", () => {
+    const oauth = files.filter(({ path }) =>
+      /^(app\/oauth|app\/\.well-known|lib\/oauth)\//.test(path),
+    );
+    expect(oauth.length).toBeGreaterThanOrEqual(6);
+    for (const f of oauth) {
+      expect(f.source, f.path).not.toMatch(/createPrivilegedSupabaseClient|supabase\/admin/);
+    }
+  });
+
   it("client-route code never logs the credential, its HMAC or headers", () => {
     for (const path of ["lib/client-api/handler.ts", "lib/connections/require-connection.ts"]) {
       const source = files.find((f) => f.path === path)!.source;
@@ -168,7 +205,7 @@ describe("client/server boundary", () => {
 });
 
 describe("committed files contain no real-looking connection tokens", () => {
-  const SCAN_DIRS = ["app", "components", "lib", "tests", "docs", "supabase"];
+  const SCAN_DIRS = ["app", "components", "lib", "tests", "docs", "supabase", "bridge"];
   const scanned = SCAN_DIRS.flatMap((dir) => {
     const walk = (d: string): string[] =>
       readdirSync(d).flatMap((name) => {

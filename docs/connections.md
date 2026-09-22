@@ -132,10 +132,12 @@ two; 10 leaves room for several machines without allowing unbounded creation.
 ## Alpha registration flows
 
 - **Claude Code:** dashboard → _Create connection_ → Claude Code → copy the credential once →
-  configure the bridge to send `Authorization: Bearer <credential>`.
-- **ChatGPT:** the same server path (`registerMyConnection({ platform: "chatgpt" })`) is what the
-  future MCP OAuth callback will call after Clerk sign-in. Phase 3 exposes it via the dashboard
-  only. No ChatGPT conversation IDs are assumed.
+  `node bridge/src/cli.ts login --url …` ([claude-code-bridge.md](claude-code-bridge.md)).
+- **ChatGPT (Phase 6):** created by the MCP OAuth flow ([mcp.md](mcp.md)). The token endpoint
+  issues a `chatgpt`/`controller` connection credential as the access token and records the
+  OAuth client (`connections.oauth_client_id`). Re-authorizing the same client reuses the
+  connection and rotates its credential; at most 10 live ChatGPT connections per user. No
+  ChatGPT conversation IDs are assumed.
 
 ## Verifying a credential manually
 

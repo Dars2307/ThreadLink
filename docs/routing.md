@@ -110,6 +110,20 @@ converge on one row (`ON CONFLICT`).
   that session is usable) and by the owner in the dashboard, even after the link is revoked. The
   agent no longer receives task content once the route is gone.
 
+## Leases and retries (Phase 6)
+
+- `claim_task` sets `claimed_until = now() + 5 minutes` and increments `attempt_count`. Every agent
+  step and `POST /api/tasks/{id}/heartbeat` (`renew_task_lease`) renews the lease.
+- The delivery-time sweep requeues a `claimed` or `working` task whose lease has expired (clearing
+  the claim and audited as `task.requeued`). Once `attempt_count >= max_attempts` (3), it fails the
+  task with `failure_reason = 'lease_exhausted'`.
+- The previous worker's `claimRef` no longer matches, so it cannot start, report, complete or fail
+  the task (`409`). A fresh worker claims it, which keeps results exactly once.
+- The state-machine trigger allows claimed/working → queued only for an expired lease with a
+  cleared claim. `attempt_count` never decreases, and `max_attempts` is immutable.
+- `GET /api/tasks?sessionId=…&limit=…` (`list_origin_tasks`) lists tasks sent from a controller
+  session.
+
 ## Polling model and future push
 
 Alpha delivery is polling: a bridge calls `GET /api/tasks/inbox` on an interval, then claims. The

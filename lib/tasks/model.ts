@@ -122,6 +122,10 @@ export const taskEnvelopeSchema = z.object({
   content: z.string().nullable(),
   status: z.enum(TASK_STATUSES),
   cancel_reason: z.enum(["link_revoked", "route_invalid"]).nullable(),
+  failure_reason: z.enum(["lease_exhausted"]).nullable().optional(),
+  attempt_count: z.number().int().optional(),
+  max_attempts: z.number().int().optional(),
+  claimed_until: z.string().nullable().optional(),
   created_at: z.string(),
   claimed_at: z.string().nullable(),
   started_at: z.string().nullable(),
@@ -163,6 +167,11 @@ export type TaskEnvelope = {
   content: string | null;
   status: (typeof TASK_STATUSES)[number];
   cancelReason: "link_revoked" | "route_invalid" | null;
+  failureReason: "lease_exhausted" | null;
+  attemptCount: number;
+  maxAttempts: number;
+  /** Lease expiry while claimed/working; null otherwise. */
+  claimedUntil: string | null;
   createdAt: string;
   claimedAt: string | null;
   startedAt: string | null;
@@ -187,6 +196,10 @@ export function toTaskEnvelope(row: z.infer<typeof taskEnvelopeSchema>): TaskEnv
     content: row.content,
     status: row.status,
     cancelReason: row.cancel_reason,
+    failureReason: row.failure_reason ?? null,
+    attemptCount: row.attempt_count ?? 0,
+    maxAttempts: row.max_attempts ?? 3,
+    claimedUntil: row.claimed_until ?? null,
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
     startedAt: row.started_at,

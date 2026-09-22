@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "next typegen && tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit && tsc -p bridge",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
@@ -18,10 +18,12 @@
     "db:start": "supabase start",
     "db:reset:local": "supabase db reset --local",
     "dev:local-db": "node scripts/dev-local-supabase.mjs",
-    "test:e2e": "vitest run --config vitest.e2e.config.mts"
+    "test:e2e": "vitest run --config vitest.e2e.config.mts",
+    "bridge": "node bridge/src/cli.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/supabase-js": "^2.116.0",
     "next": "16.3.5",
     "react": "19.2.8",

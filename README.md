@@ -99,4 +99,6 @@ docs/                     Architecture, security, roadmap
 - [docs/connections.md](docs/connections.md)
 - [docs/pairing.md](docs/pairing.md)
 - [docs/routing.md](docs/routing.md)
+- [docs/mcp.md](docs/mcp.md): ChatGPT MCP server and OAuth
+- [docs/claude-code-bridge.md](docs/claude-code-bridge.md): local Claude Code bridge
 - [docs/roadmap.md](docs/roadmap.md)

@@ -8,6 +8,7 @@ import { createUserSupabaseClient } from "@/lib/supabase/server";
 import {
   listSessions,
   listThreadLinks,
+  ownerRequestPairing,
   revokeThreadLinkAsOwner,
   type OwnerSession,
 } from "./queries";
@@ -34,4 +35,13 @@ export async function revokeMyThreadLink(linkId: unknown): Promise<ThreadLinkVie
 export async function listMyRecentTasks(): Promise<RecentTask[]> {
   const user = await requireThreadLinkUser();
   return listRecentTasks(createUserSupabaseClient(), user);
+}
+
+/** Opens a pending pairing between two of the signed-in user's sessions. */
+export async function requestMyPairing(
+  controllerSessionId: unknown,
+  agentSessionId: unknown,
+): Promise<ThreadLinkView> {
+  await requireThreadLinkUser();
+  return ownerRequestPairing(createUserSupabaseClient(), controllerSessionId, agentSessionId);
 }

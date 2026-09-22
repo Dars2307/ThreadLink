@@ -24,18 +24,18 @@ ChatGPT (controller)                              Claude Code (execution agent)
 
 ## Components
 
-| Component           | Responsibility                                        | Status                       |
-| ------------------- | ----------------------------------------------------- | ---------------------------- |
-| Clerk               | Human authentication; canonical external identity     | Phase 1                      |
-| Next.js app         | Web UI, API routes, (later) remote MCP endpoint       | Phase 1                      |
-| Supabase Postgres   | Persistent state, RLS as second enforcement layer     | Phase 2 (users, connections) |
-| Connection registry | Per-platform connections + revocable credentials      | Phase 3                      |
-| Session bindings    | ThreadLink-owned canonical IDs for logical sessions   | Phase 4                      |
-| ThreadLink pairing  | Approved controller-session ↔ agent-session links     | Phase 4                      |
-| Task routing        | Tasks, messages, results over active links            | Phase 5                      |
-| MCP adapter         | `send_to_agent` and related tools (ChatGPT)           | Phase 6                      |
-| Claude Code bridge  | Local process that receives tasks and returns results | Phase 6                      |
-| Vercel              | Planned first cloud deployment target                 | Phase 8                      |
+| Component           | Responsibility                                      | Status                                    |
+| ------------------- | --------------------------------------------------- | ----------------------------------------- |
+| Clerk               | Human authentication; canonical external identity   | Phase 1                                   |
+| Next.js app         | Web UI, API routes, (later) remote MCP endpoint     | Phase 1                                   |
+| Supabase Postgres   | Persistent state, RLS as second enforcement layer   | Phase 2 (users, connections)              |
+| Connection registry | Per-platform connections + revocable credentials    | Phase 3                                   |
+| Session bindings    | ThreadLink-owned canonical IDs for logical sessions | Phase 4                                   |
+| ThreadLink pairing  | Approved controller-session ↔ agent-session links   | Phase 4                                   |
+| Task routing        | Tasks, messages, results over active links          | Phase 5                                   |
+| MCP adapter         | `/mcp` + OAuth 2.1 AS; 7 narrow tools (ChatGPT)     | Phase 6 ([mcp.md](mcp.md))                |
+| Claude Code bridge  | `bridge/`: polls, leases, runs `claude -p`, reports | Phase 6 ([bridge](claude-code-bridge.md)) |
+| Vercel              | Planned first cloud deployment target               | Phase 8                                   |
 
 ## Identity model
 

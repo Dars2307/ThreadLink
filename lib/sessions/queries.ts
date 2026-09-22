@@ -107,3 +107,26 @@ export async function revokeThreadLinkAsOwner(
   }
   return toThreadLinkView(linkRowSchema.parse(data));
 }
+
+/** Owner opens a pairing from the dashboard. Starts pending; the agent session must approve. */
+export async function ownerRequestPairing(
+  db: SupabaseClient,
+  controllerSessionId: unknown,
+  agentSessionId: unknown,
+): Promise<ThreadLinkView> {
+  if (
+    !isThreadLinkId("sessionBinding", controllerSessionId) ||
+    !isThreadLinkId("sessionBinding", agentSessionId)
+  ) {
+    throw new ThreadLinkNotFoundError();
+  }
+  const { data, error } = await db.rpc("owner_request_pairing", {
+    p_controller_session_id: controllerSessionId,
+    p_agent_session_id: agentSessionId,
+  });
+  if (error) {
+    if (error.code === "P0002") throw new ThreadLinkNotFoundError();
+    throw new Error("Failed to request pairing");
+  }
+  return toThreadLinkView(linkRowSchema.parse(data));
+}
