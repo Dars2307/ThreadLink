@@ -51,9 +51,21 @@ describe("registerConnectionInputSchema", () => {
     },
   );
 
-  it("derives the Alpha role from the platform", () => {
-    expect(ALPHA_ROLE_FOR_PLATFORM).toEqual({ chatgpt: "controller", "claude-code": "agent" });
+  it("derives the role from the platform (only Claude Code bridges are agents)", () => {
+    expect(ALPHA_ROLE_FOR_PLATFORM).toEqual({
+      chatgpt: "controller",
+      "claude-desktop": "controller",
+      "claude-code": "agent",
+      "generic-mcp": "controller",
+    });
   });
+
+  it.each(["claude-desktop", "generic-mcp"])(
+    "does not let a human manually register %s (OAuth classification only)",
+    (platform) => {
+      expect(registerConnectionInputSchema.safeParse({ platform }).success).toBe(false);
+    },
+  );
 
   it.each([
     "owner_user_id",

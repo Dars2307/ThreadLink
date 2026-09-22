@@ -5,7 +5,7 @@ import type { ThreadLinkUser } from "@/lib/auth/provision";
 import { OwnershipViolationError } from "@/lib/connections/model";
 import { idPattern } from "@/lib/ids";
 
-import { PRIORITY_PATTERN, TASK_STATUSES } from "./model";
+import { FAILURE_REASONS, PRIORITY_PATTERN, TASK_STATUSES, type FailureReason } from "./model";
 
 /**
  * Dashboard read of recent task history. USER-SCOPED client (RLS) and an
@@ -23,6 +23,7 @@ const recentTaskSchema = z.object({
   completed_at: z.string().nullable(),
   failed_at: z.string().nullable(),
   cancelled_at: z.string().nullable(),
+  failure_reason: z.enum(FAILURE_REASONS).nullable(),
 });
 
 export type RecentTask = {
@@ -34,6 +35,7 @@ export type RecentTask = {
   title: string;
   createdAt: string;
   finishedAt: string | null;
+  failureReason: FailureReason | null;
 };
 
 export async function listRecentTasks(
@@ -44,7 +46,7 @@ export async function listRecentTasks(
   const { data, error } = await db
     .from("tasks")
     .select(
-      "id, owner_user_id, origin_session_id, target_session_id, status, priority, title, created_at, completed_at, failed_at, cancelled_at",
+      "id, owner_user_id, origin_session_id, target_session_id, status, priority, title, created_at, completed_at, failed_at, cancelled_at, failure_reason",
     )
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -60,5 +62,6 @@ export async function listRecentTasks(
     title: row.title,
     createdAt: row.created_at,
     finishedAt: row.completed_at ?? row.failed_at ?? row.cancelled_at,
+    failureReason: row.failure_reason,
   }));
 }

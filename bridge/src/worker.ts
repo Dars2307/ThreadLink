@@ -113,8 +113,10 @@ export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
       log(`completed ${task.taskId}`);
       return "completed";
     }
-    await api.fail(task.taskId, sessionId, claimRef, truncateBytes(result.error, MAX_ERROR_BYTES));
-    log(`failed ${task.taskId}`);
+    const error = truncateBytes(result.error, MAX_ERROR_BYTES);
+    if (result.reason) await api.fail(task.taskId, sessionId, claimRef, error, result.reason);
+    else await api.fail(task.taskId, sessionId, claimRef, error);
+    log(`failed ${task.taskId}${result.reason ? ` (${result.reason})` : ""}`);
     return "failed";
   } catch (error) {
     if (isLeaseLoss(error)) return "lost";

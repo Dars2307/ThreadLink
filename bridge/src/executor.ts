@@ -1,24 +1,40 @@
 import { spawn } from "node:child_process";
+import { mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Artifact } from "./api.ts";
+import type { AgentsLister } from "./claude-sessions.ts";
 
 /**
- * How the bridge hands a task to Claude Code.
+ * How the bridge hands a task to Claude Code (official headless print mode only;
+ * no UI scraping, no keystroke injection):
  *
- * ThreadLink does NOT inject prompts into an existing interactive Claude Code
- * session (no supported mechanism exists). Instead each task runs as a
- * controlled, headless Claude Code worker process using the official print
- * mode: `claude -p --output-format json --permission-mode <mode>`, in the
- * bridge's workspace, with the prompt on stdin (no shell, no argv injection).
+ *   fresh     claude -p --output-format json --permission-mode <m>
+ *   resume    claude -p --resume <native-session-id> ...   (attached existing session)
+ *   continue  claude -p --continue ...                      (most recent session in the workspace)
  *
- * Default permission mode is `plan` (read-only analysis). Allowing edits or
- * commands is an explicit opt-in (`--permission-mode acceptEdits`, etc.).
+ * The prompt always goes on stdin; the process is spawned without a shell in the
+ * workspace directory. Verified on Claude Code 2.1.x: `-p --resume <id>` keeps the
+ * same session ID (unless --fork-session), retains prior context and appends the
+ * turn to that session's transcript.
+ *
+ * Concurrency: before resuming, the bridge asks `claude agents --json` whether the
+ * session is running anywhere (terminal, Claude desktop, background, another -p).
+ * If it is — or if that cannot be determined — the task fails with `session_busy`.
+ * It never silently falls back to a new session. A per-session lock file also
+ * serialises bridge processes on the same machine.
+ *
+ * An already-open interactive UI does NOT live-refresh with turns added this way;
+ * ThreadLink therefore refuses to write while the session is open.
  */
 
 export type TaskInput = { taskId: string; title: string; content: string; priority: string };
 
+export type FailureReason = "session_busy" | "native_session_unavailable";
+
 export type ExecutionResult =
-  { ok: true; result: string; artifacts: Artifact[] } | { ok: false; error: string };
+  | { ok: true; result: string; artifacts: Artifact[] }
+  | { ok: false; error: string; reason?: FailureReason };
 
 export type Executor = {
   readonly name: string;
@@ -35,7 +51,25 @@ export const PERMISSION_MODES = [
 ] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-export function buildPrompt(task: TaskInput): string {
+export type NativeSession =
+  { mode: "fresh" } | { mode: "continue" } | { mode: "resume"; sessionId: string };
+
+const NATIVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function buildPrompt(task: TaskInput, native: NativeSession["mode"] = "fresh"): string {
+  if (native !== "fresh") {
+    return [
+      `[ThreadLink] A message from the user's linked ChatGPT conversation (task ${task.taskId}, priority ${task.priority}).`,
+      `Title: ${task.title}`,
+      "",
+      "<task>",
+      task.content,
+      "</task>",
+      "",
+      "Continue in this conversation's context. Do the task within your permissions, then reply with a",
+      "concise answer; your reply is returned to ChatGPT through ThreadLink.",
+    ].join("\n");
+  }
   return [
     "You are running as a ThreadLink execution agent (Claude Code, headless, non-interactive).",
     "The task below was sent by the workspace owner from their ThreadLink controller session.",
@@ -61,6 +95,11 @@ export type ClaudeExecutorOptions = {
   model?: string;
   timeoutMs?: number;
   spawnFn?: SpawnFn;
+  native?: NativeSession;
+  /** Required for resume/continue: official running-session listing. */
+  listRunning?: AgentsLister;
+  /** Directory for per-session lock files (bridge config dir). */
+  lockDir?: string;
 };
 
 const MAX_CAPTURE = 1024 * 1024;
@@ -77,9 +116,59 @@ export function parseClaudeOutput(stdout: string): ClaudeOutput | null {
   }
 }
 
+/** Claude Code's own refusal when the session is running elsewhere (verified wording). */
+const BUSY_PATTERNS = [
+  /is running as a background session/i,
+  /already running/i,
+  /is currently in use/i,
+];
+const MISSING_PATTERNS = [/No conversation found/i];
+
+export const BUSY_MESSAGE =
+  "The attached Claude Code session is open or running elsewhere (terminal, Claude desktop or a " +
+  "background agent). ThreadLink will not write into a session that is open. Close or stop that " +
+  "session, then send the task again.";
+
+/** Exclusive per-session lock; stale locks (dead pid) are reclaimed. */
+export function acquireSessionLock(dir: string, sessionId: string): (() => void) | null {
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${sessionId}.lock`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(file, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      return () => rmSync(file, { force: true });
+    } catch {
+      let pid = NaN;
+      try {
+        pid = Number(readFileSync(file, "utf8").trim());
+      } catch {
+        /* vanished */
+      }
+      let alive = false;
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch {
+          alive = false;
+        }
+      }
+      if (alive) return null;
+      rmSync(file, { force: true });
+    }
+  }
+  return null;
+}
+
 export class ClaudeCodeExecutor implements Executor {
   readonly name = "claude-code";
-  #options: Required<Omit<ClaudeExecutorOptions, "model">> & { model?: string };
+  #options: Required<Omit<ClaudeExecutorOptions, "model" | "listRunning" | "lockDir">> & {
+    model?: string;
+    listRunning?: AgentsLister;
+    lockDir?: string;
+  };
 
   constructor(options: ClaudeExecutorOptions) {
     this.#options = {
@@ -87,24 +176,76 @@ export class ClaudeCodeExecutor implements Executor {
       permissionMode: "plan",
       timeoutMs: 20 * 60_000,
       spawnFn: spawn,
+      native: { mode: "fresh" },
       ...options,
     };
+    const native = this.#options.native;
+    if (native.mode === "resume" && !NATIVE_ID.test(native.sessionId)) {
+      throw new Error("Invalid native Claude Code session ID.");
+    }
+  }
+
+  get native(): NativeSession {
+    return this.#options.native;
   }
 
   args(): string[] {
-    const args = [
-      "-p",
-      "--output-format",
-      "json",
-      "--permission-mode",
-      this.#options.permissionMode,
-    ];
+    const args = ["-p"];
+    const native = this.#options.native;
+    if (native.mode === "resume") args.push("--resume", native.sessionId);
+    if (native.mode === "continue") args.push("--continue");
+    args.push("--output-format", "json", "--permission-mode", this.#options.permissionMode);
     if (this.#options.model) args.push("--model", this.#options.model);
     return args;
   }
 
-  execute(task: TaskInput, signal: AbortSignal): Promise<ExecutionResult> {
-    const { command, cwd, timeoutMs, spawnFn } = this.#options;
+  /** null = free; otherwise a failure result explaining why we will not run. */
+  async #busyCheck(): Promise<ExecutionResult | null> {
+    const native = this.#options.native;
+    if (native.mode !== "resume") return null;
+    if (!this.#options.listRunning) {
+      return { ok: false, reason: "session_busy", error: BUSY_MESSAGE };
+    }
+    try {
+      const running = await this.#options.listRunning();
+      if (running.some((r) => r.sessionId === native.sessionId)) {
+        return { ok: false, reason: "session_busy", error: BUSY_MESSAGE };
+      }
+    } catch {
+      // Fail closed: if we cannot tell whether it is open, do not touch it.
+      return {
+        ok: false,
+        reason: "session_busy",
+        error:
+          "Could not confirm the attached Claude Code session is closed (claude agents failed).",
+      };
+    }
+    return null;
+  }
+
+  async execute(task: TaskInput, signal: AbortSignal): Promise<ExecutionResult> {
+    const native = this.#options.native;
+    let release: (() => void) | null = null;
+    if (native.mode === "resume") {
+      if (this.#options.lockDir) {
+        release = acquireSessionLock(join(this.#options.lockDir, "locks"), native.sessionId);
+        if (!release) return { ok: false, reason: "session_busy", error: BUSY_MESSAGE };
+      }
+      const busy = await this.#busyCheck();
+      if (busy) {
+        release?.();
+        return busy;
+      }
+    }
+    try {
+      return await this.#run(task, signal);
+    } finally {
+      release?.();
+    }
+  }
+
+  #run(task: TaskInput, signal: AbortSignal): Promise<ExecutionResult> {
+    const { command, cwd, timeoutMs, spawnFn, native } = this.#options;
     return new Promise((resolve) => {
       let settled = false;
       const done = (value: ExecutionResult) => {
@@ -169,6 +310,20 @@ export class ClaudeCodeExecutor implements Executor {
         const parsed = parseClaudeOutput(stdout);
         if (!parsed || typeof parsed.result !== "string") {
           const tail = stderr.trim().slice(-500);
+          if (native.mode !== "fresh" && BUSY_PATTERNS.some((p) => p.test(stderr))) {
+            done({ ok: false, reason: "session_busy", error: BUSY_MESSAGE });
+            return;
+          }
+          if (native.mode === "resume" && MISSING_PATTERNS.some((p) => p.test(stderr))) {
+            done({
+              ok: false,
+              reason: "native_session_unavailable",
+              error:
+                "The attached Claude Code session no longer exists on this machine. Re-run " +
+                "`threadlink-bridge setup` to attach a session. (ThreadLink did not start a new one.)",
+            });
+            return;
+          }
           done({
             ok: false,
             error: `Claude Code exited with code ${code ?? "?"}${tail ? `: ${tail}` : ""}`,
@@ -182,14 +337,25 @@ export class ClaudeCodeExecutor implements Executor {
           });
           return;
         }
-        const artifacts: Artifact[] =
-          typeof parsed.session_id === "string"
-            ? [{ type: "other", reference: `claude-code-session:${parsed.session_id}` }]
-            : [];
+        const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
+        if (native.mode === "resume" && sessionId !== native.sessionId) {
+          // Never report a different (forked/new) session as the attached one.
+          done({
+            ok: false,
+            reason: "native_session_unavailable",
+            error:
+              "Claude Code answered from a different session than the attached one; the result was " +
+              "discarded. Re-run `threadlink-bridge setup`.",
+          });
+          return;
+        }
+        const artifacts: Artifact[] = sessionId
+          ? [{ type: "other", reference: `claude-code-session:${sessionId}` }]
+          : [];
         done({ ok: true, result: parsed.result, artifacts });
       });
 
-      child.stdin?.end(buildPrompt(task));
+      child.stdin?.end(buildPrompt(task, native.mode));
     });
   }
 }

@@ -7,6 +7,7 @@ import {
   ensureSession,
   getTaskResultTool,
   getTaskStatus,
+  linkToClaude,
   listLinks,
   listRecentTasks,
   sendToAgent,
@@ -73,13 +74,29 @@ export function buildThreadLinkMcpServer(ctx: McpContext): McpServer {
   );
 
   server.registerTool(
+    "link_to_claude",
+    {
+      title: "Link to Claude Code",
+      description:
+        "Connect this conversation to one of the user's Claude Code sessions (one-time setup). " +
+        "Call without agentSessionId to list sessions, ask the user to pick one, then call again " +
+        "with agentSessionId. The user approves the link on their computer; nothing is auto-linked.",
+      inputSchema: toolInputs.link_to_claude,
+      annotations: { openWorldHint: false, destructiveHint: false, idempotentHint: true },
+    },
+    (input) => run(() => linkToClaude(ctx, input)),
+  );
+
+  server.registerTool(
     "send_to_agent",
     {
       title: "Send to agent",
       description:
-        "Send a task to the Claude Code agent linked to this conversation. If exactly one agent is " +
-        "linked it is used automatically; with several, you must pass linkId. Returns a taskId " +
-        "immediately; the agent works asynchronously.",
+        "Send this to Claude: queue a task for the Claude Code session linked to this conversation " +
+        "(use when the user says e.g. 'send this to Claude'). If exactly one Claude session is linked " +
+        "it is used automatically; with several, pass linkId; with none, use link_to_claude first. " +
+        "Returns a taskId immediately; Claude works asynchronously, so check get_task_status / " +
+        "get_task_result for the answer.",
       inputSchema: toolInputs.send_to_agent,
       annotations: { openWorldHint: false, destructiveHint: false },
     },

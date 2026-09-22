@@ -47,8 +47,39 @@ export const sessionRowSchema = z.object({
   last_seen_at: z.string().nullable(),
   retired_at: z.string().nullable(),
   revoked_at: z.string().nullable(),
+  native_provider_session_id: z.string().nullable().optional(),
+  native_session_mode: z.enum(["fresh", "resume", "continue"]).optional(),
+  workspace_path: z.string().nullable().optional(),
+  native_attached_at: z.string().nullable().optional(),
   created: z.boolean().optional(),
 });
+
+export const NATIVE_SESSION_MODES = ["fresh", "resume", "continue"] as const;
+export type NativeSessionMode = (typeof NATIVE_SESSION_MODES)[number];
+/** Claude Code session IDs are lowercase UUIDs. */
+export const NATIVE_SESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Agent-only: which native provider session this tlses_ resumes (metadata, never identity). */
+export const setNativeSessionInputSchema = z
+  .object({
+    sessionId: sessionIdSchema,
+    mode: z.enum(NATIVE_SESSION_MODES),
+    nativeSessionId: z.string().regex(NATIVE_SESSION_ID_PATTERN).nullable().optional(),
+    workspacePath: z
+      .string()
+      .min(1)
+      .max(1024)
+      .refine(
+        (path) => ![...path].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127),
+        "no control characters",
+      )
+      .optional(),
+  })
+  .strict()
+  .refine((v) => (v.mode === "resume") === Boolean(v.nativeSessionId), {
+    message: "resume mode requires nativeSessionId (and only resume carries one)",
+  });
 
 /** Safe client-facing view (no owner internals). */
 export type ClientSession = {
@@ -58,6 +89,8 @@ export type ClientSession = {
   role: (typeof CONNECTION_ROLES)[number];
   displayName: string | null;
   status: SessionStatus;
+  /** fresh | resume | continue. The native ID and path are not echoed back to clients. */
+  nativeSessionMode: NativeSessionMode;
 };
 
 export function toClientSession(row: z.infer<typeof sessionRowSchema>): ClientSession {
@@ -68,5 +101,6 @@ export function toClientSession(row: z.infer<typeof sessionRowSchema>): ClientSe
     role: row.role,
     displayName: row.display_name,
     status: row.status,
+    nativeSessionMode: row.native_session_mode ?? "fresh",
   };
 }

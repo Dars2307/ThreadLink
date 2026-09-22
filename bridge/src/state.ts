@@ -28,10 +28,17 @@ export function defaultConfigDir(
 
 export type BridgeConfig = { baseUrl?: string };
 
+/** Which native Claude Code session this workspace's tlses_ resumes (local copy). */
+export type NativeAttachment =
+  | { mode: "fresh"; attachedAt: string }
+  | { mode: "continue"; attachedAt: string }
+  | { mode: "resume"; sessionId: string; title: string | null; attachedAt: string };
+
 export type WorkspaceState = {
   workspace: string;
   localBindingRef: string;
   sessionId?: string;
+  native?: NativeAttachment;
 };
 
 async function readJson<T>(file: string): Promise<T | null> {

@@ -40,6 +40,7 @@ const SERVER_ONLY_MODULES = [
   "@/lib/oauth/server",
   "@/lib/oauth/authorize",
   "@/lib/mcp/server",
+  "@/lib/device/server",
 ];
 
 /** Pure modules that must still never be bundled for the browser (node:crypto, token logic). */
@@ -171,6 +172,8 @@ describe("client/server boundary", () => {
         "/mcp",
         "/oauth/register",
         "/oauth/token",
+        "/device/code",
+        "/device/token",
       ].sort(),
     );
     // The consent page must stay behind Clerk.
@@ -186,7 +189,9 @@ describe("client/server boundary", () => {
 
   it("OAuth routes never use the privileged client", () => {
     const oauth = files.filter(({ path }) =>
-      /^(app\/oauth|app\/\.well-known|lib\/oauth)\//.test(path),
+      /^(app\/oauth|app\/\.well-known|lib\/oauth|app\/device|lib\/device|app\/connect)\//.test(
+        path,
+      ),
     );
     expect(oauth.length).toBeGreaterThanOrEqual(6);
     for (const f of oauth) {

@@ -1,57 +1,76 @@
 # ThreadLink Claude Code Bridge
 
 `bridge/` is a small, dependency-free TypeScript CLI that runs on your machine. It holds a
-`claude-code` (agent) connection credential, polls ThreadLink for tasks routed to this workspace,
-and runs each one with official **headless Claude Code** (`claude -p`). It then reports progress
-and the result back.
+`claude-code` (agent) connection credential and polls ThreadLink for tasks routed to this
+workspace. It delivers each task through official **headless Claude Code** (`claude -p`), then
+reports progress and the result back.
 
-It does **not** inject input into an existing interactive Claude Code session, and it does not
-scrape or drive any UI.
+By default the task **resumes the Claude Code session you attached** (`claude -p --resume <id>`),
+so it continues that conversation's context. Otherwise it runs in a fresh session.
+
+It never injects keystrokes into, or scrapes, an open terminal or Claude desktop window. While the
+attached session is open elsewhere, tasks fail with a clear `session_busy` status rather than
+writing into it (see [existing-claude-sessions.md](existing-claude-sessions.md)).
 
 It requires Node 22.18 or later, which runs the `.ts` sources directly. Claude Code must be on
 `PATH` for the `claude` executor.
 
-## Setup
+## Setup (one command)
 
-1. In the dashboard, register a **Claude Code** connection and copy the credential (it is shown
-   once).
-2. Log in:
+Install the command once from the ThreadLink repo:
 
-   ```bash
-   node bridge/src/cli.ts login --url https://<your-threadlink>
-   ```
+```bash
+npm link ./bridge
+```
 
-   Paste the credential when prompted; input is hidden. The bridge then:
-   - checks that the credential is an **agent** connection;
-   - stores it in the OS credential store (see [Credential storage](#credential-storage));
-   - saves the URL in the bridge config directory.
+Or run `node bridge/src/cli.ts` instead of `threadlink-bridge`. Then, in your project folder:
 
-3. From the workspace directory, run:
+```bash
+threadlink-bridge setup --url https://<your-threadlink>
+```
 
-   ```bash
-   node bridge/src/cli.ts status
-   ```
+The guided setup:
 
-   This registers (or reuses) the workspace's session and prints its `tlses_` ID.
+1. **Signs in through your browser** (device authorization).
+   - It prints a code like `BCDF-GHJK` and opens `/connect`.
+   - You sign in with Clerk and approve the code.
+   - The bridge then receives a new Claude Code (agent) credential, confirms which account approved
+     it (masked email), and stores it in the OS credential store.
+   - Nothing is copied by hand.
+2. **Registers or reuses** this workspace's ThreadLink session.
+3. **Lists your existing Claude Code sessions** for this folder (title, last used, masked ID,
+   "open now"). You pick one, and future tasks resume it. You can also choose "fresh session per
+   task". Details: [existing-claude-sessions.md](existing-claude-sessions.md).
+4. **Confirms the ChatGPT link.**
+   - In ChatGPT, say _"Link this chat to Claude Code"_. This uses the `link_to_claude` MCP tool.
+     Alternatively, click **Link** in the dashboard.
+   - The waiting setup shows the request, and you confirm it with `y`. Nothing is ever
+     auto-linked.
+5. Reports **Ready** and offers to start delivering tasks.
 
-## Pairing (never automatic)
+For non-interactive use:
 
-1. In the dashboard, under **Pair sessions**, choose the ChatGPT session and this workspace's
-   Claude Code session, then click **Request pairing**.
-2. On the machine, list the pending requests:
+```bash
+threadlink-bridge setup --url … --session <id|fresh> --yes
+```
 
-   ```bash
-   node bridge/src/cli.ts pending
-   ```
+Everyday commands:
 
-3. Approve the request:
+- `threadlink-bridge run`: deliver tasks.
+- `threadlink-bridge attach`: change the Claude session.
+- `threadlink-bridge sessions`: list sessions.
 
-   ```bash
-   node bridge/src/cli.ts approve tllnk_…
-   ```
+## Low-level commands (debugging)
 
-Only the exact agent session can approve, so the owner starts the pairing and the agent confirms
-it.
+| Command                         | Purpose                                                                                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `login [--paste]`               | Browser sign-in; `--paste` accepts a credential created in the dashboard's Advanced panel |
+| `status`                        | Connection, session, attachment and links                                                 |
+| `pending` / `approve <tllnk_…>` | Pairing requests and explicit approval                                                    |
+| `logout`                        | Remove the stored credential (revoke it in the dashboard to disable it everywhere)        |
+
+Only the exact agent session can approve a link, so the owner (or the ChatGPT conversation)
+requests it and the agent confirms it.
 
 ## Running
 
@@ -80,11 +99,18 @@ node bridge/src/cli.ts run --executor echo
 | `--permission-mode` | `plan`           | Claude Code permission mode. `plan` is read-only; anything else lets remote tasks change your files |
 | `--model`           | (Claude default) | Passed as `--model`                                                                                 |
 
-**Execution** runs `claude -p --output-format json --permission-mode <mode> [--model m]` with no
-shell. The task goes on stdin, wrapped in `<task>` tags with a note that it came from ThreadLink.
-It has a 20-minute timeout, and the process is killed when the task is aborted. The result text
-becomes the task result, and the Claude Code session ID is recorded as an artifact reference
-(`claude-code-session:<id>`).
+**Execution** runs `claude -p [--resume <attached-id> | --continue] --output-format json
+--permission-mode <mode> [--model m]` with no shell, in the workspace.
+
+- The task goes on stdin, wrapped in `<task>` tags with a note that it came from ThreadLink.
+- It has a 20-minute timeout, and the process is killed when the task is aborted.
+- The result text becomes the task result, and the Claude Code session ID is recorded as an
+  artifact reference (`claude-code-session:<id>`).
+
+When a session is attached, the bridge refuses (`session_busy`) if that session is running
+anywhere (`claude agents --json`) or another bridge process holds its lock. If the session no
+longer exists, the task fails with `native_session_unavailable`. It never falls back to a new
+session.
 
 ## Worker loop, leases and retries
 

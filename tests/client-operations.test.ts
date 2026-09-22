@@ -132,6 +132,7 @@ describe("client operations", () => {
         role: "agent",
         displayName: "repo",
         status: "active",
+        nativeSessionMode: "fresh",
       },
     });
   });
@@ -140,8 +141,31 @@ describe("client operations", () => {
     const { db } = fakeDb({ data: sessionRow, error: null });
     const session = await getSession(db, HASH, S1);
     expect(Object.keys(session).sort()).toEqual(
-      ["connectionId", "displayName", "platform", "role", "sessionId", "status"].sort(),
+      [
+        "connectionId",
+        "displayName",
+        "nativeSessionMode",
+        "platform",
+        "role",
+        "sessionId",
+        "status",
+      ].sort(),
     );
+  });
+
+  it("the session view never echoes a native session ID or workspace path", async () => {
+    const { db } = fakeDb({
+      data: {
+        ...sessionRow,
+        native_session_mode: "resume",
+        native_provider_session_id: "04158991-0630-4b8b-b461-58c86ee35453",
+        workspace_path: "C:/work/repo",
+      },
+      error: null,
+    });
+    const text = JSON.stringify(await getSession(db, HASH, S1));
+    expect(text).toContain('"nativeSessionMode":"resume"');
+    expect(text).not.toMatch(/04158991|C:\/work/);
   });
 
   it("invalid input never reaches the database", async () => {

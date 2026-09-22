@@ -5,6 +5,7 @@ import { ClientOperationError, type ClientDatabase } from "@/lib/client-api/oper
 import {
   describeError,
   ensureSession,
+  linkToClaude,
   resolveLink,
   sendToAgent,
   toolInputs,
@@ -153,6 +154,55 @@ describe("MCP tools", () => {
       status: "choose_link",
     });
     expect(rpc.mock.calls.map((c) => c[0])).not.toContain("create_task");
+  });
+
+  it("link_to_claude lists the owner's Claude sessions without creating anything", async () => {
+    const { ctx, rpc } = ctxWith({
+      list_agent_sessions: [
+        {
+          id: G,
+          display_name: "Claude Code · ThreadLink",
+          workspace_name: "ThreadLink",
+          native_session_mode: "resume",
+          last_seen_at: null,
+          link_status: null,
+        },
+      ],
+    });
+    const result = await linkToClaude(ctx, { sessionId: S });
+    expect(result).toMatchObject({
+      status: "choose_session",
+      options: [{ agentSessionId: G, workspace: "ThreadLink", resumesExistingClaudeSession: true }],
+    });
+    expect(rpc.mock.calls.map((c) => c[0])).toEqual(["list_agent_sessions"]);
+  });
+
+  it("link_to_claude requests (never approves) a link to the chosen session", async () => {
+    const { ctx, rpc } = ctxWith({
+      list_agent_sessions: [
+        {
+          id: G,
+          display_name: null,
+          workspace_name: null,
+          native_session_mode: "fresh",
+          last_seen_at: null,
+          link_status: null,
+        },
+      ],
+      request_pairing: linkRow(link(L1, "pending")),
+    });
+    expect(await linkToClaude(ctx, { sessionId: S, agentSessionId: G })).toMatchObject({
+      status: "awaiting_approval",
+    });
+    expect(rpc.mock.calls.map((c) => c[0])).toEqual(["list_agent_sessions", "request_pairing"]);
+    expect(rpc.mock.calls.map((c) => c[0])).not.toContain("approve_pairing");
+  });
+
+  it("link_to_claude refuses sessions that are not offered to this account", async () => {
+    const { ctx, rpc } = ctxWith({ list_agent_sessions: [] });
+    await expect(linkToClaude(ctx, { sessionId: S, agentSessionId: G })).rejects.toThrow();
+    expect(rpc.mock.calls.map((c) => c[0])).not.toContain("request_pairing");
+    expect(await linkToClaude(ctx, { sessionId: S })).toMatchObject({ status: "setup_required" });
   });
 
   it("errors are generic and never leak database details", () => {

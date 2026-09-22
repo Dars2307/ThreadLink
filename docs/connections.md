@@ -129,6 +129,15 @@ Maximum **10 active** (`active`/`idle`) connections per user, enforced in `regis
 under a per-user advisory lock (race-safe). Revoked connections do not count. Alpha needs at most
 two; 10 leaves room for several machines without allowing unbounded creation.
 
+## Platforms
+
+| Platform         | Role       | Created by                                                                                  |
+| ---------------- | ---------- | ------------------------------------------------------------------------------------------- |
+| `chatgpt`        | controller | OAuth (redirect on chatgpt.com) or dashboard Advanced                                       |
+| `claude-desktop` | controller | OAuth (redirect on claude.ai / claude.com)                                                  |
+| `generic-mcp`    | controller | OAuth (any other redirect)                                                                  |
+| `claude-code`    | agent      | Bridge device sign-in (`/device/code` → `/connect` → `/device/token`) or dashboard Advanced |
+
 ## Alpha registration flows
 
 - **Claude Code:** dashboard → _Create connection_ → Claude Code → copy the credential once →

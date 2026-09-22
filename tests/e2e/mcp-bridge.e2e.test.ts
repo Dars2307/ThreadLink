@@ -248,6 +248,7 @@ describe("MCP tools -> bridge -> result", () => {
         "ensure_session",
         "get_task_result",
         "get_task_status",
+        "link_to_claude",
         "list_links",
         "list_recent_tasks",
         "send_to_agent",

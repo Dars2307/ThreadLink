@@ -10,7 +10,7 @@ import {
 import { idPattern, isThreadLinkId } from "@/lib/ids";
 import { linkRowSchema, toThreadLinkView, type ThreadLinkView } from "@/lib/pairing/model";
 
-import { SESSION_STATUSES } from "./model";
+import { NATIVE_SESSION_MODES, SESSION_STATUSES } from "./model";
 
 /**
  * Human (dashboard) reads of sessions and links. USER-SCOPED client only:
@@ -25,6 +25,10 @@ const ownerSessionSchema = z.object({
   status: z.enum(SESSION_STATUSES),
   created_at: z.string(),
   last_seen_at: z.string().nullable(),
+  native_session_mode: z.enum(NATIVE_SESSION_MODES),
+  native_provider_session_id: z.string().nullable(),
+  workspace_path: z.string().nullable(),
+  native_attached_at: z.string().nullable(),
   connections: z.object({
     platform: z.enum(CONNECTION_PLATFORMS),
     role: z.enum(CONNECTION_ROLES),
@@ -40,6 +44,11 @@ export type OwnerSession = {
   status: (typeof SESSION_STATUSES)[number];
   createdAt: string;
   lastSeenAt: string | null;
+  nativeSessionMode: (typeof NATIVE_SESSION_MODES)[number];
+  /** Adapter metadata only (render masked). */
+  nativeSessionId: string | null;
+  workspacePath: string | null;
+  nativeAttachedAt: string | null;
 };
 
 export async function listSessions(
@@ -49,7 +58,7 @@ export async function listSessions(
   const { data, error } = await db
     .from("session_bindings")
     .select(
-      "id, owner_user_id, connection_id, display_name, status, created_at, last_seen_at, connections(platform, role)",
+      "id, owner_user_id, connection_id, display_name, status, created_at, last_seen_at, native_session_mode, native_provider_session_id, workspace_path, native_attached_at, connections(platform, role)",
     )
     .order("created_at", { ascending: false })
     .limit(200);
@@ -65,6 +74,10 @@ export async function listSessions(
     status: row.status,
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at,
+    nativeSessionMode: row.native_session_mode,
+    nativeSessionId: row.native_provider_session_id,
+    workspacePath: row.workspace_path,
+    nativeAttachedAt: row.native_attached_at,
   }));
 }
 

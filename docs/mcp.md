@@ -5,15 +5,16 @@ ChatGPT, or any MCP client that supports OAuth, connects to it as a **controller
 
 ## Tools (narrow by design)
 
-| Tool                | Purpose                                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------------------------- |
-| `threadlink_status` | Who is connected (connection ID, platform, role) plus usage guidance                                    |
-| `ensure_session`    | Create or reuse this conversation's ThreadLink session; returns `sessionId` (`tlses_`) and `sessionRef` |
-| `list_links`        | Links of a session (pending, active or revoked) with the agent's display name                           |
-| `send_to_agent`     | Queue a task to the linked Claude Code session                                                          |
-| `get_task_status`   | Status of a task this session sent                                                                      |
-| `get_task_result`   | Result, error, progress and artifacts of a task this session sent                                       |
-| `list_recent_tasks` | Recent tasks sent from this session                                                                     |
+| Tool                | Purpose                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `threadlink_status` | Who is connected (connection ID, platform, role) plus usage guidance                                             |
+| `ensure_session`    | Create or reuse this conversation's ThreadLink session; returns `sessionId` (`tlses_`) and `sessionRef`          |
+| `list_links`        | Links of a session (pending, active or revoked) with the agent's display name                                    |
+| `link_to_claude`    | One-time: list the owner's Claude Code sessions, then request a link to the chosen one (the bridge must approve) |
+| `send_to_agent`     | Queue a task to the linked Claude Code session                                                                   |
+| `get_task_status`   | Status of a task this session sent                                                                               |
+| `get_task_result`   | Result, error, progress and artifacts of a task this session sent                                                |
+| `list_recent_tasks` | Recent tasks sent from this session                                                                              |
 
 There is **no** generic "call any API" tool. Every tool takes an explicit `sessionId`, which the
 database checks belongs to the calling connection. Agent-side operations (claim, complete) are not
@@ -84,6 +85,35 @@ are never exposed to ChatGPT.
 
 - There are no refresh tokens, and access tokens do not expire until they are revoked or rotated.
 - There is one scope, `threadlink`.
+
+## Which platform is this client?
+
+OAuth clients are classified from their **registered redirect URIs**, never from `client_name`.
+An authorization code can only be delivered to a registered redirect, so only the real provider
+can finish the flow.
+
+| All redirects on                 | Stored as        |
+| -------------------------------- | ---------------- |
+| `chatgpt.com`, `chat.openai.com` | `chatgpt`        |
+| `claude.ai`, `claude.com`        | `claude-desktop` |
+| anything else (or mixed)         | `generic-mcp`    |
+
+Every OAuth client is a `controller`. Only Claude Code bridges (device sign-in) are `agent`s,
+and a database `CHECK` enforces this. Phase 6 connections created by Claude were stored as
+`chatgpt`; migration `…000800` reclassifies them and records an audit event.
+
+## Daily flow
+
+1. Once per conversation: the model calls `ensure_session`.
+2. One-time link: the user says "Link this chat to Claude Code".
+   - The model calls `link_to_claude`, which lists the Claude sessions.
+   - The user picks one, and `link_to_claude` is called again with `agentSessionId`. This creates
+     a pending link.
+   - The user confirms it on their machine in the bridge setup.
+3. From then on, the user says "send this to Claude". `send_to_agent` resolves the single active
+   link automatically, and the answer arrives via `get_task_status` / `get_task_result`.
+4. If the attached Claude session is open elsewhere, the task fails with
+   `failureReason: "session_busy"` and a plain-language message.
 
 ## Limits
 

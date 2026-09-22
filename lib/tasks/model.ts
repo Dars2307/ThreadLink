@@ -102,8 +102,16 @@ export const completeInputSchema = agentTaskInputSchema
   })
   .strict();
 
+/** Failure reasons an agent may report (system reasons such as lease_exhausted are DB-only). */
+export const AGENT_FAILURE_REASONS = ["session_busy", "native_session_unavailable"] as const;
+export const FAILURE_REASONS = ["lease_exhausted", ...AGENT_FAILURE_REASONS] as const;
+export type FailureReason = (typeof FAILURE_REASONS)[number];
+
 export const failInputSchema = agentTaskInputSchema
-  .extend({ error: boundedText(TASK_LIMITS.messageBytes) })
+  .extend({
+    error: boundedText(TASK_LIMITS.messageBytes),
+    failureReason: z.enum(AGENT_FAILURE_REASONS).optional(),
+  })
   .strict();
 
 // ---------------------------------------------------------------------------
@@ -122,7 +130,7 @@ export const taskEnvelopeSchema = z.object({
   content: z.string().nullable(),
   status: z.enum(TASK_STATUSES),
   cancel_reason: z.enum(["link_revoked", "route_invalid"]).nullable(),
-  failure_reason: z.enum(["lease_exhausted"]).nullable().optional(),
+  failure_reason: z.enum(FAILURE_REASONS).nullable().optional(),
   attempt_count: z.number().int().optional(),
   max_attempts: z.number().int().optional(),
   claimed_until: z.string().nullable().optional(),
@@ -167,7 +175,7 @@ export type TaskEnvelope = {
   content: string | null;
   status: (typeof TASK_STATUSES)[number];
   cancelReason: "link_revoked" | "route_invalid" | null;
-  failureReason: "lease_exhausted" | null;
+  failureReason: FailureReason | null;
   attemptCount: number;
   maxAttempts: number;
   /** Lease expiry while claimed/working; null otherwise. */

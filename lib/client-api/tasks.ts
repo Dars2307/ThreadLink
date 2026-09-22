@@ -195,6 +195,7 @@ export async function failTask(
       p_task_id: id,
       p_claim_ref: input.claimRef,
       p_error: input.error,
+      p_failure_reason: input.failureReason ?? null,
     },
     parseEnvelope,
   );

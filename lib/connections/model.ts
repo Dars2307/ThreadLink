@@ -3,7 +3,14 @@ import { z } from "zod";
 import { idPattern } from "@/lib/ids";
 
 /** Mirrors the CHECK constraints in supabase/migrations/*_connections.sql. */
-export const CONNECTION_PLATFORMS = ["chatgpt", "claude-code"] as const;
+export const CONNECTION_PLATFORMS = [
+  "chatgpt",
+  "claude-desktop",
+  "claude-code",
+  "generic-mcp",
+] as const;
+/** Platforms a signed-in human may register manually from the dashboard (Advanced). */
+export const REGISTRABLE_PLATFORMS = ["chatgpt", "claude-code"] as const;
 export const CONNECTION_ROLES = ["controller", "agent"] as const;
 export const CONNECTION_STATUSES = ["active", "idle", "revoked", "retired"] as const;
 
@@ -12,13 +19,23 @@ export type ConnectionRole = (typeof CONNECTION_ROLES)[number];
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
 
 /**
- * Alpha role for each platform. The role is derived server-side, never chosen
- * by the caller: ChatGPT is the controller, Claude Code is the execution agent.
- * Roles stay a separate column so future providers are not hard-coded.
+ * Role for each platform. The role is derived server-side, never chosen by the
+ * caller (and a database CHECK enforces it): Claude Code bridges are agents;
+ * every MCP client (ChatGPT, Claude desktop/web, other MCP clients) is a controller.
  */
 export const ALPHA_ROLE_FOR_PLATFORM: Record<ConnectionPlatform, ConnectionRole> = {
   chatgpt: "controller",
+  "claude-desktop": "controller",
   "claude-code": "agent",
+  "generic-mcp": "controller",
+};
+
+/** Human-friendly platform names for the UI. */
+export const PLATFORM_LABELS: Record<ConnectionPlatform, string> = {
+  chatgpt: "ChatGPT",
+  "claude-desktop": "Claude",
+  "claude-code": "Claude Code",
+  "generic-mcp": "MCP client",
 };
 
 /** Alpha abuse limit; mirrors threadlink_private.max_active_connections(). */
@@ -33,7 +50,7 @@ export const MAX_ACTIVE_CONNECTIONS = 10;
  */
 export const registerConnectionInputSchema = z
   .object({
-    platform: z.enum(CONNECTION_PLATFORMS),
+    platform: z.enum(REGISTRABLE_PLATFORMS),
     displayName: z.string().trim().min(1).max(100).optional(),
   })
   .strict();

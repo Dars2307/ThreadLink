@@ -1,31 +1,36 @@
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 
+import { buttonStyles } from "@/components/ui";
+
 export function SiteHeader() {
   return (
-    <header className="border-b border-black/10 dark:border-white/15">
-      <nav className="mx-auto flex h-14 max-w-4xl items-center justify-between px-4">
-        <Link href="/" className="font-semibold tracking-tight">
+    <header className="border-border bg-background/85 sticky top-0 z-10 border-b backdrop-blur">
+      <nav className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
+        <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
+          <span
+            aria-hidden
+            className="bg-accent text-accent-foreground flex size-6 items-center justify-center rounded-md text-xs"
+          >
+            ⇄
+          </span>
           ThreadLink
         </Link>
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-3 text-sm">
           <Show when="signed-out">
             <SignInButton>
-              <button type="button" className="hover:underline">
+              <button type="button" className={buttonStyles.ghost}>
                 Sign in
               </button>
             </SignInButton>
             <SignUpButton>
-              <button
-                type="button"
-                className="bg-foreground text-background rounded-md px-3 py-1.5"
-              >
+              <button type="button" className={buttonStyles.primary}>
                 Sign up
               </button>
             </SignUpButton>
           </Show>
           <Show when="signed-in">
-            <Link href="/dashboard" className="hover:underline">
+            <Link href="/dashboard" className={buttonStyles.ghost}>
               Dashboard
             </Link>
             <UserButton />

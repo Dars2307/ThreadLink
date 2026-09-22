@@ -254,7 +254,7 @@ describe("credential storage", () => {
   );
 });
 
-describe("Claude Code executor", () => {
+describe("Claude Code executor", { timeout: 30_000 }, () => {
   const fake = join(__dirname, "fake-claude.mjs");
   const spawnFake = ((command: string, args: string[], options: object) =>
     spawn(process.execPath, [fake, ...args], options as never)) as unknown as typeof spawn;

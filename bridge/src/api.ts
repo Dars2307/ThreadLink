@@ -159,7 +159,119 @@ export class ThreadLinkApi {
   ) {
     return this.#step(taskId, "complete", { sessionId, claimRef, result, artifacts });
   }
-  fail(taskId: string, sessionId: string, claimRef: string, error: string) {
-    return this.#step(taskId, "fail", { sessionId, claimRef, error });
+  fail(
+    taskId: string,
+    sessionId: string,
+    claimRef: string,
+    error: string,
+    failureReason?: "session_busy" | "native_session_unavailable",
+  ) {
+    return this.#step(taskId, "fail", {
+      sessionId,
+      claimRef,
+      error,
+      ...(failureReason ? { failureReason } : {}),
+    });
   }
+
+  /** Record which native Claude Code session this tlses_ resumes (metadata only). */
+  setNativeSession(input: {
+    sessionId: string;
+    mode: "fresh" | "resume" | "continue";
+    nativeSessionId?: string | null;
+    workspacePath?: string;
+  }) {
+    return this.#request<{ sessionId: string; nativeSessionMode: string }>(
+      "POST",
+      "/api/session/native",
+      input,
+    );
+  }
+}
+
+/**
+ * Device sign-in (no credential copying): the bridge gets a user code, the human
+ * approves it in the browser, and the bridge polls until ThreadLink returns a new
+ * Claude Code agent credential exactly once.
+ */
+export type DeviceStart = {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
+};
+
+async function postJson(fetchImpl: typeof fetch, url: string, body: unknown) {
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+      redirect: "error",
+    });
+  } catch {
+    throw new ApiError(0, "network");
+  }
+  let json: unknown = null;
+  try {
+    json = await response.json();
+  } catch {
+    json = null;
+  }
+  return {
+    ok: response.ok,
+    status: response.status,
+    json: (json ?? {}) as Record<string, unknown>,
+  };
+}
+
+export async function startDeviceLogin(
+  baseUrl: string,
+  displayName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DeviceStart> {
+  const res = await postJson(fetchImpl, `${validateBaseUrl(baseUrl)}/device/code`, { displayName });
+  if (!res.ok) throw new ApiError(res.status, String(res.json.error ?? "error"));
+  return res.json as unknown as DeviceStart;
+}
+
+export type DeviceToken = {
+  access_token: string;
+  connection_id: string;
+  account_hint: string | null;
+};
+
+export async function pollDeviceToken(
+  baseUrl: string,
+  start: DeviceStart,
+  options: {
+    fetchImpl?: typeof fetch;
+    sleep?: (ms: number) => Promise<void>;
+    signal?: AbortSignal;
+  } = {},
+): Promise<DeviceToken> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let interval = Math.max(1, start.interval) * 1000;
+  const deadline = Date.now() + start.expires_in * 1000;
+  while (Date.now() < deadline) {
+    if (options.signal?.aborted) throw new ApiError(0, "aborted");
+    await sleep(interval);
+    const res = await postJson(fetchImpl, `${validateBaseUrl(baseUrl)}/device/token`, {
+      device_code: start.device_code,
+    });
+    if (res.ok) return res.json as unknown as DeviceToken;
+    const error = String(res.json.error ?? "error");
+    if (error === "authorization_pending") continue;
+    if (error === "slow_down") {
+      interval += 5000;
+      continue;
+    }
+    throw new ApiError(res.status, error);
+  }
+  throw new ApiError(400, "expired_token");
 }

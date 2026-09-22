@@ -135,7 +135,15 @@ describe("client API over HTTP", () => {
     const me = await api(`/api/session/me?sessionId=${chat}`, controllerToken);
     expect(me.status).toBe(200);
     expect(Object.keys(me.json).sort()).toEqual(
-      ["connectionId", "displayName", "platform", "role", "sessionId", "status"].sort(),
+      [
+        "connectionId",
+        "displayName",
+        "nativeSessionMode",
+        "platform",
+        "role",
+        "sessionId",
+        "status",
+      ].sort(),
     );
     const foreign = await api(`/api/session/me?sessionId=${chat}`, agentToken);
     expect(foreign.status).toBe(404);

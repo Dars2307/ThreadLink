@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
+import { listAgentSessions } from "@/lib/client-api/native";
 import {
   ClientOperationError,
   listSessionLinks,
   registerSession,
+  requestPairing,
   type ClientDatabase,
 } from "@/lib/client-api/operations";
 import { createTask, getTask, getTaskResult, listOriginTasks } from "@/lib/client-api/tasks";
@@ -54,6 +56,16 @@ export const toolInputs = {
       .describe("Optional short label for this conversation (cosmetic only)."),
   },
   list_links: { sessionId: sessionIdInput },
+  link_to_claude: {
+    sessionId: sessionIdInput,
+    agentSessionId: z
+      .string()
+      .regex(/^tlses_[0-9a-f]{32}$/)
+      .optional()
+      .describe(
+        "The Claude Code session the user chose from a previous link_to_claude call. Omit to list the options.",
+      ),
+  },
   send_to_agent: {
     sessionId: sessionIdInput,
     content: z.string().min(1).max(60_000).describe("The task for the linked agent (Claude Code)."),
@@ -139,6 +151,54 @@ export async function ensureSession(ctx: McpContext, input: Input<"ensure_sessio
 async function activeLinksFor(ctx: McpContext, sessionId: string): Promise<ThreadLinkView[]> {
   const links = await listSessionLinks(ctx.db, ctx.credentialHash, sessionId);
   return links.filter((l) => l.controllerSessionId === sessionId);
+}
+
+/**
+ * Link this conversation to one of the owner's Claude Code sessions. Listing is
+ * read-only; requesting creates a PENDING link that the Claude Code side must
+ * approve on the user's machine. Nothing is ever auto-paired.
+ */
+export async function linkToClaude(ctx: McpContext, input: Input<"link_to_claude">) {
+  const options = await listAgentSessions(ctx.db, ctx.credentialHash, input.sessionId);
+  if (!input.agentSessionId) {
+    if (options.length === 0) {
+      return {
+        status: "setup_required",
+        message:
+          "No Claude Code session is connected yet. On the computer with Claude Code, run the " +
+          "ThreadLink bridge setup (see the ThreadLink dashboard), then try again.",
+      };
+    }
+    return {
+      status: "choose_session",
+      message:
+        "Ask the user which Claude Code session to link (even if there is only one), then call " +
+        "link_to_claude again with its agentSessionId.",
+      options: options.map((o) => ({
+        agentSessionId: o.sessionId,
+        name: o.displayName ?? "Claude Code session",
+        workspace: o.workspaceName,
+        resumesExistingClaudeSession: o.attachedToExistingSession,
+        linkStatus: o.linkStatus,
+      })),
+    };
+  }
+  if (!options.some((o) => o.sessionId === input.agentSessionId)) {
+    throw new ToolError("That Claude Code session is not available to this account.");
+  }
+  const link = await requestPairing(ctx.db, ctx.credentialHash, {
+    controllerSessionId: input.sessionId,
+    agentSessionId: input.agentSessionId,
+  });
+  return {
+    status: link.status === "active" ? "linked" : "awaiting_approval",
+    linkId: link.linkId,
+    message:
+      link.status === "active"
+        ? "This conversation is linked. Use send_to_agent to send work to Claude."
+        : "Link requested. The user must approve it on their computer in the ThreadLink bridge " +
+          "(the setup screen shows the request). Then send_to_agent will work.",
+  };
 }
 
 export async function listLinks(ctx: McpContext, input: Input<"list_links">) {

@@ -165,6 +165,18 @@ Alpha limitations:
   the workspace through Claude Code. Choosing another `--permission-mode` is an explicit opt-in to
   changes.
 
+## Existing sessions, device sign-in, platforms (Phase 6.5)
+
+| Control            | Implementation                                                                                                                                                                                                                                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Native session IDs | Adapter metadata on the agent's own `tlses_`. Only settable by that agent connection. Never echoed back to clients and never visible to controllers (they see the workspace folder name only). Never used for routing or authorization                                                                                                                       |
+| Resume safety      | Before resuming, the bridge takes a per-session lock and checks `claude agents --json`. It fails closed (`session_busy`) if the session is open or the check fails. It never falls back to a new or forked session. A reply from a different session ID is discarded                                                                                         |
+| Workspace binding  | Only sessions whose transcript `cwd` equals the workspace can be attached, and Claude always runs in that workspace                                                                                                                                                                                                                                          |
+| Local discovery    | Reads file names, times, `cwd` and title records only. Content is never parsed, uploaded or logged                                                                                                                                                                                                                                                           |
+| Device sign-in     | Device code is 32 random bytes and stored only as sha256. User code is 8 consonants with a 10-minute lifetime and single use. Approval requires Clerk on `/connect`. Per-user rate limit is 30 lookups or decisions per 10 minutes; the global limit is 200 starts per hour. The bridge shows the approving account (masked email) and asks for confirmation |
+| Platform labels    | Derived from OAuth redirect URIs, never from client-supplied names. A platform/role `CHECK` makes only `claude-code` an agent                                                                                                                                                                                                                                |
+| Failure reasons    | Agents may report only `session_busy` or `native_session_unavailable`. `lease_exhausted` is system-only                                                                                                                                                                                                                                                      |
+
 ## Privileged client exception
 
 `createPrivilegedSupabaseClient()` (`lib/supabase/admin.ts`) uses `SUPABASE_SECRET_KEY` and

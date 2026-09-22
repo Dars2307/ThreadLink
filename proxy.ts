@@ -21,6 +21,9 @@ const isOAuthRoute = createRouteMatcher([
   "/oauth/register",
   "/oauth/token",
   "/mcp",
+  // Claude Code bridge sign-in (device authorization). /connect (approval) stays behind Clerk.
+  "/device/code",
+  "/device/token",
 ]);
 
 /**
