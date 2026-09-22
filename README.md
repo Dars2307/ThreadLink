@@ -38,29 +38,49 @@ npm run dev
 
 Open http://localhost:3000. `/` is public; `/dashboard` requires sign-in.
 
+### Database
+
+Schema is defined by SQL migrations in `supabase/migrations/`. The hosted project also needs the
+Clerk third-party auth integration enabled (see [docs/database.md](docs/database.md)).
+
+Database and RLS tests run against a **local** disposable Supabase stack (Docker + Supabase CLI):
+
+```bash
+npm run db:start           # supabase start
+npm run test:db            # pgTAP RLS suite
+npm run test:integration   # app -> PostgREST -> RLS
+```
+
 ## Scripts
 
-| Script              | Purpose                                        |
-| ------------------- | ---------------------------------------------- |
-| `npm run dev`       | Development server                             |
-| `npm run build`     | Production build                               |
-| `npm run lint`      | ESLint                                         |
-| `npm run typecheck` | Generate Next route types, then `tsc --noEmit` |
-| `npm test`          | Vitest security/unit tests                     |
-| `npm run format`    | Prettier write                                 |
-| `npm run check`     | lint + typecheck + test + build                |
+| Script                     | Purpose                                          |
+| -------------------------- | ------------------------------------------------ |
+| `npm run dev`              | Development server                               |
+| `npm run build`            | Production build                                 |
+| `npm run lint`             | ESLint                                           |
+| `npm run typecheck`        | Generate Next route types, then `tsc --noEmit`   |
+| `npm test`                 | Vitest security/unit tests (no database)         |
+| `npm run test:db`          | pgTAP RLS tests (local Supabase)                 |
+| `npm run test:integration` | PostgREST/RLS integration tests (local Supabase) |
+| `npm run test:all`         | Unit + database + integration                    |
+| `npm run format`           | Prettier write                                   |
+| `npm run check`            | lint + typecheck + test + build                  |
 
 ## Project layout
 
 ```text
 app/                      Routes (landing, sign-in, sign-up, dashboard)
 components/               Shared UI
-lib/auth/                 Server-side identity resolution (Clerk)
+lib/auth/                 Identity resolution (Clerk) + ThreadLink user provisioning
+lib/connections/          Connection model, queries, repository
+lib/ids.ts                ThreadLink ID formats (tlusr_, tlcon_, ...)
 lib/env/                  Validated environment (server + public)
 lib/security/             Security helpers (masking, public-env guard)
 lib/supabase/             Supabase clients (user-scoped, privileged, browser)
 proxy.ts                  Route protection (deny by default)
-tests/                    Security boundary tests
+supabase/migrations/      Version-controlled schema
+supabase/tests/database/  pgTAP RLS tests
+tests/                    Unit tests; tests/integration/ needs local Supabase
 docs/                     Architecture, security, roadmap
 ```
 
@@ -68,4 +88,5 @@ docs/                     Architecture, security, roadmap
 
 - [docs/architecture.md](docs/architecture.md)
 - [docs/security.md](docs/security.md)
+- [docs/database.md](docs/database.md)
 - [docs/roadmap.md](docs/roadmap.md)

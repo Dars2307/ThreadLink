@@ -46,12 +46,59 @@ does not leak whether the resource exists.
 Tests in `tests/` cover identity fail-closed behaviour, env validation and secret-slot rejection,
 ID masking, and the client/server module boundary.
 
+## Tenant boundary (Phase 2)
+
+The tenant boundary is the **ThreadLink user** (`users.id`, `tlusr_…`). Every tenant-owned row
+carries `owner_user_id`. The chain from request to row is:
+
+```text
+Clerk JWT (verified by Supabase) -> sub -> users.clerk_user_id -> users.id -> row.owner_user_id
+```
+
+| Layer       | Control                                                                                                                                                                                                                                                           |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Application | `requireThreadLinkUser()` resolves the owner from the verified session only; inputs are parsed with `.strict()` schemas that reject `owner_user_id`, `clerkUserId`, `id`, `status`; results are re-checked against the caller and a mismatch throws (fail closed) |
+| Grants      | `anon` has nothing. `authenticated` cannot write `users` at all and cannot write `connections.owner_user_id`, `id`, `status` on insert or any identity column on update                                                                                           |
+| RLS         | Every `public` table has RLS; all policies are `TO authenticated` and compare against the verified caller; no `USING (true)`                                                                                                                                      |
+| Triggers    | Identity/ownership columns immutable; `revoked`/`retired` terminal                                                                                                                                                                                                |
+
+### Why email and display name are not authorization identifiers
+
+They are mutable, user-controlled, not unique (two ThreadLink users may share an email; the pgTAP
+suite verifies that claiming another user's email changes nothing), and may be reassigned by the
+identity provider. Only the verified Clerk subject and ThreadLink IDs derived from it are used for
+ownership. A static test forbids filtering by `primary_email`/`display_name` in application code.
+
+### Denial semantics
+
+Another user's resource behaves exactly like a nonexistent one: reads return empty results and
+updates/deletes affect zero rows. Errors shown to users are generic.
+
+## Privileged client exception
+
+`createPrivilegedSupabaseClient()` (`lib/supabase/admin.ts`) uses `SUPABASE_SECRET_KEY` and
+**bypasses RLS**. Rules:
+
+- server-only (`server-only` import; a client import fails the build);
+- takes no parameters: it cannot be handed a caller-chosen identity;
+- never the normal data path. Tenant data goes through the user-scoped client so RLS applies;
+- any use must be owner-scoped with an ID from `requireThreadLinkUser()`;
+- **centralized and auditable**: ESLint `no-restricted-imports` flags every import, and
+  `tests/client-boundary.test.ts` fails unless the importer is in `PRIVILEGED_CLIENT_ALLOWLIST`.
+  The allowlist is **empty** in Phase 2: no application code uses the privileged client.
+
+## Database test safety
+
+RLS and integration tests run only against the local disposable Supabase stack. The integration
+harness refuses any non-local API URL. Hosted projects receive only additive migrations after a
+read-only target check. See [database.md](database.md).
+
 ## Supabase keys
 
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: safe for the browser; all access is subject to RLS.
 - `SUPABASE_SECRET_KEY`: **bypasses RLS**. Server-only, via `createPrivilegedSupabaseClient()`.
-  Every query made with it must be scoped by an owner ID from `requireIdentity()`.
-- `DATABASE_URL`: server-only; intended for migrations and tests.
+  Every query made with it must be scoped by an owner ID from `requireThreadLinkUser()`.
+- `DATABASE_URL`: server-only; used for migrations (`supabase db push`), not by the app at runtime.
 
 ## Secrets handling
 
@@ -62,8 +109,9 @@ ID masking, and the client/server module boundary.
 
 ## Planned controls (later phases)
 
-- RLS policies on every tenant-owned table, with cross-user denial tests (Phase 2).
-- Connection credentials and revocation (Phases 3–4, 8).
+- RLS + cross-user denial tests for every new tenant-owned table (bindings, links, tasks, messages).
+- Connection credentials and revocation enforcement in routing (Phases 3–4, 8).
+- Disable Supabase Auth sign-ups on the hosted project so no parallel Supabase users can exist.
 - Request freshness/replay controls for bridge and agent requests: timestamps, nonces, expiry, and
   possibly per-connection signing keys, using established libraries only.
 - Content-Security-Policy tuned for Clerk.

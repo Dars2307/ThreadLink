@@ -1,0 +1,1 @@
+-- Intentionally empty. ThreadLink never seeds user data; tests create their own fixtures.

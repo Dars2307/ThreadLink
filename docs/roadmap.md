@@ -7,16 +7,16 @@ The frog: a real authenticated task travels from the ChatGPT-side connection to 
 Code execution agent, and the real result returns through ThreadLink to the correct origin, with
 ownership isolation intact.
 
-| Phase | Name                                  | Win condition                                                                               | Status   |
-| ----- | ------------------------------------- | ------------------------------------------------------------------------------------------- | -------- |
-| 0 + 1 | Repository bootstrap + Clerk identity | App scaffolded; a user can authenticate and the backend resolves the correct Clerk identity | **Done** |
-| 2     | Supabase schema + RLS                 | User-owned resources persist; cross-user access tests are denied                            | Next     |
-| 3     | Connection registry                   | ChatGPT-side and Claude Code-side connections register under the authenticated user         | Planned  |
-| 4     | Session bindings + pairing            | One ChatGPT binding securely links to one Claude Code binding                               | Planned  |
-| 5     | MCP routing                           | `send_to_agent` creates and routes a task to the linked Claude Code destination             | Planned  |
-| 6     | Claude Code bridge                    | Local bridge receives the task and returns status/results                                   | Planned  |
-| 7     | End-to-end proof                      | One real task completes the round trip                                                      | Planned  |
-| 8     | Deployment + hardening                | Reproducible Vercel deploy, correct secrets, security tests pass, revocation works          | Planned  |
+| Phase | Name                                   | Win condition                                                                               | Status                                 |
+| ----- | -------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------- |
+| 0 + 1 | Repository bootstrap + Clerk identity  | App scaffolded; a user can authenticate and the backend resolves the correct Clerk identity | **Done**                               |
+| 2     | Database foundation + tenant isolation | Users + connections persist with ThreadLink IDs; RLS cross-user and anonymous denial proven | **Done (local); hosted apply pending** |
+| 3     | Connection registry                    | ChatGPT-side and Claude Code-side connections register under the authenticated user         | Next                                   |
+| 4     | Session bindings + pairing             | One ChatGPT binding securely links to one Claude Code binding                               | Planned                                |
+| 5     | MCP routing                            | `send_to_agent` creates and routes a task to the linked Claude Code destination             | Planned                                |
+| 6     | Claude Code bridge                     | Local bridge receives the task and returns status/results                                   | Planned                                |
+| 7     | End-to-end proof                       | One real task completes the round trip                                                      | Planned                                |
+| 8     | Deployment + hardening                 | Reproducible Vercel deploy, correct secrets, security tests pass, revocation works          | Planned                                |
 
 ## Alpha scope
 

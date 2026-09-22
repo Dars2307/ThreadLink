@@ -24,22 +24,24 @@ ChatGPT (controller)                              Claude Code (execution agent)
 
 ## Components
 
-| Component           | Responsibility                                        | Status                          |
-| ------------------- | ----------------------------------------------------- | ------------------------------- |
-| Clerk               | Human authentication; canonical external identity     | Phase 1                         |
-| Next.js app         | Web UI, API routes, (later) remote MCP endpoint       | Phase 1                         |
-| Supabase Postgres   | Persistent state, RLS as second enforcement layer     | Phase 1 clients; schema Phase 2 |
-| Connection registry | Per-platform connections owned by a user              | Phase 3                         |
-| Session bindings    | ThreadLink-owned canonical IDs for logical sessions   | Phase 4                         |
-| MCP routing         | `send_to_agent` and related tools                     | Phase 5                         |
-| Claude Code bridge  | Local process that receives tasks and returns results | Phase 6                         |
-| Vercel              | Planned first cloud deployment target                 | Phase 8                         |
+| Component           | Responsibility                                        | Status                       |
+| ------------------- | ----------------------------------------------------- | ---------------------------- |
+| Clerk               | Human authentication; canonical external identity     | Phase 1                      |
+| Next.js app         | Web UI, API routes, (later) remote MCP endpoint       | Phase 1                      |
+| Supabase Postgres   | Persistent state, RLS as second enforcement layer     | Phase 2 (users, connections) |
+| Connection registry | Per-platform connections owned by a user              | Phase 2 table; Phase 3 flows |
+| Session bindings    | ThreadLink-owned canonical IDs for logical sessions   | Phase 4                      |
+| MCP routing         | `send_to_agent` and related tools                     | Phase 5                      |
+| Claude Code bridge  | Local process that receives tasks and returns results | Phase 6                      |
+| Vercel              | Planned first cloud deployment target                 | Phase 8                      |
 
 ## Identity model
 
 - **Clerk user ID** (`user_...`) is the canonical external human identity.
-- ThreadLink will mint its own IDs (e.g. `tlusr_...`) and map them to the Clerk user ID (Phase 2).
-- **Display names and emails are never authorization identifiers.** They are display-only.
+- ThreadLink mints its own immutable IDs in the database (`tlusr_…` users, `tlcon_…` connections)
+  and maps exactly one `users` row to each Clerk user ID. See [database.md](database.md).
+- **Display names and emails are never authorization identifiers.** They are display-only: they
+  change, are not unique, and are user-controlled, so they cannot prove ownership.
 - **Authentication** ("who is this?") is persistent via Clerk sessions. **Authorization** ("may this
   identity do this to this resource?") is checked on every protected operation.
 
@@ -57,6 +59,28 @@ fully authenticated session with well-formed `user_` / `sess_` identifiers. The 
 No route may accept a user ID from the client (body, query, header, route param) and trust it for
 ownership. Owner IDs always come from `requireIdentity()`.
 
+### ThreadLink user resolution
+
+`lib/auth/threadlink-user.ts` exports `requireThreadLinkUser()`, the entry point for any code that
+needs ThreadLink ownership:
+
+```text
+requireIdentity()                         verified Clerk session (fail closed)
+  -> provision_current_user() via user-scoped Supabase client (Clerk token)
+       DB reads sub from the verified JWT, finds or creates users row (idempotent, race-safe)
+  -> verify returned clerk_user_id == verified identity
+  -> ThreadLinkUser { id: tlusr_…, … }
+```
+
+It takes no arguments, so callers cannot inject an identity. It is deduplicated per request.
+
+### Connections
+
+`lib/connections/` holds the model (`model.ts`: allowed platforms/roles/statuses, strict input
+schema that rejects ownership fields), queries (`queries.ts`) and server-only repository
+(`repository.ts`: `listMyConnections`, `createMyConnection`). Writes never send `owner_user_id`;
+the database derives it. Results are re-checked against the caller's `tlusr_` ID.
+
 ## Request protection
 
 1. **`proxy.ts`** (Next.js 16's replacement for `middleware.ts`) runs Clerk and **denies by
@@ -64,7 +88,7 @@ ownership. Owner IDs always come from `requireIdentity()`.
    automatically.
 2. **Per-handler check**: protected pages/handlers call `getIdentity()` / `requireIdentity()` again
    (defence in depth), then perform resource authorization.
-3. **Postgres RLS** (Phase 2) enforces ownership again at the database.
+3. **Postgres RLS** enforces ownership again at the database (Phase 2).
 
 ## Supabase access
 
@@ -76,6 +100,9 @@ Supabase via third-party auth so RLS can read the Clerk user ID from `auth.jwt()
 | `lib/supabase/server.ts`  | publishable + Clerk token | enforced | server only | default tenant data access              |
 | `lib/supabase/browser.ts` | publishable + Clerk token | enforced | browser     | client reads, if ever needed            |
 | `lib/supabase/admin.ts`   | secret                    | bypassed | server only | trusted system ops, always owner-scoped |
+
+The user-scoped server client is the normal data path. The privileged client currently has **no
+importers**; see [security.md](security.md#privileged-client-exception).
 
 ## Environment
 

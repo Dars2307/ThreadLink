@@ -20,6 +20,24 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  {
+    rules: {
+      // The RLS-bypassing client is exceptional. Any use needs review and an
+      // entry in PRIVILEGED_CLIENT_ALLOWLIST (tests/client-boundary.test.ts).
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@/lib/supabase/admin", "**/supabase/admin"],
+              message:
+                "Privileged Supabase client bypasses RLS. Use the user-scoped client; see docs/security.md.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts"]),
 ]);
 
