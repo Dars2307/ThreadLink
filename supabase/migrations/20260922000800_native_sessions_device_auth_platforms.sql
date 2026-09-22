@@ -12,6 +12,19 @@
 --   its (hashed) device code for a fresh claude-code/agent credential.
 
 -- ===========================================================================
+-- 0. Audit actions (first: the reclassification below writes connection.reclassified)
+-- ===========================================================================
+alter table public.audit_events drop constraint audit_events_action_check;
+alter table public.audit_events add constraint audit_events_action_check check (action in (
+  'connection.created', 'connection.revoked', 'connection.credential_rotated', 'connection.auth_failed',
+  'connection.reclassified',
+  'session.registered', 'session.retired', 'session.revoked', 'session.native_attached',
+  'link.requested', 'link.approved', 'link.revoked',
+  'task.created', 'task.claimed', 'task.completed', 'task.failed', 'task.cancelled', 'task.expired',
+  'task.requeued', 'oauth.token_issued', 'device.approved', 'device.denied'
+));
+
+-- ===========================================================================
 -- 1. Platforms
 -- ===========================================================================
 alter table public.connections drop constraint connections_platform_check;
@@ -61,19 +74,6 @@ from changed;
 alter table public.connections enable trigger connections_guard_update;
 
 alter table public.connections validate constraint connections_platform_role_check;
-
--- ===========================================================================
--- 2. Audit actions
--- ===========================================================================
-alter table public.audit_events drop constraint audit_events_action_check;
-alter table public.audit_events add constraint audit_events_action_check check (action in (
-  'connection.created', 'connection.revoked', 'connection.credential_rotated', 'connection.auth_failed',
-  'connection.reclassified',
-  'session.registered', 'session.retired', 'session.revoked', 'session.native_attached',
-  'link.requested', 'link.approved', 'link.revoked',
-  'task.created', 'task.claimed', 'task.completed', 'task.failed', 'task.cancelled', 'task.expired',
-  'task.requeued', 'oauth.token_issued', 'device.approved', 'device.denied'
-));
 
 -- ===========================================================================
 -- 3. OAuth: classify at registration, use it at exchange
