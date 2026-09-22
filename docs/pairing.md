@@ -35,7 +35,7 @@ pairing and (later) routing.
 
 ### Local binding refs and idempotency
 
-Clients persist their own stable handle (for example a random value stored beside the bridge's
+Clients persist their own stable handle (for example a random value stored beside the Runtime's
 config, or a value kept in MCP conversation state) and send it as `localBindingRef`:
 
 | Request                                                       | Result                                                                                         |
@@ -69,7 +69,7 @@ one-to-one.
 
 **Phase 6 UX:** the owner starts pairing from the dashboard (_Pair sessions_ →
 `owner_request_pairing`, Clerk-authenticated, same checks as `request_pairing`), and the exact
-agent session approves it from the bridge (`bridge … pending` / `approve <tllnk_…>`). Nothing is
+agent session approves it from the Runtime (ThreadLink app, or `npx threadlink links` / `approve`). Nothing is
 ever auto-paired or auto-approved. At most 10 pending requests per controller session.
 
 ### Lifecycle

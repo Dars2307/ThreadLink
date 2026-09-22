@@ -115,33 +115,26 @@ function StepBody({
     return (
       <div className="text-muted flex flex-col gap-3 text-sm">
         <p>
-          On the computer where you use Claude Code, open a terminal in your project folder and run:
+          Install the ThreadLink app on the computer where you use Claude Code. It signs in through
+          your browser, finds your Claude conversations and runs quietly in the background.
         </p>
-        <CopyField label="Bridge setup command" value={`threadlink-bridge setup --url ${origin}`} />
-        <p>
-          It opens your browser to approve the connection, lets you pick your existing Claude
-          session, and confirms the link - no IDs to copy.
-          <span className="text-subtle block pt-1 text-xs">
-            First time? From the ThreadLink repo run{" "}
-            <code className="font-mono">npm link ./bridge</code> (or use{" "}
-            <code className="font-mono">
-              node bridge/src/cli.ts setup --workspace &lt;project&gt;
-            </code>
-            ).
-          </span>
+        <p className="text-subtle text-xs">
+          On a server, SSH host or Codespace instead? Run{" "}
+          <code className="font-mono">npx threadlink setup --url {origin}</code> there.
         </p>
       </div>
     );
   }
+
   if (step.key === "session") {
     return (
       <p className="text-muted text-sm">
-        The bridge setup lists your Claude Code sessions for that folder so tasks continue the one
-        you choose. Skip it and each task starts a fresh session. Change it later with{" "}
-        <code className="font-mono">threadlink-bridge attach</code>.
+        The app lists the Claude conversations in your project folder, with when each was last used.
+        Pick the one your requests should continue. You can change it later at any time.
       </p>
     );
   }
+
   if (step.state === "waiting") {
     return (
       <p className="text-muted text-sm">

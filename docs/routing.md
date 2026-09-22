@@ -1,7 +1,7 @@
 # ThreadLink Routing: Tasks, Messages and Results
 
 Source of truth: [`THREADLINK_MASTER_GUIDE.md`](../THREADLINK_MASTER_GUIDE.md) §13–§17. Phase 5 is the
-backend protocol that the ChatGPT MCP server and the Claude Code bridge will use in Phase 6.
+backend protocol that the ChatGPT MCP server and the ThreadLink Runtime will use in Phase 6.
 
 ## Route resolution
 
@@ -80,7 +80,7 @@ through the inbox or claim of the exact target.
 **Claim** (`POST /api/tasks/:id/claim`, `{ sessionId, claimRef }`): atomic. The task row is
 locked (`SELECT … FOR UPDATE`), and only `queued → claimed` succeeds. The first claimer wins; any
 other `claimRef` gets `409`; a retry with the **same** `claimRef` is idempotent. `claimRef` is a
-worker identifier the client generates (for example per bridge process). `start`, `progress`,
+worker identifier the client generates (for example per Runtime process). `start`, `progress`,
 `complete` and `fail` must present the owning `claimRef`, so two workers can never own one task,
 even within one agent session.
 
@@ -126,7 +126,7 @@ converge on one row (`ON CONFLICT`).
 
 ## Polling model and future push
 
-Alpha delivery is polling: a bridge calls `GET /api/tasks/inbox` on an interval, then claims. The
+Alpha delivery is polling: a Runtime calls `GET /api/tasks/inbox` on an interval, then claims. The
 protocol is push-compatible: delivery state lives in the database (`delivered_at`, claims), so a
 future notifier (webhook, SSE, WebSocket) only needs to signal "inbox changed". Claiming,
 validation and results stay exactly the same. No queues, Redis, WebSockets or workers are used.

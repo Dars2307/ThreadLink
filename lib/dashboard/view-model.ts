@@ -1,13 +1,14 @@
 import { PLATFORM_LABELS, type Connection, type ConnectionPlatform } from "@/lib/connections/model";
 import type { ThreadLinkView } from "@/lib/pairing/model";
+import { runtimeOnline, type OwnerRuntime, type OwnerWorkspace } from "@/lib/runtimes/queries";
 import type { OwnerSession } from "@/lib/sessions/queries";
 import type { FailureReason, TASK_STATUSES } from "@/lib/tasks/model";
 import type { RecentTask } from "@/lib/tasks/queries";
 
 /**
- * Pure dashboard derivations (no I/O): setup progress, readiness, labels.
- * Technical IDs are deliberately absent from the primary view model; the
- * Advanced panel renders them separately.
+ * Pure dashboard derivations (no I/O): setup progress, readiness, plain-language
+ * labels. Technical identifiers are deliberately absent; the Advanced page
+ * renders those separately.
  */
 
 export const BRIDGE_ONLINE_WINDOW_MS = 3 * 60_000;
@@ -17,6 +18,8 @@ export type DashboardData = {
   sessions: OwnerSession[];
   links: ThreadLinkView[];
   tasks: RecentTask[];
+  runtimes?: OwnerRuntime[];
+  workspaces?: OwnerWorkspace[];
   now: number;
 };
 
@@ -45,6 +48,39 @@ export function relativeTime(iso: string | null, now: number): string {
   return d === 1 ? "yesterday" : `${d} days ago`;
 }
 
+/** How a Claude conversation behaves, in the user's words. */
+export function conversationMode(session: OwnerSession | undefined): string {
+  return session?.nativeSessionMode === "resume"
+    ? "Uses your existing Claude conversation"
+    : "Starts a new Claude conversation for each request";
+}
+
+export function conversationName(
+  session: OwnerSession | undefined,
+  fallback: string | null,
+): string {
+  const name = session?.displayName ?? fallback;
+  if (!name) return "Claude conversation";
+  return name.replace(/^Claude Code · /, "") || "Claude conversation";
+}
+
+export type LinkCard = {
+  linkId: string;
+  chat: string;
+  chatApp: string;
+  controllerSessionId: string;
+  conversation: string;
+  conversationDetail: string;
+  agentSessionId: string;
+  workspace: string | null;
+  runtime: string | null;
+  runtimeOnline: boolean;
+  busy: boolean;
+  paused: boolean;
+  status: "ready" | "busy" | "paused" | "offline";
+  statusLabel: string;
+};
+
 export function deriveDashboard(data: DashboardData) {
   const live = data.connections.filter(isLive);
   const controllers = live.filter((c) => c.role === "controller");
@@ -55,17 +91,22 @@ export function deriveDashboard(data: DashboardData) {
   const activeLinks = data.links.filter((l) => l.status === "active");
   const pendingLinks = data.links.filter((l) => l.status === "pending");
   const sessionById = new Map(data.sessions.map((s) => [s.sessionId, s]));
+  const runtimes = data.runtimes ?? [];
+  const workspaces = data.workspaces ?? [];
+  const runtimeById = new Map(runtimes.map((r) => [r.runtimeId, r]));
+  const workspaceById = new Map(workspaces.map((w) => [w.workspaceId, w]));
+  const activeRuntimes = runtimes.filter((r) => r.status === "active");
 
   const steps: SetupStep[] = [
     { key: "chatgpt", title: "Connect ChatGPT", state: controllers.length ? "done" : "current" },
     {
       key: "claude",
-      title: "Connect Claude Code",
+      title: "Install the ThreadLink app",
       state: agents.length ? "done" : controllers.length ? "current" : "todo",
     },
     {
       key: "session",
-      title: "Choose your Claude session",
+      title: "Choose your Claude conversation",
       state: agentSessions.some((s) => s.nativeSessionMode === "resume")
         ? "done"
         : agentSessions.length
@@ -74,7 +115,7 @@ export function deriveDashboard(data: DashboardData) {
     },
     {
       key: "link",
-      title: "Confirm link",
+      title: "Confirm the link",
       state: activeLinks.length
         ? "done"
         : pendingLinks.length
@@ -86,31 +127,48 @@ export function deriveDashboard(data: DashboardData) {
   ];
   const setupComplete = steps.every((s) => s.state === "done" || s.state === "optional");
 
-  const links = activeLinks.map((link) => {
+  const links: LinkCard[] = activeLinks.map((link) => {
     const controller = sessionById.get(link.controllerSessionId);
     const agent = sessionById.get(link.agentSessionId);
-    const online = bridgeOnline(agent, data.now);
+    const runtime = agent?.runtimeId ? runtimeById.get(agent.runtimeId) : undefined;
+    const online = runtime ? runtimeOnline(runtime, data.now) : bridgeOnline(agent, data.now);
+    const busy = Boolean(agent?.busy);
+    const paused = Boolean(link.paused) || Boolean(runtime?.paused);
+    const status = paused ? "paused" : !online ? "offline" : busy ? "busy" : "ready";
     return {
       linkId: link.linkId,
-      controllerLabel: controller?.displayName ?? link.controllerDisplayName ?? "Conversation",
-      controllerApp: PLATFORM_LABELS[controller?.platform ?? "chatgpt"],
-      agentLabel: prettyAgentName(agent?.displayName ?? link.agentDisplayName),
-      agentDetail:
-        agent?.nativeSessionMode === "resume"
-          ? "Continues your existing Claude Code session"
-          : "Starts a fresh Claude Code session for each task",
-      workspace: agent?.workspacePath ? folderName(agent.workspacePath) : null,
-      ready: online,
-      lastSeen: relativeTime(agent?.lastSeenAt ?? null, data.now),
+      chat: controller?.displayName ?? link.controllerDisplayName ?? "Conversation",
+      chatApp: PLATFORM_LABELS[controller?.platform ?? "chatgpt"],
+      controllerSessionId: link.controllerSessionId,
+      conversation: conversationName(agent, link.agentDisplayName),
+      conversationDetail: conversationMode(agent),
+      agentSessionId: link.agentSessionId,
+      workspace: agent?.workspaceId ? (workspaceById.get(agent.workspaceId)?.name ?? null) : null,
+      runtime: runtime?.label ?? null,
+      runtimeOnline: online,
+      busy,
+      paused,
+      status,
+      statusLabel:
+        status === "ready"
+          ? "Ready"
+          : status === "busy"
+            ? "Claude conversation in use"
+            : status === "paused"
+              ? "Paused"
+              : "Runtime offline",
     };
   });
 
-  const anyBridgeOnline = agentSessions.some((s) => bridgeOnline(s, data.now));
+  const onlineRuntimes = activeRuntimes.filter((r) => runtimeOnline(r, data.now));
+  const anyRuntimeOnline = onlineRuntimes.length > 0;
   const headline = !setupComplete
     ? { tone: "warning" as const, text: "Finish setting up ThreadLink" }
-    : links.some((l) => l.ready)
+    : links.some((l) => l.status === "ready")
       ? { tone: "success" as const, text: "Everything is connected" }
-      : { tone: "warning" as const, text: "Connected, but your Claude Code bridge is offline" };
+      : links.some((l) => l.status === "busy")
+        ? { tone: "warning" as const, text: "Claude is busy right now" }
+        : { tone: "warning" as const, text: "Connected, but no Runtime is online" };
 
   const appOrder: ConnectionPlatform[] = [
     "chatgpt",
@@ -131,23 +189,53 @@ export function deriveDashboard(data: DashboardData) {
       const detail = !connected
         ? "Not connected"
         : platform === "claude-code"
-          ? anyBridgeOnline
-            ? "Bridge online"
-            : `Bridge offline · last seen ${relativeTime(latestSeen(agentSessions), data.now)}`
+          ? anyRuntimeOnline
+            ? `${onlineRuntimes.length} of ${activeRuntimes.length} Runtime${activeRuntimes.length === 1 ? "" : "s"} online`
+            : "No Runtime online"
           : `Last used ${relativeTime(lastUsed ?? null, data.now)}`;
-      return { platform, label: PLATFORM_LABELS[platform], connected, count: mine.length, detail };
+      return {
+        platform,
+        label: platform === "claude-code" ? "ThreadLink app (Runtime)" : PLATFORM_LABELS[platform],
+        connected,
+        count: mine.length,
+        detail,
+      };
     });
 
-  const activity = data.tasks.slice(0, 8).map((t) => {
+  const activity = data.tasks.map((t) => {
     const origin = sessionById.get(t.originSessionId);
+    const target = sessionById.get(t.targetSessionId);
     return {
       taskId: t.taskId,
-      route: `${PLATFORM_LABELS[origin?.platform ?? "chatgpt"]} → Claude Code`,
+      route: `${PLATFORM_LABELS[origin?.platform ?? "chatgpt"]} → ${conversationName(target, null)}`,
       title: t.title,
       ...taskStatus(t.status, t.failureReason),
       when: relativeTime(t.finishedAt ?? t.createdAt, data.now),
+      linkId: null as string | null,
     };
   });
+
+  /** Runtimes with their workspaces and conversations, for the Runtimes page. */
+  const runtimeTree = activeRuntimes.map((runtime) => ({
+    ...runtime,
+    online: runtimeOnline(runtime, data.now),
+    lastSeen: relativeTime(runtime.lastSeenAt, data.now),
+    claudeAvailable: runtime.capabilities["claude-code"] === "available",
+    workspaces: workspaces
+      .filter((w) => w.runtimeId === runtime.runtimeId)
+      .map((w) => ({
+        ...w,
+        conversations: agentSessions
+          .filter((s) => s.workspaceId === w.workspaceId)
+          .map((s) => ({
+            sessionId: s.sessionId,
+            name: conversationName(s, null),
+            detail: conversationMode(s),
+            busy: s.busy,
+            linked: activeLinks.some((l) => l.agentSessionId === s.sessionId),
+          })),
+      })),
+  }));
 
   return {
     steps,
@@ -155,21 +243,14 @@ export function deriveDashboard(data: DashboardData) {
     headline,
     apps,
     links,
+    pendingLinks,
     pendingCount: pendingLinks.length,
     controllerSessions,
     agentSessions,
     activity,
+    runtimeTree,
+    anyRuntimeOnline,
   };
-}
-
-function latestSeen(sessions: OwnerSession[]): string | null {
-  return (
-    sessions
-      .map((s) => s.lastSeenAt)
-      .filter((v): v is string => Boolean(v))
-      .sort()
-      .at(-1) ?? null
-  );
 }
 
 export function folderName(path: string): string {
@@ -181,15 +262,10 @@ export function folderName(path: string): string {
   );
 }
 
-function prettyAgentName(name: string | null | undefined): string {
-  if (!name) return "Claude Code";
-  return name.replace(/^Claude Code · /, "") || "Claude Code";
-}
-
 const FAILURE_LABELS: Record<FailureReason, string> = {
-  session_busy: "Claude session was open elsewhere",
-  native_session_unavailable: "Claude session not found",
-  lease_exhausted: "Bridge stopped responding",
+  session_busy: "Claude conversation was in use",
+  native_session_unavailable: "Claude conversation not found",
+  lease_exhausted: "Runtime stopped responding",
 };
 
 export function taskStatus(

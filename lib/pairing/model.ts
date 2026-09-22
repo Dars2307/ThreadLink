@@ -38,6 +38,7 @@ export const linkRowSchema = z.object({
   controller_display_name: z.string().nullable().optional(),
   agent_display_name: z.string().nullable().optional(),
   status: z.enum(LINK_STATUSES),
+  paused: z.boolean().optional(),
   revoked_reason: z.enum(LINK_REVOKED_REASONS).nullable(),
   requested_at: z.string(),
   approved_at: z.string().nullable(),
@@ -51,6 +52,8 @@ export type ThreadLinkView = {
   controllerDisplayName: string | null;
   agentDisplayName: string | null;
   status: LinkStatus;
+  /** Owner-paused links deliver nothing until resumed. */
+  paused: boolean;
   revokedReason: (typeof LINK_REVOKED_REASONS)[number] | null;
   requestedAt: string;
   approvedAt: string | null;
@@ -65,6 +68,7 @@ export function toThreadLinkView(row: z.infer<typeof linkRowSchema>): ThreadLink
     controllerDisplayName: row.controller_display_name ?? null,
     agentDisplayName: row.agent_display_name ?? null,
     status: row.status,
+    paused: row.paused === true,
     revokedReason: row.revoked_reason,
     requestedAt: row.requested_at,
     approvedAt: row.approved_at,

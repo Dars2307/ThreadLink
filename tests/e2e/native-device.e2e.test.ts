@@ -12,8 +12,8 @@ import {
   pollDeviceToken,
   startDeviceLogin,
   ThreadLinkApi,
-} from "../../bridge/src/api.ts";
-import { processNextTask } from "../../bridge/src/worker.ts";
+} from "../../runtime/src/api.ts";
+import { processNextTask } from "../../runtime/src/worker.ts";
 import {
   admin,
   identity,

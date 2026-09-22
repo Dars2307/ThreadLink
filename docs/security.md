@@ -76,7 +76,7 @@ updates/deletes affect zero rows. Errors shown to users are generic.
 
 ## Client credentials (Phase 3)
 
-Non-human clients (ChatGPT integration, Claude Code bridge) authenticate with a ThreadLink
+Non-human clients (ChatGPT integration, ThreadLink Runtime) authenticate with a ThreadLink
 connection credential, not a Clerk session. Full design: [connections.md](connections.md).
 
 | Control          | Implementation                                                                                                                                                                                   |
@@ -140,7 +140,7 @@ A deliberately weakened exact-target check makes both the pgTAP and integration 
 
 ## Real clients (Phase 6)
 
-Details: [mcp.md](mcp.md), [claude-code-bridge.md](claude-code-bridge.md).
+Details: [mcp.md](mcp.md), [runtime.md](runtime.md).
 
 | Control                | Implementation                                                                                                                                                                                                                                                 |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -154,7 +154,7 @@ Details: [mcp.md](mcp.md), [claude-code-bridge.md](claude-code-bridge.md).
 | Leases                 | A 5-minute claim lease plus heartbeat; expiry requeues at most 3 attempts; a stale worker cannot complete (`409`), so results are exactly once                                                                                                                 |
 | Bridge credential      | Stored with DPAPI, Keychain or Secret Service; passed to helpers on stdin only; sent only in the `Authorization` header with redirects refused; env fallback carries a warning                                                                                 |
 | Bridge execution       | Official `claude -p` with no shell and the prompt on stdin; `plan` (read-only) permission mode by default; timeout and abort kill the process                                                                                                                  |
-| Rate limits            | Client registration 100 per hour; consent 20 per 10 minutes per user; 10 ChatGPT connections per user; 30 tasks per 10 minutes per session; 10 pending pairings per session; bridge polling backs off from 2 to 60 s                                           |
+| Rate limits            | Client registration 100 per hour; consent 20 per 10 minutes per user; 10 ChatGPT connections per user; 30 tasks per 10 minutes per session; 10 pending pairings per session; Runtime polling backs off from 2 to 60 s                                          |
 
 Alpha limitations:
 
@@ -167,15 +167,56 @@ Alpha limitations:
 
 ## Existing sessions, device sign-in, platforms (Phase 6.5)
 
-| Control            | Implementation                                                                                                                                                                                                                                                                                                                                               |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Native session IDs | Adapter metadata on the agent's own `tlses_`. Only settable by that agent connection. Never echoed back to clients and never visible to controllers (they see the workspace folder name only). Never used for routing or authorization                                                                                                                       |
-| Resume safety      | Before resuming, the bridge takes a per-session lock and checks `claude agents --json`. It fails closed (`session_busy`) if the session is open or the check fails. It never falls back to a new or forked session. A reply from a different session ID is discarded                                                                                         |
-| Workspace binding  | Only sessions whose transcript `cwd` equals the workspace can be attached, and Claude always runs in that workspace                                                                                                                                                                                                                                          |
-| Local discovery    | Reads file names, times, `cwd` and title records only. Content is never parsed, uploaded or logged                                                                                                                                                                                                                                                           |
-| Device sign-in     | Device code is 32 random bytes and stored only as sha256. User code is 8 consonants with a 10-minute lifetime and single use. Approval requires Clerk on `/connect`. Per-user rate limit is 30 lookups or decisions per 10 minutes; the global limit is 200 starts per hour. The bridge shows the approving account (masked email) and asks for confirmation |
-| Platform labels    | Derived from OAuth redirect URIs, never from client-supplied names. A platform/role `CHECK` makes only `claude-code` an agent                                                                                                                                                                                                                                |
-| Failure reasons    | Agents may report only `session_busy` or `native_session_unavailable`. `lease_exhausted` is system-only                                                                                                                                                                                                                                                      |
+| Control            | Implementation                                                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native session IDs | Adapter metadata on the agent's own `tlses_`. Only settable by that agent connection. Never echoed back to clients and never visible to controllers (they see the workspace folder name only). Never used for routing or authorization                                                                                                                        |
+| Resume safety      | Before resuming, the Runtime takes a per-session lock and checks `claude agents --json`. It fails closed (`session_busy`) if the session is open or the check fails. It never falls back to a new or forked session. A reply from a different session ID is discarded                                                                                         |
+| Workspace binding  | Only sessions whose transcript `cwd` equals the workspace can be attached, and Claude always runs in that workspace                                                                                                                                                                                                                                           |
+| Local discovery    | Reads file names, times, `cwd` and title records only. Content is never parsed, uploaded or logged                                                                                                                                                                                                                                                            |
+| Device sign-in     | Device code is 32 random bytes and stored only as sha256. User code is 8 consonants with a 10-minute lifetime and single use. Approval requires Clerk on `/connect`. Per-user rate limit is 30 lookups or decisions per 10 minutes; the global limit is 200 starts per hour. The Runtime shows the approving account (masked email) and asks for confirmation |
+| Platform labels    | Derived from OAuth redirect URIs, never from client-supplied names. A platform/role `CHECK` makes only `claude-code` an agent                                                                                                                                                                                                                                 |
+| Failure reasons    | Agents may report only `session_busy` or `native_session_unavailable`. `lease_exhausted` is system-only                                                                                                                                                                                                                                                       |
+
+## Runtimes (Phase 6.6)
+
+Details: [runtime.md](runtime.md).
+
+| Control                     | Implementation                                                                                                                                                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime identity            | One `tlrun_` per agent connection (1:1). Owner and connection always come from the verified credential; label, platform, kind and version are display-only self-description                                                 |
+| Capability reporting        | Keys and values are allow-listed by a database CHECK; a task is only created if the target Runtime currently reports that provider as `available`                                                                           |
+| Exact routing               | Each provider conversation has its own `tlses_`; links bind one chat to one conversation, so two chats can use two conversations in the same folder without crossing                                                        |
+| Workspace identity          | `(runtime, workspace key)`, never a bare path. Git remotes are normalised to `host/owner/repo`, so credentials embedded in a remote URL are never sent                                                                      |
+| Pause                       | Owner pause of a Runtime blocks claims in the database (not only client-side); link pause blocks new tasks                                                                                                                  |
+| Revocation                  | Disconnecting a Runtime revokes its connection and cascades to sessions, links and open tasks; the credential stops authenticating immediately                                                                              |
+| Credential rotation         | The Runtime can rotate its own credential; the previous one stops working at once                                                                                                                                           |
+| Single engine               | A machine-level lock keeps the desktop app and CLI from running two engines against one config                                                                                                                              |
+| Desktop app                 | Sandboxed renderer, context isolation, no Node in the renderer, fixed IPC channel list with validated arguments, local files only, external links restricted to the ThreadLink origin. Credentials never reach the renderer |
+| Headless credential storage | OS keyring where available; otherwise a `0600` file in the private config directory, and the Runtime reports that it is using it                                                                                            |
+
+### Threat model: a compromised Runtime
+
+If a Runtime (or the machine running it) is taken over, the attacker holds one agent credential.
+
+**They can:** read tasks routed to that Runtime's own conversations; return false results for them;
+claim any label, platform, version or capability set; report conversations as busy or idle; register
+more workspaces and conversations under that Runtime; and run Claude Code on that machine with
+whatever permission mode the user configured.
+
+**They cannot:** read or affect another user's data (RLS plus owner checks on every call); touch
+another Runtime's sessions, links or tasks, even for the same user; approve links for conversations
+they do not own; change ownership, platform-derived trust or another client's connection;
+self-approve a link from a chat that the owner did not request; or keep access after the owner
+disconnects the device (revocation is immediate and cascades).
+
+**Mitigations in place:** per-Runtime credentials with rotation and revocation; capability and label
+values validated and never trusted for authorization; explicit per-link approval; owner-visible
+device list, heartbeats and activity; rate limits; no privileged database client anywhere in this
+path; read-only Claude permission mode by default.
+
+**Accepted for Alpha:** a compromised Runtime can lie about results and busy state for its own
+conversations, and can read the task content routed to it. The blast radius is the machine the user
+already trusted with their code.
 
 ## Privileged client exception
 
@@ -220,10 +261,10 @@ connection credentials. `THREADLINK_ENCRYPTION_KEY` and `THREADLINK_HMAC_SECRET`
 ## Planned controls (later phases)
 
 - OAuth access-token expiry + refresh tokens; per-IP rate limiting at the edge (Phase 8).
-- Signed requests/replay protection for bridge traffic if needed.
+- Signed requests/replay protection for Runtime traffic if needed.
 - Disable Supabase Auth sign-ups on the hosted project so no parallel Supabase users can exist.
 - Per-IP rate limiting for `/api/connection/*` at deployment (Phase 8).
-- Request freshness/replay controls for bridge and agent requests: timestamps, nonces, expiry, and
+- Request freshness/replay controls for Runtime requests: timestamps, nonces, expiry, and
   possibly per-connection signing keys, using established libraries only.
 - Content-Security-Policy tuned for Clerk.
 - Audit events for significant state transitions.

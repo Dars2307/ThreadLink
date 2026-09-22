@@ -11,7 +11,7 @@ An authenticated coordination and routing layer between AI/client sessions. A co
 
 ```text
 ChatGPT (controller)                              Claude Code (execution agent)
-   |  remote MCP                                         ^  local TypeScript bridge
+   |  remote MCP                                         ^  local ThreadLink Runtime
    v                                                     |
 +------------------------------------------------------------------+
 | ThreadLink (Next.js on Vercel)                                    |
@@ -24,18 +24,19 @@ ChatGPT (controller)                              Claude Code (execution agent)
 
 ## Components
 
-| Component           | Responsibility                                      | Status                                    |
-| ------------------- | --------------------------------------------------- | ----------------------------------------- |
-| Clerk               | Human authentication; canonical external identity   | Phase 1                                   |
-| Next.js app         | Web UI, API routes, (later) remote MCP endpoint     | Phase 1                                   |
-| Supabase Postgres   | Persistent state, RLS as second enforcement layer   | Phase 2 (users, connections)              |
-| Connection registry | Per-platform connections + revocable credentials    | Phase 3                                   |
-| Session bindings    | ThreadLink-owned canonical IDs for logical sessions | Phase 4                                   |
-| ThreadLink pairing  | Approved controller-session ↔ agent-session links   | Phase 4                                   |
-| Task routing        | Tasks, messages, results over active links          | Phase 5                                   |
-| MCP adapter         | `/mcp` + OAuth 2.1 AS; 7 narrow tools (ChatGPT)     | Phase 6 ([mcp.md](mcp.md))                |
-| Claude Code bridge  | `bridge/`: polls, leases, runs `claude -p`, reports | Phase 6 ([bridge](claude-code-bridge.md)) |
-| Vercel              | Planned first cloud deployment target               | Phase 8                                   |
+| Component           | Responsibility                                                      | Status                            |
+| ------------------- | ------------------------------------------------------------------- | --------------------------------- |
+| Clerk               | Human authentication; canonical external identity                   | Phase 1                           |
+| Next.js app         | Web UI, API routes, (later) remote MCP endpoint                     | Phase 1                           |
+| Supabase Postgres   | Persistent state, RLS as second enforcement layer                   | Phase 2 (users, connections)      |
+| Connection registry | Per-platform connections + revocable credentials                    | Phase 3                           |
+| Session bindings    | ThreadLink-owned canonical IDs for logical sessions                 | Phase 4                           |
+| ThreadLink pairing  | Approved controller-session ↔ agent-session links                   | Phase 4                           |
+| Task routing        | Tasks, messages, results over active links                          | Phase 5                           |
+| MCP adapter         | `/mcp` + OAuth 2.1 AS; 7 narrow tools (ChatGPT)                     | Phase 6 ([mcp.md](mcp.md))        |
+| ThreadLink Runtime  | `runtime/`: device/environment; workspaces, conversations, adapters | Phase 6.6 ([runtime](runtime.md)) |
+| Desktop companion   | `desktop/`: Electron tray app running the Runtime                   | Phase 6.6 ([runtime](runtime.md)) |
+| Vercel              | Planned first cloud deployment target                               | Phase 8                           |
 
 ## Identity model
 
@@ -78,7 +79,7 @@ It takes no arguments, so callers cannot inject an identity. It is deduplicated 
 
 ### Connections and client identity
 
-Humans authenticate with Clerk; clients (ChatGPT integration, Claude Code bridge) authenticate
+Humans authenticate with Clerk; clients (chat apps over MCP, ThreadLink Runtimes) authenticate
 with a revocable ThreadLink connection credential. See [connections.md](connections.md).
 
 `lib/connections/`:
@@ -152,6 +153,6 @@ has **no importers**; see [security.md](security.md#privileged-client-exception)
 ## Provider adapters
 
 Provider-specific logic (ChatGPT, Claude Code, later Codex/Nova/Claude chat) will live behind
-adapters/bridges so adding a provider does not require core redesign. Controller and execution
+provider adapters so adding a provider does not require core redesign. Controller and execution
 agent are roles, not hard-coded providers. Provider-native session IDs are optional metadata; the
 ThreadLink binding ID is canonical.

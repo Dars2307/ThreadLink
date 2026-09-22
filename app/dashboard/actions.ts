@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { registerMyConnection, revokeMyConnection } from "@/lib/connections/repository";
 import { ConnectionLimitError } from "@/lib/connections/registration";
 import { MAX_ACTIVE_CONNECTIONS } from "@/lib/connections/model";
+import { revokeMyRuntime, updateMyRuntime, setMyLinkPaused } from "@/lib/runtimes/repository";
 import { requestMyPairing, revokeMyThreadLink } from "@/lib/sessions/repository";
 
 export type RegisterConnectionState =
@@ -85,4 +86,64 @@ export async function requestPairingAction(formData: FormData): Promise<void> {
     // Generic; the dashboard re-renders with the true state.
   }
   revalidatePath("/dashboard");
+}
+
+/** Runtime controls (owner-only; the database re-checks ownership). */
+export async function updateRuntimeAction(formData: FormData): Promise<void> {
+  const runtimeId = formData.get("runtimeId");
+  const intent = String(formData.get("intent") ?? "");
+  try {
+    if (intent === "rename") {
+      await updateMyRuntime(runtimeId, { label: formData.get("label") });
+    } else if (intent === "pause" || intent === "resume") {
+      await updateMyRuntime(runtimeId, { paused: intent === "pause" });
+    } else if (intent === "restart") {
+      await updateMyRuntime(runtimeId, { requestRestart: true });
+    } else if (intent === "settings") {
+      await updateMyRuntime(runtimeId, {
+        settings: {
+          autoStart: formData.get("autoStart") === "on",
+          autoReconnect: formData.get("autoReconnect") === "on",
+          notifications: formData.get("notifications") === "on",
+        },
+      });
+    }
+  } catch {
+    // Generic by design; the page re-renders with the true state.
+  }
+  revalidatePath("/dashboard", "layout");
+}
+
+export async function revokeRuntimeAction(formData: FormData): Promise<void> {
+  try {
+    await revokeMyRuntime(formData.get("runtimeId"));
+  } catch {
+    // Generic by design.
+  }
+  revalidatePath("/dashboard", "layout");
+}
+
+export async function setLinkPausedAction(formData: FormData): Promise<void> {
+  try {
+    await setMyLinkPaused(formData.get("linkId"), formData.get("paused") === "true");
+  } catch {
+    // Generic by design.
+  }
+  revalidatePath("/dashboard", "layout");
+}
+
+/**
+ * Change which Claude conversation a chat uses: the current link ends now and a
+ * new one is requested. The Runtime must approve it (never auto-paired).
+ */
+export async function changeLinkConversationAction(formData: FormData): Promise<void> {
+  try {
+    const controllerSessionId = formData.get("controllerSessionId");
+    const agentSessionId = formData.get("agentSessionId");
+    await revokeMyThreadLink(formData.get("linkId"));
+    await requestMyPairing(controllerSessionId, agentSessionId);
+  } catch {
+    // Generic by design.
+  }
+  revalidatePath("/dashboard", "layout");
 }

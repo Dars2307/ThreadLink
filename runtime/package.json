@@ -1,0 +1,29 @@
+{
+  "name": "threadlink",
+  "version": "0.6.6",
+  "description": "ThreadLink Runtime: connects your ChatGPT conversations to your Claude Code conversations on this machine, SSH host or cloud dev environment.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "bin": {
+    "threadlink": "./dist/cli.js",
+    "threadlink-bridge": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "types": "./dist/index.d.ts"
+}

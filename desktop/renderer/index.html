@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'"
+    />
+    <title>ThreadLink</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true">⇄</span> ThreadLink</div>
+      <div class="status">
+        <span id="status-dot" class="dot"></span><span id="status-title">Starting…</span>
+      </div>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <footer class="footer">
+      <button id="open-dashboard" class="ghost" type="button">Open dashboard</button>
+      <span id="footer-detail" class="muted"></span>
+    </footer>
+
+    <template id="tpl-signin">
+      <section class="card stack">
+        <h1>Welcome to ThreadLink</h1>
+        <p class="muted">
+          Connect this computer once. Then, from ChatGPT, just say “send this to Claude”.
+        </p>
+        <label class="field">
+          <span>ThreadLink address</span>
+          <input id="base-url" type="url" spellcheck="false" />
+        </label>
+        <button id="signin" class="primary" type="button">Sign in with your browser</button>
+        <p class="muted small">
+          Your browser opens for sign-in and approval. Nothing to copy, no tokens, no terminal.
+        </p>
+      </section>
+    </template>
+
+    <template id="tpl-waiting">
+      <section class="card stack center">
+        <h1>Approve this computer</h1>
+        <p class="muted">Your browser should be open. Check that it shows this code:</p>
+        <p id="user-code" class="code"></p>
+        <a id="approve-link" class="link" href="#">Open the approval page again</a>
+        <button id="cancel-signin" class="ghost" type="button">Cancel</button>
+      </section>
+    </template>
+
+    <template id="tpl-setup">
+      <section class="stack">
+        <div class="card stack">
+          <h2>Claude Code</h2>
+          <p id="claude-detect" class="muted"></p>
+        </div>
+        <div class="card stack">
+          <h2>Choose a project folder</h2>
+          <div id="workspace-list" class="list"></div>
+          <button id="add-workspace" class="ghost" type="button">Choose another folder…</button>
+        </div>
+        <div class="card stack" id="conversation-card" hidden>
+          <h2>Choose a Claude conversation</h2>
+          <p class="muted small">
+            Requests continue the conversation you pick, with its context. Pick more than one if
+            different chats should go to different conversations.
+          </p>
+          <div id="conversation-list" class="list"></div>
+          <button id="attach-fresh" class="ghost" type="button">
+            Start a new Claude conversation for each request instead
+          </button>
+        </div>
+      </section>
+    </template>
+
+    <template id="tpl-ready">
+      <section class="stack">
+        <div id="links" class="stack"></div>
+        <div class="card stack">
+          <h2>Connect ChatGPT</h2>
+          <p class="muted small">
+            Add ThreadLink as a connector in ChatGPT (Settings → Apps &amp; Connectors), then say
+            “Link this chat to Claude Code”. Approve the request here.
+          </p>
+          <div class="row">
+            <code id="mcp-url" class="grow"></code>
+            <button id="copy-mcp" class="ghost" type="button">Copy</button>
+          </div>
+        </div>
+        <div class="card stack">
+          <h2>Attached conversations</h2>
+          <div id="attached" class="list"></div>
+          <button id="add-more" class="ghost" type="button">Attach another conversation…</button>
+        </div>
+        <div class="card stack">
+          <h2>Runtime</h2>
+          <p id="runtime-detail" class="muted small"></p>
+          <div class="row">
+            <button id="pause" class="ghost" type="button">Pause</button>
+            <button id="restart" class="ghost" type="button">Restart</button>
+          </div>
+          <label class="toggle"
+            ><input id="set-autostart" type="checkbox" /> Start ThreadLink when I log in</label
+          >
+          <label class="toggle"
+            ><input id="set-notifications" type="checkbox" /> Show notifications</label
+          >
+          <button id="signout" class="ghost danger" type="button">Sign out</button>
+        </div>
+      </section>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>

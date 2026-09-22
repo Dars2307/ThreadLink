@@ -31,5 +31,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "bridge"]
+  "exclude": ["node_modules", "runtime", "desktop"]
 }

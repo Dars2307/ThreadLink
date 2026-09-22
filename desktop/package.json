@@ -1,0 +1,58 @@
+{
+  "name": "threadlink-desktop",
+  "productName": "ThreadLink",
+  "version": "0.6.6",
+  "description": "ThreadLink desktop app: runs the ThreadLink Runtime in the background with a tray/menu-bar icon.",
+  "type": "module",
+  "main": "dist/main.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "build": "npm run build:runtime && tsc -p tsconfig.json && node scripts/copy-preload.mjs",
+    "start": "npm run build && electron .",
+    "smoke": "npm run build && electron . --smoke",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb"
+  },
+  "build": {
+    "appId": "app.threadlink.desktop",
+    "productName": "ThreadLink",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
+    "typescript": "5.9"
+  },
+  "dependencies": {
+    "threadlink": "file:../runtime"
+  }
+}

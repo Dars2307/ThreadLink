@@ -176,8 +176,11 @@ export async function linkToClaude(ctx: McpContext, input: Input<"link_to_claude
         "link_to_claude again with its agentSessionId.",
       options: options.map((o) => ({
         agentSessionId: o.sessionId,
-        name: o.displayName ?? "Claude Code session",
+        name: o.displayName ?? "Claude conversation",
         workspace: o.workspaceName,
+        runtime: o.runtimeLabel,
+        runtimeOnline: o.runtimeOnline,
+        busy: o.busy,
         resumesExistingClaudeSession: o.attachedToExistingSession,
         linkStatus: o.linkStatus,
       })),

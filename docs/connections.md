@@ -10,7 +10,7 @@ Client:  connection (tlcon_) ──> credential (tlcrd_)      bearer token, no C
 ```
 
 A **connection** is an authenticated installation of a client (the ChatGPT integration, a Claude
-Code bridge) owned by exactly one ThreadLink user. It is not a chat or a session. Session bindings
+Code Runtime) owned by exactly one ThreadLink user. It is not a chat or a session. Session bindings
 are described in [pairing.md](pairing.md). Clients authenticate with a **connection credential**, never with the user's
 Clerk browser session.
 
@@ -141,7 +141,7 @@ two; 10 leaves room for several machines without allowing unbounded creation.
 ## Alpha registration flows
 
 - **Claude Code:** dashboard → _Create connection_ → Claude Code → copy the credential once →
-  `node bridge/src/cli.ts login --url …` ([claude-code-bridge.md](claude-code-bridge.md)).
+  `npx threadlink setup --url …` ([runtime.md](runtime.md)).
 - **ChatGPT (Phase 6):** created by the MCP OAuth flow ([mcp.md](mcp.md)). The token endpoint
   issues a `chatgpt`/`controller` connection credential as the access token and records the
   OAuth client (`connections.oauth_client_id`). Re-authorizing the same client reuses the

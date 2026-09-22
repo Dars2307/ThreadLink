@@ -17,6 +17,7 @@ database is reconstructable from these files alone (`supabase db reset --local`)
 | `20260922000400_connection_credentials.sql`                | credentials, audit events, register/revoke/rotate/authenticate functions; tightens `connections` grants                                                                              |
 | `20260922000500_sessions_and_pairing.sql`                  | `session_bindings`, `thread_links`, session/pairing functions, revocation cascade; stores `sha256(HMAC)` for credentials                                                             |
 | `20260922000600_tasks_and_routing.sql`                     | `tasks`, `messages`, `artifacts`, routing functions, link → task cancellation cascade                                                                                                |
+| `20260922000900_runtimes_workspaces.sql`                   | Runtimes (`tlrun_`), runtime workspaces (`tlwsp_`), per-conversation agent sessions, capability-aware routing, link/runtime pause, runtime revocation                                |
 | `20260922000800_native_sessions_device_auth_platforms.sql` | platform model + OAuth classification (reclassifies Phase 6 rows), native session metadata, `set_native_session`, `list_agent_sessions`, agent failure reasons, device authorization |
 | `20260922000700_leases_oauth_and_client_ux.sql`            | task leases and retries, `oauth_clients`, `oauth_authorization_codes`, OAuth functions, owner pairing, origin task list, rate limits                                                 |
 

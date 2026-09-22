@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "next typegen && tsc --noEmit && tsc -p bridge",
+    "typecheck": "next typegen && tsc --noEmit && tsc -p runtime && tsc -p desktop --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
@@ -19,7 +19,8 @@
     "db:reset:local": "supabase db reset --local",
     "dev:local-db": "node scripts/dev-local-supabase.mjs",
     "test:e2e": "vitest run --config vitest.e2e.config.mts",
-    "bridge": "node bridge/src/cli.ts"
+    "runtime": "node runtime/src/cli.ts",
+    "desktop": "npm --prefix desktop start"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.4",

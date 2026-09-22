@@ -44,6 +44,9 @@ const agentSessionRowSchema = z.object({
   native_session_mode: z.enum(NATIVE_SESSION_MODES),
   last_seen_at: z.string().nullable(),
   link_status: z.enum(["pending", "active"]).nullable(),
+  runtime_label: z.string().nullable().optional(),
+  runtime_online: z.boolean().nullable().optional(),
+  busy: z.boolean().nullable().optional(),
 });
 
 export type AgentSessionOption = {
@@ -53,6 +56,11 @@ export type AgentSessionOption = {
   attachedToExistingSession: boolean;
   lastSeenAt: string | null;
   linkStatus: "pending" | "active" | null;
+  /** Which Runtime (device/environment) this conversation lives on. */
+  runtimeLabel: string | null;
+  runtimeOnline: boolean;
+  /** True while the conversation is open elsewhere; ThreadLink will not write into it. */
+  busy: boolean;
 };
 
 /** Controller-only: the owner's Claude Code sessions this conversation could link to. */
@@ -75,5 +83,8 @@ export async function listAgentSessions(
     attachedToExistingSession: row.native_session_mode === "resume",
     lastSeenAt: row.last_seen_at,
     linkStatus: row.link_status,
+    runtimeLabel: row.runtime_label ?? null,
+    runtimeOnline: row.runtime_online === true,
+    busy: row.busy === true,
   }));
 }

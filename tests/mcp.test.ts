@@ -29,6 +29,7 @@ const link = (
   controllerDisplayName: "Chat",
   agentDisplayName: agent,
   status,
+  paused: false,
   revokedReason: null,
   requestedAt: "2026-09-22T00:00:00Z",
   approvedAt: null,
@@ -166,13 +167,24 @@ describe("MCP tools", () => {
           native_session_mode: "resume",
           last_seen_at: null,
           link_status: null,
+          runtime_label: "Joel's Laptop",
+          runtime_online: true,
+          busy: false,
         },
       ],
     });
     const result = await linkToClaude(ctx, { sessionId: S });
     expect(result).toMatchObject({
       status: "choose_session",
-      options: [{ agentSessionId: G, workspace: "ThreadLink", resumesExistingClaudeSession: true }],
+      options: [
+        {
+          agentSessionId: G,
+          workspace: "ThreadLink",
+          runtime: "Joel's Laptop",
+          busy: false,
+          resumesExistingClaudeSession: true,
+        },
+      ],
     });
     expect(rpc.mock.calls.map((c) => c[0])).toEqual(["list_agent_sessions"]);
   });
@@ -187,6 +199,9 @@ describe("MCP tools", () => {
           native_session_mode: "fresh",
           last_seen_at: null,
           link_status: null,
+          runtime_label: null,
+          runtime_online: false,
+          busy: false,
         },
       ],
       request_pairing: linkRow(link(L1, "pending")),

@@ -40,6 +40,7 @@ const isConnectionRoute = createRouteMatcher([
   "/api/pairing/(.*)",
   "/api/tasks",
   "/api/tasks/(.*)",
+  "/api/runtime/(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, request) => {

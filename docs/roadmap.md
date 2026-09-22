@@ -14,8 +14,9 @@ ownership isolation intact.
 | 3     | Connection registry + client identity   | ChatGPT and Claude Code connections register under the user with revocable, hashed credentials              | **Done**                                 |
 | 4     | Session bindings + pairing              | One ChatGPT binding securely links to one Claude Code binding                                               | **Done**                                 |
 | 5     | Tasks, messages + routing core          | A controller session's task reaches only the paired agent session and the result returns only to the origin | **Done**                                 |
-| 6     | Real clients (MCP + Claude Code bridge) | Local bridge receives the task and returns status/results                                                   | **Done** (local; hosted preview pending) |
+| 6     | Real clients (MCP + ThreadLink Runtime) | Local Runtime receives the task and returns status/results                                                  | **Done** (local; hosted preview pending) |
 | 6.5   | Existing sessions + product UX          | Tasks resume the attached Claude Code session; guided setup; simplified dashboard                           | **Done** (local; hosted pending)         |
+| 6.6   | Runtime + desktop app + UX              | Runtimes, multiple workspaces/conversations, desktop companion, sidebar dashboard                           | **Done** (local; hosted pending)         |
 | 7     | End-to-end proof                        | One real task completes the round trip                                                                      | Next                                     |
 | 8     | Deployment + hardening                  | Reproducible Vercel deploy, correct secrets, security tests pass, revocation works                          | Planned                                  |
 
@@ -23,7 +24,7 @@ ownership isolation intact.
 
 One user account, Clerk auth, one ChatGPT connection, one Claude Code connection, one ThreadLink
 pairing, task/message dispatch, return routing, task state, audit log, artifact references,
-Supabase Postgres + RLS, remote MCP endpoint, local Claude Code bridge, Vercel deployment.
+Supabase Postgres + RLS, remote MCP endpoint, local ThreadLink Runtime, Vercel deployment.
 
 ## After alpha (not in scope now)
 

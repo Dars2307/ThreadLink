@@ -1,4 +1,4 @@
-# Existing Claude Code Session Attachment (Phase 6.5)
+# Existing Claude Code Conversations (Phase 6.5, extended in 6.6)
 
 ThreadLink can deliver tasks into an **existing** Claude Code session instead of starting a fresh
 headless run for every task. This page records what was verified, how the attachment works, and
@@ -13,18 +13,25 @@ exactly what ThreadLink promises.
 | Transcript                                                      | The new turn is appended to the same `<id>.jsonl`                                                                                                                                              |
 | Second resume                                                   | Same ID, context still retained                                                                                                                                                                |
 | Unknown ID                                                      | Exit 1, `No conversation found with session ID: …`; nothing created                                                                                                                            |
-| Resume from a **different** folder                              | Claude Code accepts it and runs tools in the wrong folder, so the bridge always runs in the session's recorded workspace and only attaches sessions recorded there                             |
+| Resume from a **different** folder                              | Claude Code accepts it and runs tools in the wrong folder, so the Runtime always runs in the session's recorded workspace and only attaches sessions recorded there                            |
 | Session running as a background session (`claude --bg`)         | Claude Code itself refuses: `Session … is running as a background session … claude stop … or --fork-session`                                                                                   |
 | Running sessions                                                | Listed by the official `claude agents --json` (`sessionId`, `pid`, `kind`, `status`, `cwd`, `name`), including interactive terminal and Claude desktop sessions and in-flight `claude -p` runs |
 | Interactive session open in a terminal                          | Not reliably testable headlessly. ThreadLink does not rely on Claude Code's behaviour here: it refuses on its own (see below)                                                                  |
 
-`tests/bridge/claude-real.test.ts` reproduces these checks against the real CLI:
+`tests/runtime/claude-real.test.ts` reproduces these checks against the real CLI:
 
 ```bash
-THREADLINK_REAL_CLAUDE=1 npx vitest run tests/bridge/claude-real.test.ts
+THREADLINK_REAL_CLAUDE=1 npx vitest run tests/runtime/claude-real.test.ts
 ```
 
 ## Model
+
+Since Phase 6.6 each Claude conversation is its own ThreadLink session, placed on a Runtime and a
+workspace, so one folder can hold several conversations and different chats can use different ones:
+
+```
+Runtime (tlrun_) -> workspace (tlwsp_) -> conversation (native id) -> tlses_ -> link (tllnk_)
+```
 
 - The canonical identity stays the ThreadLink `tlses_`.
 - The Claude Code session UUID is **adapter metadata** on that session:
@@ -40,7 +47,7 @@ THREADLINK_REAL_CLAUDE=1 npx vitest run tests/bridge/claude-real.test.ts
 
 ## Discovery (local, metadata only)
 
-The bridge lists sessions for a workspace from Claude Code's persisted state. It does not scrape
+The Runtime lists sessions for a workspace from Claude Code's persisted state. It does not scrape
 UI, automate keystrokes or guess IDs.
 
 - **Where it looks:** `<claude home>/projects/<cwd with non-alphanumerics replaced by "-">/<uuid>.jsonl`.
@@ -54,16 +61,17 @@ UI, automate keystrokes or guess IDs.
 
 ## Attach flow
 
-`threadlink-bridge setup` does the following:
+`threadlink setup` does the following:
 
 1. Browser sign-in (device authorization).
 2. Registers or reuses the workspace `tlses_`.
 3. Lists the sessions as `N) title · last used · 04158991… · open now`.
 4. You pick one. If discovery finds nothing, you can type an ID, which is verified to exist in
    this workspace.
-5. The bridge stores the attachment locally and reports it to ThreadLink.
+5. The Runtime stores the attachment locally and reports it to ThreadLink.
 
-To change the session later, run `threadlink-bridge attach` (or `attach --fresh`).
+Attach more conversations at any time (ThreadLink app, or `npx threadlink attach`); each one gets
+its own `tlses_` and can be linked to a different chat.
 
 ## Execution
 
@@ -80,10 +88,10 @@ claude -p --resume <id> --output-format json --permission-mode plan
 
 ## Concurrency: fail closed
 
-Before every resume, the bridge:
+Before every resume, the Runtime:
 
 1. Takes a per-session lock file (`<config>/locks/<id>.lock`, stale locks from dead PIDs are
-   reclaimed). This serialises bridge processes on the machine.
+   reclaimed). This serialises Runtime processes on the machine.
 2. Asks `claude agents --json`. If the session is listed anywhere (interactive, desktop,
    background or another `-p` run), or the listing cannot be obtained, the task fails with
    `failure_reason = session_busy` and a clear message. ChatGPT sees _"Claude session was open

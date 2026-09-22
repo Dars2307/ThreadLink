@@ -7,9 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { provisionThreadLinkUser } from "@/lib/auth/provision";
 import { registerConnection } from "@/lib/connections/registration";
 
-import { ThreadLinkApi } from "../../bridge/src/api.ts";
-import { EchoExecutor } from "../../bridge/src/executor.ts";
-import { processNextTask } from "../../bridge/src/worker.ts";
+import { ThreadLinkApi } from "../../runtime/src/api.ts";
+import { EchoExecutor } from "../../runtime/src/executor.ts";
+import { processNextTask } from "../../runtime/src/worker.ts";
 import {
   admin,
   identity,

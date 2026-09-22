@@ -41,6 +41,10 @@ const SERVER_ONLY_MODULES = [
   "@/lib/oauth/authorize",
   "@/lib/mcp/server",
   "@/lib/device/server",
+  "@/lib/device/approve",
+  "@/lib/runtimes/queries",
+  "@/lib/runtimes/repository",
+  "@/lib/dashboard/data",
 ];
 
 /** Pure modules that must still never be bundled for the browser (node:crypto, token logic). */
@@ -134,7 +138,7 @@ describe("client/server boundary", () => {
     expect(routes.length).toBeGreaterThanOrEqual(18);
     for (const route of routes) {
       expect(route.path).toMatch(
-        /^app\/api\/(connection|session|pairing|tasks)\/(.+\/)?route\.ts$/,
+        /^app\/api\/(connection|session|pairing|tasks|runtime)\/(.+\/)?route\.ts$/,
       );
       expect(route.source, route.path).toMatch(
         /await requireConnection\(request\)|handleClientRequest\(request, /,
@@ -157,6 +161,7 @@ describe("client/server boundary", () => {
         "/api/session/(.*)",
         "/api/tasks",
         "/api/tasks/(.*)",
+        "/api/runtime/(.*)",
       ].sort(),
     );
   });
@@ -210,7 +215,7 @@ describe("client/server boundary", () => {
 });
 
 describe("committed files contain no real-looking connection tokens", () => {
-  const SCAN_DIRS = ["app", "components", "lib", "tests", "docs", "supabase", "bridge"];
+  const SCAN_DIRS = ["app", "components", "lib", "tests", "docs", "supabase", "runtime", "desktop"];
   const scanned = SCAN_DIRS.flatMap((dir) => {
     const walk = (d: string): string[] =>
       readdirSync(d).flatMap((name) => {

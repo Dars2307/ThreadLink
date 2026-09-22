@@ -29,6 +29,10 @@ const ownerSessionSchema = z.object({
   native_provider_session_id: z.string().nullable(),
   workspace_path: z.string().nullable(),
   native_attached_at: z.string().nullable(),
+  runtime_id: z.string().nullable(),
+  workspace_id: z.string().nullable(),
+  provider: z.string().nullable(),
+  native_busy: z.boolean(),
   connections: z.object({
     platform: z.enum(CONNECTION_PLATFORMS),
     role: z.enum(CONNECTION_ROLES),
@@ -49,6 +53,10 @@ export type OwnerSession = {
   nativeSessionId: string | null;
   workspacePath: string | null;
   nativeAttachedAt: string | null;
+  runtimeId: string | null;
+  workspaceId: string | null;
+  provider: string | null;
+  busy: boolean;
 };
 
 export async function listSessions(
@@ -58,7 +66,7 @@ export async function listSessions(
   const { data, error } = await db
     .from("session_bindings")
     .select(
-      "id, owner_user_id, connection_id, display_name, status, created_at, last_seen_at, native_session_mode, native_provider_session_id, workspace_path, native_attached_at, connections(platform, role)",
+      "id, owner_user_id, connection_id, display_name, status, created_at, last_seen_at, native_session_mode, native_provider_session_id, workspace_path, native_attached_at, runtime_id, workspace_id, provider, native_busy, connections(platform, role)",
     )
     .order("created_at", { ascending: false })
     .limit(200);
@@ -78,6 +86,10 @@ export async function listSessions(
     nativeSessionId: row.native_provider_session_id,
     workspacePath: row.workspace_path,
     nativeAttachedAt: row.native_attached_at,
+    runtimeId: row.runtime_id,
+    workspaceId: row.workspace_id,
+    provider: row.provider,
+    busy: row.native_busy,
   }));
 }
 

@@ -8,6 +8,11 @@ const eslintConfig = defineConfig([
   ...nextTs,
   prettier,
   {
+    // Electron preload scripts must be CommonJS.
+    files: ["**/*.cts"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  {
     rules: {
       // Server secrets must only be read through lib/env/server.ts.
       "no-restricted-syntax": [
@@ -38,7 +43,15 @@ const eslintConfig = defineConfig([
       ],
     },
   },
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts"]),
+  globalIgnores([
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+    "desktop/dist/**",
+    "desktop/release/**",
+    "runtime/dist/**",
+  ]),
 ]);
 
 export default eslintConfig;
