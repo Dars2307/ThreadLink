@@ -16,6 +16,7 @@ database is reconstructable from these files alone (`supabase db reset --local`)
 | `20260922000300_connections.sql`                   | `public.connections`, lifecycle guard, column grants, RLS                                                                |
 | `20260922000400_connection_credentials.sql`        | credentials, audit events, register/revoke/rotate/authenticate functions; tightens `connections` grants                  |
 | `20260922000500_sessions_and_pairing.sql`          | `session_bindings`, `thread_links`, session/pairing functions, revocation cascade; stores `sha256(HMAC)` for credentials |
+| `20260922000600_tasks_and_routing.sql`             | `tasks`, `messages`, `artifacts`, routing functions, link → task cancellation cascade                                    |
 
 Rules:
 
@@ -28,14 +29,17 @@ Rules:
 
 ThreadLink IDs are `<prefix>_<32 lowercase hex>`, e.g. `tlusr_3f9c…`.
 
-| Prefix   | Entity                | Phase |
-| -------- | --------------------- | ----- |
-| `tlusr_` | ThreadLink user       | 2     |
-| `tlcon_` | Connection            | 2     |
-| `tlcrd_` | Connection credential | 3     |
-| `tlevt_` | Audit event           | 3     |
-| `tlses_` | Session binding       | 4     |
-| `tllnk_` | ThreadLink            | 4     |
+| Prefix    | Entity                | Phase |
+| --------- | --------------------- | ----- |
+| `tlusr_`  | ThreadLink user       | 2     |
+| `tlcon_`  | Connection            | 2     |
+| `tlcrd_`  | Connection credential | 3     |
+| `tlevt_`  | Audit event           | 3     |
+| `tlses_`  | Session binding       | 4     |
+| `tllnk_`  | ThreadLink            | 4     |
+| `tltask_` | Task                  | 5     |
+| `tlmsg_`  | Routing message       | 5     |
+| `tlart_`  | Artifact reference    | 5     |
 
 - Generated only in the database by `threadlink_private.generate_id()` from `gen_random_uuid()`
   (UUIDv4, 122 bits from the server CSPRNG). No custom cryptography.
@@ -74,7 +78,8 @@ A trigger forbids changing `id`, `clerk_user_id` or `created_at`, even for privi
 Since Phase 3, connections are created, revoked and rotated only through database functions, and
 carry credentials in `connection_credentials`. See [connections.md](connections.md) for the
 credential model, `connection_credentials` and `audit_events`, and [pairing.md](pairing.md) for
-`session_bindings` and `thread_links` (both RLS owner-select only; writes via functions).
+`session_bindings` and `thread_links`, and [routing.md](routing.md) for `tasks`, `messages` and `artifacts`
+(all RLS owner-select only; writes via functions). ThreadLink ID prefixes are `tl` + 3–4 letters.
 
 ## Identity mapping and provisioning
 
@@ -129,7 +134,7 @@ secret), then `npm run test:e2e`.
 
 | Command                    | What it proves                                                                                               | Target                              |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `npm run test:db`          | pgTAP: RLS/grants/policies/credentials as `anon`/`authenticated` roles with JWT claims (199 assertions)      | local only                          |
+| `npm run test:db`          | pgTAP: RLS/grants/policies/credentials as `anon`/`authenticated` roles with JWT claims (299 assertions)      | local only                          |
 | `npm run test:integration` | App code → supabase-js → PostgREST → RLS with signed tokens, incl. forged tokens and concurrent provisioning | local only (refuses non-local URLs) |
 | `npm test`                 | Unit tests (no database)                                                                                     | none                                |
 

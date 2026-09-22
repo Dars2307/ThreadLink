@@ -78,7 +78,8 @@ components/               Shared UI
 lib/auth/                 Identity resolution (Clerk) + ThreadLink user provisioning
 lib/connections/          Connection model, credentials, registration
 lib/sessions/, lib/pairing/  Session bindings and ThreadLink pairing
-lib/client-api/           Connection-authenticated client API (sessions, pairing)
+lib/client-api/           Connection-authenticated client API (sessions, pairing, tasks)
+lib/tasks/                Task, message and artifact model; dashboard task history
 lib/ids.ts                ThreadLink ID formats (tlusr_, tlcon_, ...)
 lib/env/                  Validated environment (server + public)
 lib/security/             Security helpers (masking, public-env guard)
@@ -97,4 +98,5 @@ docs/                     Architecture, security, roadmap
 - [docs/database.md](docs/database.md)
 - [docs/connections.md](docs/connections.md)
 - [docs/pairing.md](docs/pairing.md)
+- [docs/routing.md](docs/routing.md)
 - [docs/roadmap.md](docs/roadmap.md)

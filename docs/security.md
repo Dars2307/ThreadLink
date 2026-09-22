@@ -119,6 +119,25 @@ Tests prove cross-user, wrong-role, impersonation, revoked-connection and retire
 (pgTAP, PostgREST integration and HTTP e2e). A deliberately weakened `approve_pairing` makes 8
 tests fail.
 
+## Routing (Phase 5)
+
+Full design: [routing.md](routing.md).
+
+| Control                  | Implementation                                                                                                                                            |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical routing        | origin `tlses_` → active `tllnk_` → target `tlses_` → target connection, resolved in the database; callers cannot supply target/owner/connection          |
+| Send-time validation     | connection, origin session, role, link, target session and target connection all re-checked on create                                                     |
+| Delivery-time validation | every inbox/claim/start/progress/complete/fail/get re-checks the route; invalid → `cancelled` (`route_invalid`), proven with the cascade trigger disabled |
+| Exact target             | only the link's agent session sees or claims the task; others get `404`                                                                                   |
+| Exact origin             | only the originating controller session reads the result                                                                                                  |
+| Atomic claim             | row lock + state guard; one owner per task; `claimRef` binds later steps to that worker                                                                   |
+| Integrity                | composite FKs (one owner) + triggers (task route = link sides; message route = task sides) + state-machine trigger (no reactivation)                      |
+| Revocation               | link revoked → open tasks cancelled (`link_revoked`); history kept                                                                                        |
+| Limits                   | 64 KB tasks, 256 KB results, 100 open tasks per link, body caps checked before reading (`413`)                                                            |
+| Logs                     | no task content, tokens or HMACs in server logs (scanned after e2e)                                                                                       |
+
+A deliberately weakened exact-target check makes both the pgTAP and integration suites fail.
+
 ## Privileged client exception
 
 `createPrivilegedSupabaseClient()` (`lib/supabase/admin.ts`) uses `SUPABASE_SECRET_KEY` and

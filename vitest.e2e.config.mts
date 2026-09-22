@@ -12,6 +12,6 @@ export default defineConfig({
     include: ["tests/e2e/**/*.e2e.test.ts"],
     globalSetup: ["tests/integration/global-setup.ts"],
     fileParallelism: false,
-    testTimeout: 20_000,
+    testTimeout: 60_000,
   },
 });

@@ -224,7 +224,7 @@ describe("client API over HTTP", () => {
       method: "POST",
       body: { displayName: "x".repeat(9000) },
     });
-    expect(big.status).toBe(400);
+    expect(big.status).toBe(413);
     const res = await fetch(`${BASE_URL}/api/pairing/request`, {
       method: "POST",
       headers: { Authorization: `Bearer ${controllerToken}`, "Content-Type": "application/json" },

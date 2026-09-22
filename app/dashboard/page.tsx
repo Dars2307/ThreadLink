@@ -13,7 +13,8 @@ import { RevokeLinkButton } from "@/components/connections/revoke-link-button";
 import type { ThreadLinkView } from "@/lib/pairing/model";
 import { maskIdentifier } from "@/lib/security/mask";
 import type { OwnerSession } from "@/lib/sessions/queries";
-import { listMySessions, listMyThreadLinks } from "@/lib/sessions/repository";
+import { listMyRecentTasks, listMySessions, listMyThreadLinks } from "@/lib/sessions/repository";
+import type { RecentTask } from "@/lib/tasks/queries";
 
 export const metadata: Metadata = {
   title: "Dashboard · ThreadLink",
@@ -26,18 +27,20 @@ type AccountState =
       connections: Connection[];
       sessions: OwnerSession[];
       links: ThreadLinkView[];
+      tasks: RecentTask[];
     }
   | { ok: false };
 
 async function loadAccount(): Promise<AccountState> {
   try {
     const user = await requireThreadLinkUser();
-    const [connections, sessions, links] = await Promise.all([
+    const [connections, sessions, links, tasks] = await Promise.all([
       listMyConnections(),
       listMySessions(),
       listMyThreadLinks(),
+      listMyRecentTasks(),
     ]);
-    return { ok: true, user, connections, sessions, links };
+    return { ok: true, user, connections, sessions, links, tasks };
   } catch {
     // Fail closed without leaking why (auth, database or mapping failure).
     return { ok: false };
@@ -156,6 +159,7 @@ export default async function DashboardPage() {
 
       {account.ok ? <SessionsSection sessions={account.sessions} /> : null}
       {account.ok ? <LinksSection links={account.links} sessions={account.sessions} /> : null}
+      {account.ok ? <TasksSection tasks={account.tasks} sessions={account.sessions} /> : null}
 
       <div>
         <SignOutButton>
@@ -236,6 +240,42 @@ function LinksSection({ links, sessions }: { links: ThreadLinkView[]; sessions: 
                 </span>
               </div>
               {link.status !== "revoked" ? <RevokeLinkButton linkId={link.linkId} /> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function TasksSection({ tasks, sessions }: { tasks: RecentTask[]; sessions: OwnerSession[] }) {
+  const label = (id: string) =>
+    `${sessions.find((s) => s.sessionId === id)?.displayName ?? "session"} (${maskIdentifier(id, 6)})`;
+  return (
+    <div className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold">Recent Tasks</h2>
+      {tasks.length === 0 ? (
+        <p className="text-foreground/60 text-sm">No tasks yet</p>
+      ) : (
+        <ul className="flex flex-col gap-2 text-sm">
+          {tasks.map((task) => (
+            <li
+              key={task.taskId}
+              className="flex flex-col gap-1 rounded-md border border-black/10 px-4 py-3 dark:border-white/15"
+            >
+              <span className="font-medium">
+                {task.title} <span className="text-foreground/60 font-mono">[{task.priority}]</span>
+              </span>
+              <span className="text-foreground/60">
+                <span className="font-mono">{maskIdentifier(task.taskId, 6)}</span> · {task.status}
+              </span>
+              <span className="text-foreground/60">
+                {label(task.originSessionId)} → {label(task.targetSessionId)}
+              </span>
+              <span className="text-foreground/50 text-xs">
+                Created {formatDate(task.createdAt)}
+                {task.finishedAt ? ` · Finished ${formatDate(task.finishedAt)}` : ""}
+              </span>
             </li>
           ))}
         </ul>

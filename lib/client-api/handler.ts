@@ -9,7 +9,7 @@ import { createAnonymousSupabaseClient } from "@/lib/supabase/server";
 
 import { ClientOperationError, type ClientDatabase, type ClientErrorKind } from "./operations";
 
-const MAX_BODY_BYTES = 8 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 8 * 1024;
 const NO_STORE = { "Cache-Control": "no-store" };
 
 const STATUS: Record<Exclude<ClientErrorKind, "unauthorized">, number> = {
@@ -17,6 +17,7 @@ const STATUS: Record<Exclude<ClientErrorKind, "unauthorized">, number> = {
   not_found: 404,
   conflict: 409,
   invalid: 400,
+  too_large: 413,
   limit: 429,
   unavailable: 503,
 };
@@ -54,10 +55,19 @@ export async function handleClientRequest(
   }
 }
 
-/** Parses a small JSON body; anything else is an invalid request. */
-export async function readJsonBody(request: Request): Promise<unknown> {
+/**
+ * Parses a bounded JSON body. The declared Content-Length is checked before the
+ * body is read, and the actual byte size after; oversized requests are rejected
+ * before any expensive processing.
+ */
+export async function readJsonBody(
+  request: Request,
+  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
+): Promise<unknown> {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new ClientOperationError("too_large");
   const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) throw new ClientOperationError("invalid");
+  if (Buffer.byteLength(text, "utf8") > maxBytes) throw new ClientOperationError("too_large");
   if (text.trim() === "") return {};
   try {
     return JSON.parse(text) as unknown;

@@ -10,9 +10,11 @@ export const ID_PREFIXES = {
   connection: "tlcon",
   credential: "tlcrd",
   auditEvent: "tlevt",
-  // Reserved for later phases:
   sessionBinding: "tlses",
   threadLink: "tllnk",
+  task: "tltask",
+  message: "tlmsg",
+  artifact: "tlart",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

@@ -32,7 +32,8 @@ ChatGPT (controller)                              Claude Code (execution agent)
 | Connection registry | Per-platform connections + revocable credentials      | Phase 3                      |
 | Session bindings    | ThreadLink-owned canonical IDs for logical sessions   | Phase 4                      |
 | ThreadLink pairing  | Approved controller-session ↔ agent-session links     | Phase 4                      |
-| MCP routing         | `send_to_agent` and related tools                     | Phase 5                      |
+| Task routing        | Tasks, messages, results over active links            | Phase 5                      |
+| MCP adapter         | `send_to_agent` and related tools (ChatGPT)           | Phase 6                      |
 | Claude Code bridge  | Local process that receives tasks and returns results | Phase 6                      |
 | Vercel              | Planned first cloud deployment target                 | Phase 8                      |
 
@@ -106,6 +107,9 @@ See [pairing.md](pairing.md).
 | `lib/client-api/handler.ts`                     | server-only route wrapper: `requireConnectionContext()`, body cap, generic errors    |
 | `lib/sessions/queries.ts`, `repository.ts`      | dashboard reads (RLS) and owner link revocation                                      |
 | `app/api/session/*`, `app/api/pairing*`         | client routes                                                                        |
+| `lib/tasks/model.ts`, `lib/client-api/tasks.ts` | task/message/artifact schemas and routing operations ([routing.md](routing.md))      |
+| `lib/tasks/queries.ts`                          | dashboard recent-task history (RLS)                                                  |
+| `app/api/tasks*`                                | task routing routes                                                                  |
 
 ```text
 client (tlc_ token) ─> route ─> requireConnectionContext() ─> HMAC ─> DB function(anon)
@@ -117,7 +121,7 @@ client (tlc_ token) ─> route ─> requireConnectionContext() ─> HMAC ─> DB
 
 1. **`proxy.ts`** (Next.js 16's replacement for `middleware.ts`) runs Clerk and **denies by
    default**: only `/`, `/sign-in*` and `/sign-up*` are public. New routes are protected
-   automatically. `/api/connection/*`, `/api/session/*` and `/api/pairing*` skip the Clerk gate because their
+   automatically. `/api/connection/*`, `/api/session/*`, `/api/pairing*` and `/api/tasks*` skip the Clerk gate because their
    callers present a connection credential; every handler there must authenticate it.
 2. **Per-handler check**: protected pages/handlers call `getIdentity()` / `requireIdentity()` again
    (defence in depth), then perform resource authorization.

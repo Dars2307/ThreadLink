@@ -127,9 +127,11 @@ describe("client/server boundary", () => {
     // proxy.ts skips the Clerk gate for exactly these prefixes; each handler
     // must authenticate the connection itself.
     const routes = files.filter(({ path }) => /^app\/api\/.+\/route\.ts$/.test(path));
-    expect(routes.length).toBeGreaterThanOrEqual(8);
+    expect(routes.length).toBeGreaterThanOrEqual(17);
     for (const route of routes) {
-      expect(route.path).toMatch(/^app\/api\/(connection|session|pairing)\/(.+\/)?route\.ts$/);
+      expect(route.path).toMatch(
+        /^app\/api\/(connection|session|pairing|tasks)\/(.+\/)?route\.ts$/,
+      );
       expect(route.source, route.path).toMatch(
         /await requireConnection\(request\)|handleClientRequest\(request, /,
       );
@@ -144,7 +146,14 @@ describe("client/server boundary", () => {
     const block = /isConnectionRoute = createRouteMatcher\(\[([^\]]*)\]\)/.exec(proxy)?.[1] ?? "";
     const patterns = [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
     expect(patterns).toEqual(
-      ["/api/connection/(.*)", "/api/pairing", "/api/pairing/(.*)", "/api/session/(.*)"].sort(),
+      [
+        "/api/connection/(.*)",
+        "/api/pairing",
+        "/api/pairing/(.*)",
+        "/api/session/(.*)",
+        "/api/tasks",
+        "/api/tasks/(.*)",
+      ].sort(),
     );
   });
 

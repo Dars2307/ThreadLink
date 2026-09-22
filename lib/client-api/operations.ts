@@ -30,7 +30,14 @@ export type ClientDatabase = {
 };
 
 export type ClientErrorKind =
-  "unauthorized" | "forbidden" | "not_found" | "conflict" | "invalid" | "limit" | "unavailable";
+  | "unauthorized"
+  | "forbidden"
+  | "not_found"
+  | "conflict"
+  | "invalid"
+  | "too_large"
+  | "limit"
+  | "unavailable";
 
 export class ClientOperationError extends Error {
   constructor(readonly kind: ClientErrorKind) {
@@ -46,10 +53,11 @@ const ERROR_KINDS: Record<string, ClientErrorKind> = {
   "55000": "conflict",
   "54000": "limit",
   "23514": "invalid",
+  "23502": "invalid",
   "22023": "invalid",
 };
 
-async function call<T>(
+export async function call<T>(
   db: ClientDatabase,
   fn: string,
   args: Record<string, unknown>,
@@ -71,9 +79,17 @@ async function call<T>(
   }
 }
 
-function validate<S extends z.ZodTypeAny>(schema: S, input: unknown): z.infer<S> {
+export function validate<S extends z.ZodTypeAny>(schema: S, input: unknown): z.infer<S> {
   const parsed = schema.safeParse(input);
-  if (!parsed.success) throw new ClientOperationError("invalid");
+  if (!parsed.success) {
+    // Payload size (bytes, long strings, long arrays) -> 413; numeric range -> 400.
+    const oversized = parsed.error.issues.some(
+      (issue) =>
+        /bytes$/.test(issue.message) ||
+        (issue.code === "too_big" && "origin" in issue && issue.origin !== "number"),
+    );
+    throw new ClientOperationError(oversized ? "too_large" : "invalid");
+  }
   return parsed.data;
 }
 

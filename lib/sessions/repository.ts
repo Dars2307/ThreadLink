@@ -2,6 +2,7 @@ import "server-only";
 
 import { requireThreadLinkUser } from "@/lib/auth/threadlink-user";
 import type { ThreadLinkView } from "@/lib/pairing/model";
+import { listRecentTasks, type RecentTask } from "@/lib/tasks/queries";
 import { createUserSupabaseClient } from "@/lib/supabase/server";
 
 import {
@@ -27,4 +28,10 @@ export async function listMyThreadLinks(): Promise<ThreadLinkView[]> {
 export async function revokeMyThreadLink(linkId: unknown): Promise<ThreadLinkView> {
   await requireThreadLinkUser();
   return revokeThreadLinkAsOwner(createUserSupabaseClient(), linkId);
+}
+
+/** The signed-in user's most recent tasks (metadata only). */
+export async function listMyRecentTasks(): Promise<RecentTask[]> {
+  const user = await requireThreadLinkUser();
+  return listRecentTasks(createUserSupabaseClient(), user);
 }

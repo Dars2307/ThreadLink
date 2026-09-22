@@ -129,8 +129,9 @@ All are `SECURITY DEFINER` with `search_path = ''`, have explicit grants, take n
 expose no generic update. Tables grant `SELECT` to `authenticated` under owner RLS and no writes
 to anyone.
 
-## Future routing relationship
+## Routing relationship
 
-Phase 5 routing will resolve `origin session → active thread_link → target session → target
-connection`, re-checking at send time that the link is `active` and both sessions/connections are
-usable. Messages and tasks will reference `tllnk_`/`tlses_` IDs, never provider IDs or names.
+Phase 5 routes tasks over active links; see [routing.md](routing.md). Each send resolves
+`origin session → active tllnk_ → target session → target connection` and re-validates it at
+delivery time. Revoking a link (directly or through the session/connection cascade) cancels its
+open tasks.
