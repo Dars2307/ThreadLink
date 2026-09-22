@@ -102,8 +102,8 @@ select results_eq(
 );
 select is(
   (select token_hash from public.connection_credentials where connection_id = pg_temp.id('a_gpt')),
-  pg_temp.h('a-gpt'),
-  'only the hash is stored for the credential'
+  encode(sha256(convert_to(pg_temp.h('a-gpt'), 'UTF8')), 'hex'),
+  'only sha256 of the presented HMAC is stored (neither token nor HMAC at rest)'
 );
 select matches(
   (select id from public.connection_credentials where connection_id = pg_temp.id('a_gpt')),

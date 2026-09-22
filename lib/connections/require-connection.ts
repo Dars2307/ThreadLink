@@ -24,6 +24,22 @@ export class ConnectionAuthenticationError extends Error {
  * Fails closed with a single generic error.
  */
 export async function requireConnection(request: Request): Promise<ConnectionIdentity> {
+  return (await requireConnectionContext(request)).identity;
+}
+
+/** Trusted connection context for routes that call connection-authenticated DB functions. */
+export type ConnectionContext = {
+  readonly identity: ConnectionIdentity;
+  /** HMAC of the presented token. Server memory only; never log, persist or return it. */
+  readonly credentialHash: string;
+};
+
+/**
+ * Like `requireConnection`, but also returns the credential HMAC so the
+ * database can re-verify the credential inside each operation (no caller-
+ * supplied connection ID is ever trusted).
+ */
+export async function requireConnectionContext(request: Request): Promise<ConnectionContext> {
   let secret: string;
   try {
     secret = getServerEnv().THREADLINK_CONNECTION_SECRET;
@@ -40,7 +56,7 @@ export async function requireConnection(request: Request): Promise<ConnectionIde
     logFailure(result.reason);
     throw new ConnectionAuthenticationError();
   }
-  return result.identity;
+  return Object.freeze({ identity: result.identity, credentialHash: result.credentialHash });
 }
 
 /** Generic 401 for connection-authenticated routes. */

@@ -22,7 +22,16 @@ export type ConnectionIdentity = {
 export type ConnectionAuthFailure = "missing" | "malformed" | "rejected" | "unavailable";
 
 export type ConnectionAuthResult =
-  { ok: true; identity: ConnectionIdentity } | { ok: false; reason: ConnectionAuthFailure };
+  | {
+      ok: true;
+      identity: ConnectionIdentity;
+      /**
+       * Server-computed HMAC of the presented token. Credential-equivalent for the
+       * connection-authenticated DB functions: keep in memory only, never log or return.
+       */
+      credentialHash: string;
+    }
+  | { ok: false; reason: ConnectionAuthFailure };
 
 export type ConnectionAuthDatabase = {
   rpc(
@@ -71,6 +80,7 @@ export async function authenticateConnectionToken(
     const row = parsed.data;
     return {
       ok: true,
+      credentialHash: tokenHash,
       identity: Object.freeze({
         connectionId: row.connection_id,
         ownerUserId: row.owner_user_id,

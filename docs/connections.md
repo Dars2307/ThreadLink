@@ -11,7 +11,7 @@ Client:  connection (tlcon_) ──> credential (tlcrd_)      bearer token, no C
 
 A **connection** is an authenticated installation of a client (the ChatGPT integration, a Claude
 Code bridge) owned by exactly one ThreadLink user. It is not a chat or a session. Session bindings
-come in Phase 4. Clients authenticate with a **connection credential**, never with the user's
+are described in [pairing.md](pairing.md). Clients authenticate with a **connection credential**, never with the user's
 Clerk browser session.
 
 | Platform      | Role (derived server-side) |
@@ -40,7 +40,10 @@ token_hash = HMAC-SHA256(key = THREADLINK_CONNECTION_SECRET,
 
 - Computed in the Next.js server with Node's `crypto`. **Postgres never receives the raw token**
   (so it cannot appear in DB logs, rows or backups).
-- `connection_credentials.token_hash` is `UNIQUE`, so authentication is a single indexed lookup.
+- The HMAC is what clients' requests present to the database functions, so it is **not stored
+  either** (Phase 4 hardening): `connection_credentials.token_hash = sha256(HMAC)`. A leaked
+  database dump therefore contains nothing a caller could present.
+- `token_hash` is `UNIQUE`, so authentication is a single indexed lookup.
 - The hash column is excluded from every API grant; even the owner cannot read it.
 
 **Why `THREADLINK_CONNECTION_SECRET` exists.** Tokens already carry 256 bits of entropy, so an
@@ -105,8 +108,9 @@ clients always get `401 {"error":"unauthorized"}`.
 
 `/api/connection/*` is excluded from the Clerk session gate in `proxy.ts` because callers present
 a connection token instead. **Every** handler there must `await requireConnection(request)`
-(enforced by a static test). Phase 3 ships one: `GET /api/connection/whoami`, which returns the
-connection's own `{connectionId, platform, role, status}`.
+(enforced by a static test). `GET /api/connection/whoami` returns the connection's own
+`{connectionId, platform, role, status}`. Phase 4 adds `/api/session/*` and `/api/pairing*`
+under the same rule (see [pairing.md](pairing.md)).
 
 ## Lifecycle
 

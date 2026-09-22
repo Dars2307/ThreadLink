@@ -76,7 +76,9 @@ npm run test:e2e           # HTTP connection-credential e2e against :3200
 app/                      Routes (landing, sign-in, sign-up, dashboard)
 components/               Shared UI
 lib/auth/                 Identity resolution (Clerk) + ThreadLink user provisioning
-lib/connections/          Connection model, queries, repository
+lib/connections/          Connection model, credentials, registration
+lib/sessions/, lib/pairing/  Session bindings and ThreadLink pairing
+lib/client-api/           Connection-authenticated client API (sessions, pairing)
 lib/ids.ts                ThreadLink ID formats (tlusr_, tlcon_, ...)
 lib/env/                  Validated environment (server + public)
 lib/security/             Security helpers (masking, public-env guard)
@@ -94,4 +96,5 @@ docs/                     Architecture, security, roadmap
 - [docs/security.md](docs/security.md)
 - [docs/database.md](docs/database.md)
 - [docs/connections.md](docs/connections.md)
+- [docs/pairing.md](docs/pairing.md)
 - [docs/roadmap.md](docs/roadmap.md)

@@ -35,6 +35,8 @@ const SERVER_ONLY_MODULES = [
   "@/lib/auth/threadlink-user",
   "@/lib/connections/repository",
   "@/lib/connections/require-connection",
+  "@/lib/client-api/handler",
+  "@/lib/sessions/repository",
 ];
 
 /** Pure modules that must still never be bundled for the browser (node:crypto, token logic). */
@@ -121,11 +123,37 @@ describe("client/server boundary", () => {
     expect(users).toEqual([]);
   });
 
-  it("every connection-token route handler calls requireConnection()", () => {
-    const routes = files.filter(({ path }) => /^app\/api\/connection\/.+\/route\.ts$/.test(path));
-    expect(routes.length).toBeGreaterThan(0);
+  it("every API route is a connection-authenticated client route", () => {
+    // proxy.ts skips the Clerk gate for exactly these prefixes; each handler
+    // must authenticate the connection itself.
+    const routes = files.filter(({ path }) => /^app\/api\/.+\/route\.ts$/.test(path));
+    expect(routes.length).toBeGreaterThanOrEqual(8);
     for (const route of routes) {
-      expect(route.source, route.path).toMatch(/await requireConnection\(request\)/);
+      expect(route.path).toMatch(/^app\/api\/(connection|session|pairing)\/(.+\/)?route\.ts$/);
+      expect(route.source, route.path).toMatch(
+        /await requireConnection\(request\)|handleClientRequest\(request, /,
+      );
+      expect(route.source, route.path).not.toMatch(
+        /createPrivilegedSupabaseClient|supabase\/admin/,
+      );
+    }
+  });
+
+  it("proxy.ts bypasses the Clerk gate only for the client route prefixes", () => {
+    const proxy = readFileSync(join(ROOT, "proxy.ts"), "utf8");
+    const block = /isConnectionRoute = createRouteMatcher\(\[([^\]]*)\]\)/.exec(proxy)?.[1] ?? "";
+    const patterns = [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+    expect(patterns).toEqual(
+      ["/api/connection/(.*)", "/api/pairing", "/api/pairing/(.*)", "/api/session/(.*)"].sort(),
+    );
+  });
+
+  it("client-route code never logs the credential, its HMAC or headers", () => {
+    for (const path of ["lib/client-api/handler.ts", "lib/connections/require-connection.ts"]) {
+      const source = files.find((f) => f.path === path)!.source;
+      expect(source, path).not.toMatch(
+        /console\.\w+\([^)]*(credentialHash|tokenHash|authorization|headers)/i,
+      );
     }
   });
 });

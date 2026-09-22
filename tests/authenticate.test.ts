@@ -33,6 +33,7 @@ describe("authenticateConnectionToken", () => {
     const result = await authenticateConnectionToken(`Bearer ${token}`, { secret: SECRET, db });
     expect(result).toEqual({
       ok: true,
+      credentialHash: hashConnectionToken(token, SECRET),
       identity: {
         connectionId: IDENTITY_ROW.connection_id,
         ownerUserId: IDENTITY_ROW.owner_user_id,

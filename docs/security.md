@@ -97,6 +97,28 @@ connection credential, not a Clerk session. Full design: [connections.md](connec
 Failed authentications with _unknown_ tokens are logged to the server console but not written to
 the database, so anonymous callers cannot grow the audit table.
 
+## Sessions and pairing (Phase 4)
+
+Full design: [pairing.md](pairing.md).
+
+| Control                     | Implementation                                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical identity          | `tlses_`/`tllnk_` generated in the database; provider refs and names are metadata only; no provider IDs invented or scraped                               |
+| No caller-supplied identity | client functions take the credential HMAC and derive connection, owner, role, platform in the database; strict input schemas reject ownership/role fields |
+| Credential at rest          | only `sha256(HMAC)` stored, so a DB dump cannot be replayed against client functions                                                                      |
+| Same-owner pairing          | composite FKs make cross-owner links unrepresentable; functions return a generic `not_found`                                                              |
+| Role enforcement            | only controllers request; only the exact target agent session approves; insert trigger enforces controller/agent even for privileged writers              |
+| Explicit approval           | links start `pending`; never auto-activated                                                                                                               |
+| Duplicates                  | one live link per exact pair (partial unique index); duplicate requests reuse it                                                                          |
+| Terminal states             | retired/revoked sessions and revoked links cannot be reactivated (triggers)                                                                               |
+| Cascade                     | connection end → sessions revoked → links revoked (explicit state) + use-time re-validation                                                               |
+| No enumeration              | other users' or nonexistent sessions/links produce the same `404 not_found`                                                                               |
+| Limits                      | 50 active sessions per connection; 8 KB request bodies                                                                                                    |
+
+Tests prove cross-user, wrong-role, impersonation, revoked-connection and retired-session denial
+(pgTAP, PostgREST integration and HTTP e2e). A deliberately weakened `approve_pairing` makes 8
+tests fail.
+
 ## Privileged client exception
 
 `createPrivilegedSupabaseClient()` (`lib/supabase/admin.ts`) uses `SUPABASE_SECRET_KEY` and

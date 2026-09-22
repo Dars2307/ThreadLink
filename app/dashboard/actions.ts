@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { registerMyConnection, revokeMyConnection } from "@/lib/connections/repository";
 import { ConnectionLimitError } from "@/lib/connections/registration";
 import { MAX_ACTIVE_CONNECTIONS } from "@/lib/connections/model";
+import { revokeMyThreadLink } from "@/lib/sessions/repository";
 
 export type RegisterConnectionState =
   | { status: "idle" }
@@ -61,6 +62,15 @@ export async function registerConnectionAction(
 export async function revokeConnectionAction(formData: FormData): Promise<void> {
   try {
     await revokeMyConnection(formData.get("connectionId"));
+  } catch {
+    // Generic by design; the list re-renders with the true state either way.
+  }
+  revalidatePath("/dashboard");
+}
+
+export async function revokeThreadLinkAction(formData: FormData): Promise<void> {
+  try {
+    await revokeMyThreadLink(formData.get("linkId"));
   } catch {
     // Generic by design; the list re-renders with the true state either way.
   }

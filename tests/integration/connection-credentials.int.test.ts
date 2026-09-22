@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { provisionThreadLinkUser, type ThreadLinkUser } from "@/lib/auth/provision";
@@ -82,7 +84,7 @@ describe("registration", () => {
     expect(cc.connection.credential?.tokenPrefix).toBe(cc.credential.tokenPrefix);
   });
 
-  it("stores only the keyed hash; the raw token appears in no row of any table", async () => {
+  it("stores only sha256(HMAC); neither the raw token nor the HMAC appears in any row", async () => {
     const tables = ["users", "connections", "connection_credentials", "audit_events"] as const;
     const dump = JSON.stringify(
       await Promise.all(tables.map(async (t) => (await admin.from(t).select("*")).data)),
@@ -90,7 +92,10 @@ describe("registration", () => {
     for (const token of issuedTokens) {
       expect(dump).not.toContain(token);
       expect(dump).not.toContain(token.slice(10)); // the secret part
-      expect(dump).toContain(hashConnectionToken(token, TEST_CONNECTION_SECRET));
+      // The HMAC (what clients present to the DB) is not at rest either; only its sha256.
+      const hmac = hashConnectionToken(token, TEST_CONNECTION_SECRET);
+      expect(dump).not.toContain(hmac);
+      expect(dump).toContain(createHash("sha256").update(hmac, "utf8").digest("hex"));
     }
   });
 

@@ -12,10 +12,16 @@ const isPublicRoute = createRouteMatcher(["/", "/sign-in(.*)", "/sign-up(.*)"]);
 /**
  * Routes called by non-human clients (MCP, Claude Code bridge). They carry a
  * ThreadLink connection token, not a Clerk session, so the Clerk gate is
- * skipped here and EVERY handler under this prefix must call
- * `requireConnection()` (enforced by tests/client-boundary.test.ts).
+ * skipped here and EVERY handler under these prefixes must authenticate the
+ * connection (`requireConnection()` / `handleClientRequest()`), enforced by
+ * tests/client-boundary.test.ts.
  */
-const isConnectionRoute = createRouteMatcher(["/api/connection/(.*)"]);
+const isConnectionRoute = createRouteMatcher([
+  "/api/connection/(.*)",
+  "/api/session/(.*)",
+  "/api/pairing",
+  "/api/pairing/(.*)",
+]);
 
 export default clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request) && !isConnectionRoute(request)) {

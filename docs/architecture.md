@@ -31,6 +31,7 @@ ChatGPT (controller)                              Claude Code (execution agent)
 | Supabase Postgres   | Persistent state, RLS as second enforcement layer     | Phase 2 (users, connections) |
 | Connection registry | Per-platform connections + revocable credentials      | Phase 3                      |
 | Session bindings    | ThreadLink-owned canonical IDs for logical sessions   | Phase 4                      |
+| ThreadLink pairing  | Approved controller-session ↔ agent-session links     | Phase 4                      |
 | MCP routing         | `send_to_agent` and related tools                     | Phase 5                      |
 | Claude Code bridge  | Local process that receives tasks and returns results | Phase 6                      |
 | Vercel              | Planned first cloud deployment target                 | Phase 8                      |
@@ -94,12 +95,30 @@ with a revocable ThreadLink connection credential. See [connections.md](connecti
 Writes never send `owner_user_id`; the database derives it. Results are re-checked against the
 caller's `tlusr_` ID.
 
+### Sessions and pairing
+
+See [pairing.md](pairing.md).
+
+| Module                                          | Role                                                                                 |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `lib/sessions/model.ts`, `lib/pairing/model.ts` | strict client input schemas, row schemas, safe views                                 |
+| `lib/client-api/operations.ts`                  | connection-authenticated session/pairing operations (credential HMAC → DB functions) |
+| `lib/client-api/handler.ts`                     | server-only route wrapper: `requireConnectionContext()`, body cap, generic errors    |
+| `lib/sessions/queries.ts`, `repository.ts`      | dashboard reads (RLS) and owner link revocation                                      |
+| `app/api/session/*`, `app/api/pairing*`         | client routes                                                                        |
+
+```text
+client (tlc_ token) ─> route ─> requireConnectionContext() ─> HMAC ─> DB function(anon)
+                                                                  └─ re-verifies credential,
+                                                                     derives owner/role, enforces rules
+```
+
 ## Request protection
 
 1. **`proxy.ts`** (Next.js 16's replacement for `middleware.ts`) runs Clerk and **denies by
    default**: only `/`, `/sign-in*` and `/sign-up*` are public. New routes are protected
-   automatically. `/api/connection/*` skips the Clerk gate because its callers present a
-   connection credential; every handler there must call `requireConnection()`.
+   automatically. `/api/connection/*`, `/api/session/*` and `/api/pairing*` skip the Clerk gate because their
+   callers present a connection credential; every handler there must authenticate it.
 2. **Per-handler check**: protected pages/handlers call `getIdentity()` / `requireIdentity()` again
    (defence in depth), then perform resource authorization.
 3. **Postgres RLS** enforces ownership again at the database (Phase 2).

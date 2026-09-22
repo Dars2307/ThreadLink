@@ -9,19 +9,35 @@ import type { Connection } from "@/lib/connections/model";
 import { listMyConnections } from "@/lib/connections/repository";
 import { RegisterConnectionForm } from "@/components/connections/register-connection-form";
 import { RevokeConnectionButton } from "@/components/connections/revoke-connection-button";
+import { RevokeLinkButton } from "@/components/connections/revoke-link-button";
+import type { ThreadLinkView } from "@/lib/pairing/model";
 import { maskIdentifier } from "@/lib/security/mask";
+import type { OwnerSession } from "@/lib/sessions/queries";
+import { listMySessions, listMyThreadLinks } from "@/lib/sessions/repository";
 
 export const metadata: Metadata = {
   title: "Dashboard · ThreadLink",
 };
 
-type AccountState = { ok: true; user: ThreadLinkUser; connections: Connection[] } | { ok: false };
+type AccountState =
+  | {
+      ok: true;
+      user: ThreadLinkUser;
+      connections: Connection[];
+      sessions: OwnerSession[];
+      links: ThreadLinkView[];
+    }
+  | { ok: false };
 
 async function loadAccount(): Promise<AccountState> {
   try {
     const user = await requireThreadLinkUser();
-    const connections = await listMyConnections();
-    return { ok: true, user, connections };
+    const [connections, sessions, links] = await Promise.all([
+      listMyConnections(),
+      listMySessions(),
+      listMyThreadLinks(),
+    ]);
+    return { ok: true, user, connections, sessions, links };
   } catch {
     // Fail closed without leaking why (auth, database or mapping failure).
     return { ok: false };
@@ -138,6 +154,9 @@ export default async function DashboardPage() {
         </div>
       ) : null}
 
+      {account.ok ? <SessionsSection sessions={account.sessions} /> : null}
+      {account.ok ? <LinksSection links={account.links} sessions={account.sessions} /> : null}
+
       <div>
         <SignOutButton>
           <button
@@ -159,5 +178,68 @@ function formatDate(value: string): string {
       timeStyle: "short",
       timeZone: "UTC",
     }) + " UTC"
+  );
+}
+
+function SessionsSection({ sessions }: { sessions: OwnerSession[] }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold">Sessions</h2>
+      {sessions.length === 0 ? (
+        <p className="text-foreground/60 text-sm">No sessions yet</p>
+      ) : (
+        <ul className="flex flex-col gap-2 text-sm">
+          {sessions.map((session) => (
+            <li
+              key={session.sessionId}
+              className="flex flex-col gap-1 rounded-md border border-black/10 px-4 py-3 dark:border-white/15"
+            >
+              <span className="font-medium">{session.displayName ?? "Unnamed session"}</span>
+              <span className="text-foreground/60">
+                <span className="font-mono">{maskIdentifier(session.sessionId, 6)}</span> ·{" "}
+                {session.platform} · {session.role} · {session.status}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function LinksSection({ links, sessions }: { links: ThreadLinkView[]; sessions: OwnerSession[] }) {
+  const label = (id: string) => {
+    const session = sessions.find((s) => s.sessionId === id);
+    return `${session?.displayName ?? "session"} (${maskIdentifier(id, 6)})`;
+  };
+  return (
+    <div className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold">Thread Links</h2>
+      {links.length === 0 ? (
+        <p className="text-foreground/60 text-sm">No thread links yet</p>
+      ) : (
+        <ul className="flex flex-col gap-2 text-sm">
+          {links.map((link) => (
+            <li
+              key={link.linkId}
+              className="flex flex-col gap-2 rounded-md border border-black/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-white/15"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="font-mono">{maskIdentifier(link.linkId, 6)}</span>
+                <span className="text-foreground/60">
+                  Controller: {label(link.controllerSessionId)} → Agent:{" "}
+                  {label(link.agentSessionId)}
+                </span>
+                <span className="text-foreground/60">
+                  {link.status}
+                  {link.revokedReason ? ` · ${link.revokedReason.replaceAll("_", " ")}` : ""}
+                </span>
+              </div>
+              {link.status !== "revoked" ? <RevokeLinkButton linkId={link.linkId} /> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
