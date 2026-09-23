@@ -208,7 +208,7 @@ export class ThreadLinkApi {
     sessionId: string,
     claimRef: string,
     error: string,
-    failureReason?: "session_busy" | "native_session_unavailable",
+    failureReason?: "session_busy" | "native_session_unavailable" | "background_mode_unsupported",
   ) {
     return this.#step(taskId, "fail", {
       sessionId,

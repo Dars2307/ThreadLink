@@ -3,6 +3,7 @@ import { z } from "zod";
 import { sessionIdSchema } from "@/lib/sessions/model";
 import {
   agentTaskInputSchema,
+  blockedInputSchema,
   completeInputSchema,
   createTaskInputSchema,
   failInputSchema,
@@ -231,5 +232,48 @@ export async function getTaskResult(
     "get_task_result",
     { p_token_hash: credentialHash, p_session_id: session, p_task_id: id },
     (data) => toTaskResult(taskResultSchema.parse(data)),
+  );
+}
+
+/**
+ * The controller confirms it has READ the result, which is what cancels any
+ * pending fallback notification. Deliberately a separate call from
+ * getTaskResult: fetching bytes is not the same as a client having them.
+ * Idempotent, and never forwarded to the agent.
+ */
+export async function acknowledgeTaskResult(
+  db: ClientDatabase,
+  credentialHash: string,
+  taskId: unknown,
+  sessionId: unknown,
+): Promise<TaskEnvelope> {
+  const id = validate(taskIdSchema, taskId);
+  const session = validate(sessionIdSchema, sessionId);
+  return call(
+    db,
+    "acknowledge_task_result",
+    { p_token_hash: credentialHash, p_session_id: session, p_task_id: id },
+    parseEnvelope,
+  );
+}
+
+/** The agent reports that it is alive but cannot proceed (e.g. Plan Mode). */
+export async function reportTaskBlocked(
+  db: ClientDatabase,
+  credentialHash: string,
+  rawInput: unknown,
+): Promise<TaskEnvelope> {
+  const input = validate(blockedInputSchema, rawInput);
+  return call(
+    db,
+    "report_task_blocked",
+    {
+      p_token_hash: credentialHash,
+      p_session_id: input.sessionId,
+      p_task_id: input.taskId,
+      p_claim_ref: input.claimRef,
+      p_reason: input.reason,
+    },
+    parseEnvelope,
   );
 }

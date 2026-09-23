@@ -3,6 +3,7 @@ import "server-only";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
+  acknowledgeResultTool,
   describeError,
   ensureSession,
   getTaskResultTool,
@@ -124,6 +125,19 @@ export function buildThreadLinkMcpServer(ctx: McpContext): McpServer {
       annotations: READ_ONLY,
     },
     (input) => run(() => getTaskResultTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "acknowledge_result",
+    {
+      title: "Acknowledge a result",
+      description:
+        "Confirm you have read a task's result. Call this after get_task_result has been read " +
+        "and shown to the user: it stops ThreadLink sending a reminder about it. Safe to call " +
+        "more than once. It does not reach Claude Code.",
+      inputSchema: toolInputs.acknowledge_result,
+    },
+    (input) => run(() => acknowledgeResultTool(ctx, input)),
   );
 
   server.registerTool(

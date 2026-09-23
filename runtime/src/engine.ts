@@ -5,7 +5,12 @@ import { resolve } from "node:path";
 import type { ConversationBinding, ProviderAdapter } from "./adapters/types.ts";
 import { ApiError, type LinkView, type RuntimeView, type ThreadLinkApi } from "./api.ts";
 import { DEFAULT_BACKOFF, nextDelay, type BackoffOptions } from "./backoff.ts";
-import { acquireSessionLock, type Executor } from "./executor.ts";
+import {
+  acquireSessionLock,
+  BACKGROUND_UNSUPPORTED_MESSAGE,
+  type ExecutionResult,
+  type Executor,
+} from "./executor.ts";
 import { repoInfo, type RepoInfo } from "./git.ts";
 import type { RuntimeIdentity } from "./platform.ts";
 import {
@@ -153,6 +158,8 @@ export type EngineOptions = {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   random?: () => number;
   permissionMode?: string;
+  /** Background workers default to a mode that can make changes. */
+  workerPermissionMode?: string;
   model?: string;
   taskHeartbeatMs?: number;
   repo?: (path: string) => Promise<RepoInfo>;
@@ -170,6 +177,35 @@ const defaultSleep = (ms: number, signal: AbortSignal) =>
       { once: true },
     );
   });
+
+/**
+ * Stands in for a provider that cannot run the mode the user chose. It fails
+ * every task with a reason the UI can act on, instead of the engine quietly
+ * picking a different mode.
+ */
+class UnsupportedModeExecutor implements Executor {
+  readonly name = "unsupported";
+  readonly #mode: string;
+  readonly #provider: string;
+  constructor(mode: string, provider: string) {
+    this.#mode = mode;
+    this.#provider = provider;
+  }
+  async execute(): Promise<ExecutionResult> {
+    if (this.#mode === "worker") {
+      return {
+        ok: false,
+        reason: "background_mode_unsupported",
+        error: BACKGROUND_UNSUPPORTED_MESSAGE,
+      };
+    }
+    return {
+      ok: false,
+      reason: "native_session_unavailable",
+      error: `${this.#provider} cannot resume that conversation on this computer.`,
+    };
+  }
+}
 
 /** The stored mode, defaulting safely when the server says something unknown. */
 function conversationMode(mode: string | null): AttachedConversation["mode"] {
@@ -215,6 +251,7 @@ export class RuntimeEngine {
       sleep: defaultSleep,
       random: Math.random,
       permissionMode: "plan",
+      workerPermissionMode: "acceptEdits",
       taskHeartbeatMs: 60_000,
       repo: (path) => repoInfo(path),
       baseUrlLabel: "This address",
@@ -634,21 +671,28 @@ export class RuntimeEngine {
   }
 
   #executor(ws: WorkspaceState, c: AttachedConversation): Executor {
-    return this.#adapter(c.provider).createExecutor(ws.workspace, this.#binding(c), {
-      permissionMode: this.#o.permissionMode,
+    const binding = this.#binding(c);
+    // The user's chosen mode is never quietly swapped for another one.
+    if (!binding) return new UnsupportedModeExecutor(c.mode, this.#adapter(c.provider).displayName);
+    return this.#adapter(c.provider).createExecutor(ws.workspace, binding, {
+      permissionMode: this.#permissionMode(c.mode),
       model: this.#o.model,
       lockDir: this.#o.configDir,
     });
   }
 
   /**
-   * How this conversation should be run. A provider that cannot do background
-   * work falls back to its exact conversation rather than pretending: better a
-   * clear "that session is open" than silently running somewhere else.
+   * How this conversation should be run.
+   *
+   * The execution mode is the user's explicit choice, so it is never quietly
+   * changed. A provider that cannot work in the background says so and the
+   * task fails with background_mode_unsupported; running it in the user's own
+   * conversation instead would be a different, unasked-for thing.
    */
-  #binding(c: AttachedConversation): ConversationBinding {
+  #binding(c: AttachedConversation): ConversationBinding | null {
     const supports = this.#adapter(c.provider).supports();
-    if (c.mode === "worker" && supports.supportsBackgroundWorker) {
+    if (c.mode === "worker") {
+      if (!supports.supportsBackgroundWorker) return null;
       return {
         mode: "worker",
         // Only seed from the user's conversation if the provider can fork it.
@@ -656,10 +700,25 @@ export class RuntimeEngine {
         workerNativeSessionId: c.workerNativeSessionId ?? null,
       };
     }
-    if (c.nativeSessionId && (c.mode === "resume" || c.mode === "worker")) {
+    if (c.mode === "resume") {
+      if (!c.nativeSessionId || !supports.supportsExactResume) return null;
       return { mode: "resume", nativeSessionId: c.nativeSessionId };
     }
     return { mode: "fresh" };
+  }
+
+  /**
+   * A background worker exists to do the work, so it must start in a mode that
+   * can actually act. Running it in Plan Mode is how a delegated task ends up
+   * alive, busy and achieving nothing.
+   *
+   * The user's own conversation is left on the configured mode: ThreadLink
+   * writes into a conversation they can see, and must not quietly hand itself
+   * more permission there than they chose.
+   */
+  #permissionMode(mode: AttachedConversation["mode"]): string {
+    if (mode === "worker") return this.#o.workerPermissionMode;
+    return this.#o.permissionMode;
   }
 
   /**

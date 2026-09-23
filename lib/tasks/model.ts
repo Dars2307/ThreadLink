@@ -103,7 +103,11 @@ export const completeInputSchema = agentTaskInputSchema
   .strict();
 
 /** Failure reasons an agent may report (system reasons such as lease_exhausted are DB-only). */
-export const AGENT_FAILURE_REASONS = ["session_busy", "native_session_unavailable"] as const;
+export const AGENT_FAILURE_REASONS = [
+  "session_busy",
+  "native_session_unavailable",
+  "background_mode_unsupported",
+] as const;
 export const FAILURE_REASONS = ["lease_exhausted", ...AGENT_FAILURE_REASONS] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
 
@@ -249,3 +253,11 @@ export function toTaskResult(row: z.infer<typeof taskResultSchema>): TaskResult 
     })),
   };
 }
+
+/** Why a claimed task is alive but not progressing. */
+export const BLOCKED_REASONS = ["plan_mode", "approval_required", "user_input_required"] as const;
+export type BlockedReason = (typeof BLOCKED_REASONS)[number];
+
+export const blockedInputSchema = agentTaskInputSchema
+  .extend({ taskId: taskIdSchema, reason: z.enum(BLOCKED_REASONS) })
+  .strict();

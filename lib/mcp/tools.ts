@@ -10,7 +10,13 @@ import {
   requestPairing,
   type ClientDatabase,
 } from "@/lib/client-api/operations";
-import { createTask, getTask, getTaskResult, listOriginTasks } from "@/lib/client-api/tasks";
+import {
+  acknowledgeTaskResult,
+  createTask,
+  getTask,
+  getTaskResult,
+  listOriginTasks,
+} from "@/lib/client-api/tasks";
 import type { ConnectionIdentity } from "@/lib/connections/authenticate";
 import type { ThreadLinkView } from "@/lib/pairing/model";
 import { LOCAL_BINDING_REF_PATTERN } from "@/lib/sessions/model";
@@ -87,6 +93,10 @@ export const toolInputs = {
     taskId: z.string().regex(/^tltask_[0-9a-f]{32}$/),
   },
   get_task_result: {
+    sessionId: sessionIdInput,
+    taskId: z.string().regex(/^tltask_[0-9a-f]{32}$/),
+  },
+  acknowledge_result: {
     sessionId: sessionIdInput,
     taskId: z.string().regex(/^tltask_[0-9a-f]{32}$/),
   },
@@ -317,6 +327,25 @@ export async function getTaskResultTool(ctx: McpContext, input: Input<"get_task_
     completedAt: r.completedAt,
     failedAt: r.failedAt,
     cancelledAt: r.cancelledAt,
+  };
+}
+
+/**
+ * Call this once the result has actually been read and shown. It is what stops
+ * ThreadLink chasing the user about a result they already have. It changes
+ * nothing about the task's outcome and is never seen by the agent.
+ */
+export async function acknowledgeResultTool(ctx: McpContext, input: Input<"acknowledge_result">) {
+  const task = await acknowledgeTaskResult(
+    ctx.db,
+    ctx.credentialHash,
+    input.taskId,
+    input.sessionId,
+  );
+  return {
+    taskId: task.taskId,
+    status: task.status,
+    acknowledged: true,
   };
 }
 

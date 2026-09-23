@@ -44,7 +44,11 @@ import type { AgentsLister } from "./claude-sessions.ts";
 
 export type TaskInput = { taskId: string; title: string; content: string; priority: string };
 
-export type FailureReason = "session_busy" | "native_session_unavailable";
+export type FailureReason =
+  | "session_busy"
+  | "native_session_unavailable"
+  /** The provider cannot run this execution mode; the user must choose another. */
+  | "background_mode_unsupported";
 
 export type ExecutionResult =
   | { ok: true; result: string; artifacts: Artifact[]; workerSessionId?: string }
@@ -161,6 +165,10 @@ const BUSY_PATTERNS = [
   /is currently in use/i,
 ];
 const MISSING_PATTERNS = [/No conversation found/i];
+
+export const BACKGROUND_UNSUPPORTED_MESSAGE =
+  "This agent cannot run work in the background. Choose “Exact conversation” for it instead " +
+  "(that conversation must not be open while the task runs).";
 
 export const WORKER_BUSY_MESSAGE =
   "ThreadLink's background worker for this project is already running another task. " +

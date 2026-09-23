@@ -245,6 +245,7 @@ describe("MCP tools -> bridge -> result", () => {
     const { tools } = await mcp.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
+        "acknowledge_result",
         "ensure_session",
         "get_task_result",
         "get_task_status",

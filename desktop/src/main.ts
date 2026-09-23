@@ -34,14 +34,8 @@ import {
 } from "threadlink";
 
 import { applyAutoStart, autoStartEnabled } from "./autostart.js";
-import {
-  messageFor,
-  notificationFor,
-  statusLine,
-  trayIconPixels,
-  trayMenu,
-  type AppState,
-} from "./model.js";
+import { NotificationRouter, type NotificationChannel } from "./notifications.js";
+import { messageFor, statusLine, trayIconPixels, trayMenu, type AppState } from "./model.js";
 import { loadSettings, saveSettings } from "./settings.js";
 
 /**
@@ -183,9 +177,28 @@ function quit() {
   app.quit();
 }
 
+/**
+ * Desktop is the default free channel. It carries only what the router deems
+ * safe for a lock screen, and clicking it opens the relevant dashboard page.
+ */
+const desktopChannel: NotificationChannel = {
+  id: "desktop",
+  available: () => state.settings.notifications && Notification.isSupported(),
+  deliver: (payload) => {
+    const notification = new Notification({ title: payload.title, body: payload.body });
+    notification.on("click", () => {
+      const base = state.baseUrl ?? DEFAULT_URL;
+      void shell.openExternal(`${base}${payload.openPath ?? "/dashboard"}`);
+    });
+    notification.show();
+  },
+};
+
+const notifications = new NotificationRouter();
+notifications.register(desktopChannel);
+
 function notify(event: EngineEvent) {
-  const n = notificationFor(event as never, state);
-  if (n && Notification.isSupported()) new Notification(n).show();
+  notifications.handle(event as never);
 }
 
 // ---------------------------------------------------------------------------

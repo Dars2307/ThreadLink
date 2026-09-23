@@ -269,6 +269,7 @@ export function folderName(path: string): string {
 const FAILURE_LABELS: Record<FailureReason, string> = {
   session_busy: "Claude conversation was in use",
   native_session_unavailable: "Claude conversation not found",
+  background_mode_unsupported: "This agent cannot work in the background",
   lease_exhausted: "Runtime stopped responding",
 };
 
