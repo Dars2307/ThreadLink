@@ -8,6 +8,7 @@ import type { ConversationBinding, ProviderAdapter } from "../../runtime/src/ada
 import { ApiError, type RuntimeView } from "../../runtime/src/api.ts";
 import { RuntimeEngine, type EngineEvent } from "../../runtime/src/engine.ts";
 import type { Executor } from "../../runtime/src/executor.ts";
+import { loadWorkspaceState, saveWorkspaceState } from "../../runtime/src/state.ts";
 
 const A1 = "11111111-1111-4111-8111-111111111111";
 const A2 = "22222222-2222-4222-8222-222222222222";
@@ -538,6 +539,45 @@ describe("changing how an attached conversation runs", () => {
         .workspaces.flatMap((w) => w.conversations)
         .find((c) => c.localBindingRef === attached.localBindingRef)?.mode,
     ).toBe("resume");
+  });
+
+  it("drops the worker conversation when switching back to exact mode", async () => {
+    // The server rejects a worker conversation id on a non-worker binding, so
+    // a switch back that kept it would fail with a constraint error. This is
+    // the path a user takes after a worker has actually run at least once.
+    const { api } = fakeApi();
+    const cfg = join(dir, "cfg");
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+
+    // Stand in for a worker run having happened.
+    const ws = await loadWorkspaceState(cfg, wsA);
+    ws.conversations.find((c) => c.localBindingRef === attached.localBindingRef)!.
+      workerNativeSessionId = "99999999-9999-4999-8999-999999999999";
+    await saveWorkspaceState(cfg, ws);
+
+    const restarted = engine(api, fakeAdapter().adapter);
+    await restarted.register();
+    await restarted.sync();
+    expect(
+      api.registerConversation.mock.calls.at(-1)?.[0],
+    ).toMatchObject({ mode: "worker", workerNativeSessionId: "99999999-9999-4999-8999-999999999999" });
+
+    await restarted.setConversationMode(wsA, attached.localBindingRef, "resume");
+
+    expect(api.registerConversation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        localBindingRef: attached.localBindingRef,
+        mode: "resume",
+        workerNativeSessionId: null,
+      }),
+    );
+    const after = await loadWorkspaceState(cfg, wsA);
+    expect(
+      after.conversations.find((c) => c.localBindingRef === attached.localBindingRef)
+        ?.workerNativeSessionId ?? null,
+    ).toBeNull();
   });
 
   it("refuses a binding that has no conversation to run", async () => {

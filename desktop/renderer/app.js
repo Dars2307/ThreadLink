@@ -10,6 +10,13 @@ let attachMode = "worker";
 const decided = new Set();
 /** localBindingRef of the conversation whose mode is being changed, if any. */
 let changing = null;
+/**
+ * Which render pass is current. An async pass awaits the Runtime, and a new
+ * snapshot can start another pass meanwhile; without this the stale one
+ * carries on and binds a SECOND listener to the same button, so one click
+ * opened two folder pickers.
+ */
+let pass = 0;
 
 const el = (id) => document.getElementById(id);
 const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(true);
@@ -102,6 +109,7 @@ function render() {
   el("footer-detail").textContent = state.error ?? state.notice ?? status.detail ?? "";
 
   view.replaceChildren();
+  const mine = ++pass;
   const solo = (render) => {
     el("shell").className = "shell solo";
     el("page-title").textContent = "ThreadLink";
@@ -118,7 +126,7 @@ function render() {
   const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
   el("page-title").textContent = section === "attach" ? "Attach a conversation" : current.title;
   el("page-sub").textContent = subtitleFor();
-  if (section === "attach") return void renderAttach();
+  if (section === "attach") return void renderAttach(mine);
   if (section === "conversations") return renderConversations();
   if (section === "runtime") return renderRuntime();
   if (section === "notifications") return renderNotifications();
@@ -519,7 +527,9 @@ function modePicker(current, onChange) {
 
 // ------------------------------------------------------------------ attach
 
-async function renderAttach() {
+async function renderAttach(mine) {
+  /** True once a newer render has started: this pass must touch nothing. */
+  const superseded = () => mine !== pass;
   view.append(tpl("attach"));
   el("attach-back").addEventListener("click", () => go("conversations"));
   const claude = (state.snapshot?.providers ?? []).find((p) => p.id === "claude-code");
@@ -528,6 +538,7 @@ async function renderAttach() {
     : "Claude Code was not found. Install it, then restart ThreadLink.";
 
   const detected = await api.detectedWorkspaces();
+  if (superseded()) return;
   const known = (state.snapshot?.workspaces ?? []).map((w) => ({ path: w.path, lastUsedAt: null }));
   const all = [
     ...known,
@@ -558,10 +569,20 @@ async function renderAttach() {
 
   if (!selectedWorkspace) return;
   el("conversation-card").hidden = false;
-  el("attach-mode").replaceChildren(modePicker(attachMode, (next) => (attachMode = next)));
+  // Re-render on change: which conversations are worth warning about depends
+  // on the mode, and a stale warning is what this whole change is about.
+  el("attach-mode").replaceChildren(
+    modePicker(attachMode, (next) => {
+      attachMode = next;
+      render();
+    }),
+  );
 
   el("conversation-pick").hidden = false;
+  const problem = el("attach-problem");
+  problem.hidden = true;
   const conversations = await api.listConversations(selectedWorkspace);
+  if (superseded()) return;
   const cl = el("conversation-list");
   cl.replaceChildren();
   if (!conversations.length) {
@@ -572,7 +593,7 @@ async function renderAttach() {
       c.title ?? "Untitled conversation",
       `Used ${ago(c.lastUsedAt)}`,
       c.attached ? "Attached" : "Attach",
-      c.busy ? "Claude is currently open" : null,
+      c.busy && attachMode === "resume" ? "Claude is currently open" : null,
     );
     const button = item.querySelector("button");
     button.disabled = c.attached;
@@ -581,7 +602,8 @@ async function renderAttach() {
       const result = await api.attach(selectedWorkspace, c.nativeSessionId, c.title, attachMode);
       if (result?.ok === false) {
         button.disabled = false;
-        el("footer-detail").textContent = result.error ?? "That did not work.";
+        problem.textContent = result.error ?? "That did not work. Please try again.";
+        problem.hidden = false;
         return;
       }
       go("conversations");
@@ -589,7 +611,12 @@ async function renderAttach() {
     cl.append(item);
   }
   el("attach-fresh").addEventListener("click", async () => {
-    await api.attach(selectedWorkspace, null, null, "worker");
+    const result = await api.attach(selectedWorkspace, null, null, "worker");
+    if (result?.ok === false) {
+      problem.textContent = result.error ?? "That did not work. Please try again.";
+      problem.hidden = false;
+      return;
+    }
     go("conversations");
   });
 }

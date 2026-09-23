@@ -256,3 +256,52 @@ describe("task routing over HTTP", () => {
     expect(send.status).toBe(404);
   });
 });
+
+describe("every task route fails closed before it reads a body", () => {
+  /**
+   * A body parsed before authentication is two problems: an unauthenticated
+   * caller can make the server throw (500 rather than 401), and the different
+   * error tells them something the uniform 401 deliberately does not.
+   */
+  const SUBROUTES = [
+    "claim",
+    "start",
+    "progress",
+    "heartbeat",
+    "complete",
+    "fail",
+    "blocked",
+    "acknowledge",
+  ];
+
+  it("answers 401 for a malformed body with no credential", async () => {
+    for (const route of SUBROUTES) {
+      const res = await api(`/api/tasks/tltask_deadbeef/${route}`, null, {
+        method: "POST",
+        raw: "not-json",
+      });
+      expect(res.status, `${route} with a malformed body`).toBe(401);
+      expect(res.json, route).toMatchObject({ error: "unauthorized" });
+    }
+  });
+
+  it("answers 401 for an oversized body with no credential", async () => {
+    const huge = JSON.stringify({ sessionId: "x".repeat(200_000) });
+    for (const route of ["acknowledge", "blocked"]) {
+      const res = await api(`/api/tasks/tltask_deadbeef/${route}`, null, {
+        method: "POST",
+        raw: huge,
+      });
+      expect(res.status, `${route} with an oversized body`).toBe(401);
+    }
+  });
+
+  it("gives an unknown task the same 401 as a real one, so ids cannot be probed", async () => {
+    const unknown = await api("/api/tasks/tltask_deadbeef/acknowledge", null, {
+      method: "POST",
+      body: {},
+    });
+    expect(unknown.status).toBe(401);
+    expect(unknown.json).toMatchObject({ error: "unauthorized" });
+  });
+});

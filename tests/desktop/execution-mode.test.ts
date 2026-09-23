@@ -88,14 +88,16 @@ function appState(conversations: Conversation[], over: Record<string, unknown> =
 let calls: {
   attach: unknown[][];
   setMode: unknown[][];
+  addWorkspace: unknown[][];
 };
 let setModeResult: { ok: boolean; error?: string };
 
 function mount(state: unknown) {
   document.body.innerHTML = HTML.slice(HTML.indexOf("<body>") + 6, HTML.indexOf("</body>"));
+  const listeners: ((s: unknown) => void)[] = [];
   (window as unknown as { threadlink: unknown }).threadlink = {
     getState: async () => state,
-    onState: () => {},
+    onState: (cb: (s: unknown) => void) => listeners.push(cb),
     attach: vi.fn(async (...args: unknown[]) => {
       calls.attach.push(args);
       return { ok: true };
@@ -107,7 +109,13 @@ function mount(state: unknown) {
     detach: vi.fn(),
     decideLink: vi.fn(),
     attachForLink: vi.fn(),
-    addWorkspace: vi.fn(async () => ({ ok: true, path: WORKSPACE })),
+    addWorkspace: vi.fn(async () => {
+      calls.addWorkspace.push([]);
+      // The real bridge pushes a new snapshot after this, which starts a
+      // second render pass while the first is still awaiting.
+      for (const cb of listeners) cb(state);
+      return { ok: true, path: WORKSPACE };
+    }),
     listConversations: vi.fn(async () => [
       {
         nativeSessionId: NATIVE,
@@ -154,7 +162,7 @@ const modeOption = (name: string) =>
   ) as HTMLElement | undefined;
 
 beforeEach(() => {
-  calls = { attach: [], setMode: [] };
+  calls = { attach: [], setMode: [], addWorkspace: [] };
   setModeResult = { ok: true };
 });
 
@@ -256,6 +264,8 @@ describe("attaching a conversation", () => {
     const input = modeOption("Exact conversation")!.querySelector("input") as HTMLInputElement;
     input.checked = true;
     input.dispatchEvent(new Event("change"));
+    // Choosing a mode repaints the screen, so wait before clicking.
+    await settle();
     buttonWith("Attach")!.dispatchEvent(new Event("click"));
     await settle();
 
@@ -361,5 +371,71 @@ describe("changing the mode of an existing link", () => {
     await settle();
     await navTo("Conversations");
     expect(buttonWith("Change mode")!.disabled).toBe(true);
+  });
+});
+
+describe("the attach screen under overlapping renders", () => {
+  /**
+   * Choosing a folder makes the Runtime emit a new snapshot, which starts a
+   * second render of this async screen while the first is still awaiting.
+   * Both passes used to bind to the same surviving nodes, so one later click
+   * ran twice -- two native folder pickers for one click.
+   */
+  const openAttach = async () => {
+    mount(appState([]));
+    await settle();
+    await navTo("Conversations");
+    buttonWith("Attach another")!.dispatchEvent(new Event("click"));
+    await settle();
+  };
+
+  it("binds one listener per button, however many renders overlap", async () => {
+    await openAttach();
+    // Choosing a folder triggers the overlapping pass.
+    buttonWith("Choose")!.dispatchEvent(new Event("click"));
+    await settle();
+    const before = calls.addWorkspace.length;
+
+    buttonWith("Choose another")!.dispatchEvent(new Event("click"));
+    await settle();
+
+    expect(calls.addWorkspace.length - before).toBe(1);
+  });
+
+  it("does not attach twice from one click", async () => {
+    await openAttach();
+    buttonWith("Choose")!.dispatchEvent(new Event("click"));
+    await settle();
+
+    buttonWith("Start a new Claude conversation")!.dispatchEvent(new Event("click"));
+    await settle();
+
+    expect(calls.attach).toHaveLength(1);
+  });
+
+  it("reports an attach failure where the user is looking, not in the footer", async () => {
+    await openAttach();
+    const bridge = (window as unknown as { threadlink: Record<string, unknown> }).threadlink;
+    bridge.attach = async () => ({ ok: false, error: "Claude Code was not found on PATH." });
+
+    buttonWith("Attach")!.dispatchEvent(new Event("click"));
+    await settle();
+
+    const problem = document.getElementById("attach-problem") as HTMLElement;
+    expect(problem.hidden).toBe(false);
+    expect(problem.textContent).toBe("Claude Code was not found on PATH.");
+  });
+
+  it("does not warn that Claude is open when a background worker is chosen", async () => {
+    // listConversations reports the source conversation as busy; that only
+    // blocks exact mode, so it must not be shown as a problem in worker mode.
+    await openAttach();
+    expect(document.getElementById("view")?.textContent).not.toContain("Claude is currently open");
+
+    const exact = modeOption("Exact conversation")!.querySelector("input") as HTMLInputElement;
+    exact.checked = true;
+    exact.dispatchEvent(new Event("change"));
+    await settle();
+    expect(document.getElementById("view")?.textContent).toContain("Claude is currently open");
   });
 });

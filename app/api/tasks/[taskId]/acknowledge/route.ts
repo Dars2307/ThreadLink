@@ -12,8 +12,11 @@ export async function POST(
   request: Request,
   ctx: RouteContext<"/api/tasks/[taskId]/acknowledge">,
 ): Promise<Response> {
-  const body = (await readJsonBody(request)) as { sessionId?: unknown };
-  return handleClientRequest(request, async ({ db, credentialHash }) =>
-    acknowledgeTaskResult(db, credentialHash, (await ctx.params).taskId, body?.sessionId),
-  );
+  // Read the body INSIDE the handler: outside it, a malformed or oversized
+  // body throws where nothing catches it, so an unauthenticated caller gets a
+  // 500 instead of the same 401 every other task route gives them.
+  return handleClientRequest(request, async ({ db, credentialHash }) => {
+    const body = (await readJsonBody(request)) as { sessionId?: unknown };
+    return acknowledgeTaskResult(db, credentialHash, (await ctx.params).taskId, body?.sessionId);
+  });
 }
