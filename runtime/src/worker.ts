@@ -28,6 +28,12 @@ export type WorkerDeps = {
   claimRef: string;
   heartbeatMs?: number;
   log?: Log;
+  /**
+   * Worker mode: the native conversation ThreadLink used. Reported so the
+   * Runtime can reuse the same background conversation next time instead of
+   * branching a new one.
+   */
+  onWorkerSession?: (nativeSessionId: string) => void;
   /** Observes each finished task (for UI/notifications). Never receives content. */
   onOutcome?: (event: {
     taskId: string;
@@ -112,6 +118,8 @@ export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
   }
 
   try {
+    // Worker mode learns its own conversation id from the first run.
+    if (result.workerSessionId) deps.onWorkerSession?.(result.workerSessionId);
     if (result.ok) {
       await api.complete(
         task.taskId,

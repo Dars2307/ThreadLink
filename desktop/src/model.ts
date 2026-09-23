@@ -79,6 +79,16 @@ export function statusLine(state: AppState): { title: string; detail: string; to
   }
 }
 
+/**
+ * A background worker is never "in use": it is ThreadLink's own conversation
+ * and the user's stays open. Saying so keeps the two modes distinguishable at
+ * a glance.
+ */
+function conversationSuffix(c: { mode: string; busy: boolean }): string {
+  if (c.mode === "worker") return " · background";
+  return c.busy ? " · in use" : "";
+}
+
 export type MenuItemModel =
   | { type: "label"; label: string; enabled: false }
   | { type: "separator" }
@@ -106,7 +116,7 @@ export function trayMenu(state: AppState): MenuItemModel[] {
       for (const c of ws.conversations) {
         items.push({
           type: "label",
-          label: `   ${c.title}${c.busy ? " · in use" : ""}`,
+          label: `   ${c.title}${conversationSuffix(c)}`,
           enabled: false,
         });
       }

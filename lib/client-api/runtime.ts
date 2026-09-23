@@ -151,11 +151,17 @@ const conversationSchema = z
     localBindingRef: z.string().regex(LOCAL_BINDING_REF_PATTERN),
     displayName: z.string().trim().min(1).max(100),
     provider: z.literal("claude-code"),
-    mode: z.enum(["resume", "fresh"]),
+    mode: z.enum(["resume", "worker", "fresh"]),
     nativeSessionId: z.string().regex(NATIVE_SESSION_ID_PATTERN).nullable(),
+    /** Worker mode only: the background conversation ThreadLink created. */
+    workerNativeSessionId: z.string().regex(NATIVE_SESSION_ID_PATTERN).nullable().optional(),
   })
   .strict()
-  .refine((v) => (v.mode === "resume") === Boolean(v.nativeSessionId));
+  // Exact mode needs the conversation; worker mode may name the one it was
+  // branched from; a fresh conversation must name none.
+  .refine((v) => v.mode !== "resume" || Boolean(v.nativeSessionId))
+  .refine((v) => !v.nativeSessionId || v.mode === "resume" || v.mode === "worker")
+  .refine((v) => !v.workerNativeSessionId || v.mode === "worker");
 
 export async function registerConversation(db: ClientDatabase, hash: string, raw: unknown) {
   const i = validate(conversationSchema, raw);
@@ -170,6 +176,7 @@ export async function registerConversation(db: ClientDatabase, hash: string, raw
       p_provider: i.provider,
       p_mode: i.mode,
       p_native_session_id: i.nativeSessionId,
+      p_worker_native_session_id: i.workerNativeSessionId ?? null,
     },
     (d) => sessionRowSchema.parse(d),
   );

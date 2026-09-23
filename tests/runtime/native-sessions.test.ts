@@ -1,5 +1,13 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -265,5 +273,157 @@ describe("worker reports native failures with a reason", () => {
       "session_busy",
     );
     expect(api.complete).not.toHaveBeenCalled();
+  });
+});
+
+describe("background delegation: working while Claude Code is open", { timeout: 60_000 }, () => {
+  const notRunning = async () => [];
+  const worker = (
+    native: { sourceSessionId: string | null; workerSessionId: string | null },
+    extra: object = {},
+  ) =>
+    new ClaudeCodeExecutor({
+      cwd: dir,
+      spawnFn: spawnFake,
+      native: { mode: "worker", ...native },
+      listRunning: notRunning,
+      lockDir: join(dir, "cfg"),
+      ...extra,
+    });
+
+  beforeEach(() => {
+    process.env.FAKE_CLAUDE_STATE = join(dir, "state");
+    mkdirSync(process.env.FAKE_CLAUDE_STATE, { recursive: true });
+  });
+
+  async function userConversation(): Promise<string> {
+    const r = await new ClaudeCodeExecutor({
+      cwd: dir,
+      spawnFn: spawnFake,
+      native: { mode: "fresh" },
+      lockDir: join(dir, "cfg"),
+    }).execute(task("Remember the codeword BLUEFIN-42"), signal());
+    if (!r.ok) throw new Error(r.error);
+    return r.artifacts[0].reference.replace("claude-code-session:", "");
+  }
+
+  it("branches the worker off the user's conversation with --fork-session", () => {
+    expect(worker({ sourceSessionId: UUID_A, workerSessionId: null }).args()).toEqual([
+      "-p",
+      "--resume",
+      UUID_A,
+      "--fork-session",
+      "--output-format",
+      "json",
+      "--permission-mode",
+      "plan",
+    ]);
+  });
+
+  it("resumes the worker once it exists, and never forks again", () => {
+    expect(worker({ sourceSessionId: UUID_A, workerSessionId: UUID_B }).args()).toEqual([
+      "-p",
+      "--resume",
+      UUID_B,
+      "--output-format",
+      "json",
+      "--permission-mode",
+      "plan",
+    ]);
+  });
+
+  it("starts a plain conversation when there is nothing to branch from", () => {
+    expect(worker({ sourceSessionId: null, workerSessionId: null }).args()).toEqual([
+      "-p",
+      "--output-format",
+      "json",
+      "--permission-mode",
+      "plan",
+    ]);
+  });
+
+  it("runs while the user's conversation is open, and leaves it untouched", async () => {
+    const userSession = await userConversation();
+    const before = readFileSync(
+      join(process.env.FAKE_CLAUDE_STATE!, `${userSession}.json`),
+      "utf8",
+    );
+
+    // The user's conversation is open in their editor right now.
+    process.env.FAKE_CLAUDE_RUNNING = userSession;
+    process.env.FAKE_CLAUDE_MODE = "busy";
+    try {
+      const r = await worker({ sourceSessionId: userSession, workerSessionId: null }).execute(
+        task("Do the delegated work"),
+        signal(),
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // A distinct worker conversation, reported so it can be reused.
+      expect(r.workerSessionId).toBeTruthy();
+      expect(r.workerSessionId).not.toBe(userSession);
+      expect(r.artifacts).toEqual([
+        { type: "other", reference: `claude-code-session:${r.workerSessionId}` },
+      ]);
+      // The context came across, and the user's transcript did not change.
+      expect(r.result).toContain("remembered=BLUEFIN-42");
+      expect(
+        readFileSync(join(process.env.FAKE_CLAUDE_STATE!, `${userSession}.json`), "utf8"),
+      ).toBe(before);
+    } finally {
+      delete process.env.FAKE_CLAUDE_RUNNING;
+      delete process.env.FAKE_CLAUDE_MODE;
+    }
+  });
+
+  it("exact-conversation mode still refuses while that same conversation is open", async () => {
+    const userSession = await userConversation();
+    const running = async () => [
+      { sessionId: userSession, pid: 1, kind: "interactive", status: "busy", name: null, cwd: dir },
+    ];
+    const r = await new ClaudeCodeExecutor({
+      cwd: dir,
+      spawnFn: spawnFake,
+      native: { mode: "resume", sessionId: userSession },
+      listRunning: running,
+      lockDir: join(dir, "cfg"),
+    }).execute(task("x"), signal());
+    expect(r).toMatchObject({ ok: false, reason: "session_busy" });
+  });
+
+  it("the worker accumulates context across tasks instead of forking each time", async () => {
+    const userSession = await userConversation();
+    const first = await worker({ sourceSessionId: userSession, workerSessionId: null }).execute(
+      task("First delegated task"),
+      signal(),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const workerId = first.workerSessionId!;
+
+    const second = await worker({
+      sourceSessionId: userSession,
+      workerSessionId: workerId,
+    }).execute(task("Second delegated task"), signal());
+    expect(second).toMatchObject({ ok: true, workerSessionId: workerId });
+
+    // Exactly two conversations exist: the user's and the one worker.
+    expect(readdirSync(process.env.FAKE_CLAUDE_STATE!).sort()).toEqual(
+      [`${userSession}.json`, `${workerId}.json`].sort(),
+    );
+  });
+
+  it("discards a result that came from a different conversation than the worker", async () => {
+    const userSession = await userConversation();
+    process.env.FAKE_CLAUDE_MODE = "fork"; // answers from a new id even on a plain resume
+    try {
+      const r = await worker({ sourceSessionId: null, workerSessionId: userSession }).execute(
+        task("x"),
+        signal(),
+      );
+      expect(r).toMatchObject({ ok: false, reason: "native_session_unavailable" });
+    } finally {
+      delete process.env.FAKE_CLAUDE_MODE;
+    }
   });
 });

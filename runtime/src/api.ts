@@ -259,8 +259,9 @@ export class ThreadLinkApi {
     localBindingRef: string;
     displayName: string;
     provider: "claude-code";
-    mode: "resume" | "fresh";
+    mode: "resume" | "worker" | "fresh";
     nativeSessionId: string | null;
+    workerNativeSessionId?: string | null;
   }) {
     return this.#request<{ sessionId: string; created: boolean }>(
       "POST",

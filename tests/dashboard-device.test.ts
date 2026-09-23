@@ -124,7 +124,7 @@ describe("dashboard view model", () => {
     expect(view.links[0]).toMatchObject({
       chat: "Phase 6.6 planning",
       conversation: "Dashboard redesign",
-      conversationDetail: "Uses your existing Claude conversation",
+      conversationDetail: "Uses your existing Claude conversation, which must not be open",
       workspace: "ThreadLink",
       runtime: "Joel's Laptop",
       status: "ready",

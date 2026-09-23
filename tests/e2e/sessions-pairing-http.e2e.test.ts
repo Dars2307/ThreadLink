@@ -143,6 +143,7 @@ describe("client API over HTTP", () => {
         "role",
         "sessionId",
         "status",
+        "workerNativeSessionId",
       ].sort(),
     );
     const foreign = await api(`/api/session/me?sessionId=${chat}`, agentToken);

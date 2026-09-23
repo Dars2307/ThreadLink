@@ -50,9 +50,13 @@ export function relativeTime(iso: string | null, now: number): string {
 
 /** How a Claude conversation behaves, in the user's words. */
 export function conversationMode(session: OwnerSession | undefined): string {
-  return session?.nativeSessionMode === "resume"
-    ? "Uses your existing Claude conversation"
-    : "Starts a new Claude conversation for each request";
+  if (session?.nativeSessionMode === "worker") {
+    return "Works in the background, even while Claude Code is open";
+  }
+  if (session?.nativeSessionMode === "resume") {
+    return "Uses your existing Claude conversation, which must not be open";
+  }
+  return "Starts a new Claude conversation for each request";
 }
 
 export function conversationName(

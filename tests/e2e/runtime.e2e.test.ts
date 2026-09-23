@@ -49,6 +49,12 @@ function adapter(): ProviderAdapter {
     displayName: "Claude Code",
     detect: async () => ({ available: true, version: "2.1.266" }),
     capabilities: () => ({ "claude-code": "available", "claude-resume": "available" }),
+    supports: () => ({
+      supportsExactResume: true,
+      supportsFork: true,
+      supportsBackgroundWorker: true,
+      supportsBusyDetection: true,
+    }),
     discoverWorkspaces: async () => [],
     discoverConversations: async (workspace) => [
       { nativeSessionId: NATIVE_1, title: "Dashboard redesign", lastUsedAt: new Date(), workspace },
@@ -180,9 +186,9 @@ describe("one Runtime, many workspaces and conversations", () => {
   });
 
   it("attaches two conversations in one workspace and one in another", async () => {
-    await engine.attach(wsA, NATIVE_1, "Dashboard redesign");
-    await engine.attach(wsA, NATIVE_2, "Security review");
-    await engine.attach(wsB, NATIVE_3, "Nova implementation");
+    await engine.attach(wsA, NATIVE_1, "Dashboard redesign", "resume");
+    await engine.attach(wsA, NATIVE_2, "Security review", "resume");
+    await engine.attach(wsB, NATIVE_3, "Nova implementation", "resume");
 
     const { data: workspaces } = await ownerDb
       .from("runtime_workspaces")

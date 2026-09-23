@@ -37,10 +37,13 @@ process.stdin.on("end", () => {
   }
   const resumeAt = argv.indexOf("--resume");
   const resumeId = resumeAt >= 0 ? argv[resumeAt + 1] : null;
+  const forking = argv.includes("--fork-session");
 
-  if (resumeId && mode === "busy") {
+  // Verified on 2.1.266: a running session refuses a plain --resume and says so,
+  // but --fork-session branches a copy off it successfully.
+  if (resumeId && mode === "busy" && !forking) {
     process.stderr.write(
-      `Error: Session ${resumeId} is running as a background session (${resumeId.slice(0, 8)}). Run \`claude attach\` to open it.\n`,
+      `Error: Session ${resumeId} is running as a background session (${resumeId.slice(0, 8)}). Run \`claude attach\` to open it, or \`claude stop\` first to resume it here. Add --fork-session to branch off a copy instead.\n`,
     );
     process.exit(1);
   }
@@ -55,7 +58,8 @@ process.stdin.on("end", () => {
         process.exit(1);
       }
       turns = JSON.parse(readFileSync(file(resumeId), "utf8"));
-      sessionId = mode === "fork" ? randomUUID() : resumeId;
+      // A fork gets its own id and leaves the source transcript alone.
+      sessionId = forking || mode === "fork" ? randomUUID() : resumeId;
     } else {
       turns = [];
       sessionId = randomUUID();

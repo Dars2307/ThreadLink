@@ -79,6 +79,18 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     };
   }
 
+  supports() {
+    // All four verified against Claude Code 2.1.266: --resume, --fork-session
+    // (including against a running session), a worker conversation of our own,
+    // and `claude agents --json` for busy detection.
+    return {
+      supportsExactResume: true,
+      supportsFork: true,
+      supportsBackgroundWorker: true,
+      supportsBusyDetection: true,
+    };
+  }
+
   discoverWorkspaces() {
     return discoverClaudeWorkspaces({ home: this.#home });
   }
@@ -113,7 +125,13 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       native:
         binding.mode === "resume"
           ? { mode: "resume", sessionId: binding.nativeSessionId }
-          : { mode: "fresh" },
+          : binding.mode === "worker"
+            ? {
+                mode: "worker",
+                sourceSessionId: binding.sourceNativeSessionId,
+                workerSessionId: binding.workerNativeSessionId,
+              }
+            : { mode: "fresh" },
       listRunning: this.#listRunning,
       lockDir: options.lockDir,
     });

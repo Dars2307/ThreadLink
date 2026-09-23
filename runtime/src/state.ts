@@ -52,9 +52,20 @@ export type RuntimeConfig = {
 
 export type AttachedConversation = {
   provider: "claude-code";
-  /** "resume" = an existing provider conversation; "fresh" = new conversation per task. */
-  mode: "resume" | "fresh";
+  /**
+   * How ThreadLink runs work for this conversation:
+   *   "resume" - the exact provider conversation, refused while it is open;
+   *   "worker" - ThreadLink's own background conversation for this workspace,
+   *              so delegation works while the user's stays open;
+   *   "fresh"  - a new provider conversation for every task.
+   */
+  mode: "resume" | "worker" | "fresh";
   nativeSessionId: string | null;
+  /**
+   * Worker mode only: the background conversation ThreadLink created, learned
+   * from the first run and reused afterwards so forks do not pile up.
+   */
+  workerNativeSessionId?: string | null;
   title: string | null;
   /** Stable handle that maps this conversation to its ThreadLink tlses_. */
   localBindingRef: string;

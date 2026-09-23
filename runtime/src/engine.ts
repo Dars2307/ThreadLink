@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { ProviderAdapter } from "./adapters/types.ts";
+import type { ConversationBinding, ProviderAdapter } from "./adapters/types.ts";
 import { ApiError, type LinkView, type RuntimeView, type ThreadLinkApi } from "./api.ts";
 import { DEFAULT_BACKOFF, nextDelay, type BackoffOptions } from "./backoff.ts";
 import { acquireSessionLock, type Executor } from "./executor.ts";
@@ -50,8 +50,10 @@ export type EngineStatus =
 export type ConversationView = {
   provider: "claude-code";
   title: string;
-  mode: "resume" | "fresh";
+  mode: "resume" | "worker" | "fresh";
   nativeSessionId: string | null;
+  /** Worker mode: the background conversation, once it exists. */
+  workerNativeSessionId: string | null;
   sessionId: string | null;
   localBindingRef: string;
   busy: boolean;
@@ -82,7 +84,7 @@ export type PendingLink = {
     workspaceName: string | null;
     nativeSessionId: string | null;
     title: string | null;
-    mode: "resume" | "fresh";
+    mode: AttachedConversation["mode"];
   } | null;
 };
 
@@ -168,6 +170,19 @@ const defaultSleep = (ms: number, signal: AbortSignal) =>
       { once: true },
     );
   });
+
+/** The stored mode, defaulting safely when the server says something unknown. */
+function conversationMode(mode: string | null): AttachedConversation["mode"] {
+  if (mode === "resume" || mode === "worker") return mode;
+  return "fresh";
+}
+
+/** What a conversation is called before the user names it. */
+function defaultConversationName(mode: AttachedConversation["mode"]): string {
+  if (mode === "fresh") return "New conversation per request";
+  if (mode === "worker") return "Background worker";
+  return "Claude conversation";
+}
 
 const isNetworkError = (e: unknown) =>
   e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429);
@@ -257,6 +272,7 @@ export class RuntimeEngine {
             (c.mode === "fresh" ? "New conversation for each request" : "Untitled conversation"),
           mode: c.mode,
           nativeSessionId: c.nativeSessionId,
+          workerNativeSessionId: c.workerNativeSessionId ?? null,
           sessionId: c.sessionId ?? null,
           localBindingRef: c.localBindingRef,
           busy: Boolean(c.nativeSessionId && this.#busy.has(c.nativeSessionId)),
@@ -344,12 +360,11 @@ export class RuntimeEngine {
       const { sessionId } = await this.#o.api.registerConversation({
         workspaceId,
         localBindingRef: c.localBindingRef,
-        displayName: (
-          c.title ?? (c.mode === "fresh" ? "New conversation per request" : "Claude conversation")
-        ).slice(0, 100),
+        displayName: (c.title ?? defaultConversationName(c.mode)).slice(0, 100),
         provider: c.provider,
         mode: c.mode,
         nativeSessionId: c.nativeSessionId,
+        workerNativeSessionId: c.workerNativeSessionId ?? null,
       });
       c.sessionId = sessionId;
     }
@@ -399,26 +414,43 @@ export class RuntimeEngine {
   }
 
   /** Attach an existing conversation (nativeSessionId) or a fresh-per-request binding (null). */
+  /**
+   * Attaches a Claude conversation.
+   *
+   * `mode` defaults to "worker": delegation should not require closing Claude
+   * Code, so the everyday choice is a background worker branched from this
+   * conversation. "resume" is the explicit, advanced choice that writes into
+   * the conversation itself and refuses while it is open.
+   */
   async attach(
     path: string,
     nativeSessionId: string | null,
     title: string | null,
+    mode: AttachedConversation["mode"] = nativeSessionId ? "worker" : "fresh",
   ): Promise<ConversationView> {
     const ws = await this.addWorkspace(path);
     const adapter = this.#adapter("claude-code");
     if (nativeSessionId && !(await adapter.conversationExists(ws.workspace, nativeSessionId))) {
       throw new Error("That Claude conversation does not exist in this workspace.");
     }
+    if (mode !== "fresh" && !nativeSessionId) mode = "fresh";
     let conv = ws.conversations.find((c) =>
-      nativeSessionId ? c.nativeSessionId === nativeSessionId : c.mode === "fresh",
+      nativeSessionId
+        ? c.nativeSessionId === nativeSessionId && c.mode === mode
+        : c.mode === "fresh",
     );
     if (!conv) {
       conv = {
         provider: "claude-code",
-        mode: nativeSessionId ? "resume" : "fresh",
+        mode,
         nativeSessionId,
         title,
-        localBindingRef: newLocalBindingRef(nativeSessionId),
+        // Exact and background use of the same conversation are different
+        // bindings, so each keeps its own ThreadLink session and links.
+        localBindingRef:
+          mode === "worker" && nativeSessionId
+            ? `cc-worker:${nativeSessionId}`
+            : newLocalBindingRef(nativeSessionId),
         attachedAt: new Date().toISOString(),
       } satisfies AttachedConversation;
       ws.conversations.push(conv);
@@ -475,7 +507,7 @@ export class RuntimeEngine {
               workspaceName: l.conversation.workspaceName,
               nativeSessionId: l.conversation.nativeSessionId,
               title: l.conversation.displayName,
-              mode: l.conversation.mode === "resume" ? "resume" : "fresh",
+              mode: conversationMode(l.conversation.mode),
             },
       });
     }
@@ -539,7 +571,14 @@ export class RuntimeEngine {
     if (!existsSync(path)) {
       throw new Error(`That folder is not on this computer any more: ${path}`);
     }
-    await this.attach(path, link.reattach?.nativeSessionId ?? null, link.reattach?.title ?? null);
+    await this.attach(
+      path,
+      link.reattach?.nativeSessionId ?? null,
+      link.reattach?.title ?? null,
+      // Reattach exactly as the request expects: a different mode would be a
+      // different binding, and the request would still have nowhere to land.
+      link.reattach?.mode,
+    );
     const refreshed = await this.refreshPendingLinks();
     return refreshed.find((x) => x.linkId === linkId) ?? null;
   }
@@ -595,13 +634,48 @@ export class RuntimeEngine {
   }
 
   #executor(ws: WorkspaceState, c: AttachedConversation): Executor {
-    return this.#adapter(c.provider).createExecutor(
-      ws.workspace,
-      c.mode === "resume" && c.nativeSessionId
-        ? { mode: "resume", nativeSessionId: c.nativeSessionId }
-        : { mode: "fresh" },
-      { permissionMode: this.#o.permissionMode, model: this.#o.model, lockDir: this.#o.configDir },
-    );
+    return this.#adapter(c.provider).createExecutor(ws.workspace, this.#binding(c), {
+      permissionMode: this.#o.permissionMode,
+      model: this.#o.model,
+      lockDir: this.#o.configDir,
+    });
+  }
+
+  /**
+   * How this conversation should be run. A provider that cannot do background
+   * work falls back to its exact conversation rather than pretending: better a
+   * clear "that session is open" than silently running somewhere else.
+   */
+  #binding(c: AttachedConversation): ConversationBinding {
+    const supports = this.#adapter(c.provider).supports();
+    if (c.mode === "worker" && supports.supportsBackgroundWorker) {
+      return {
+        mode: "worker",
+        // Only seed from the user's conversation if the provider can fork it.
+        sourceNativeSessionId: supports.supportsFork ? c.nativeSessionId : null,
+        workerNativeSessionId: c.workerNativeSessionId ?? null,
+      };
+    }
+    if (c.nativeSessionId && (c.mode === "resume" || c.mode === "worker")) {
+      return { mode: "resume", nativeSessionId: c.nativeSessionId };
+    }
+    return { mode: "fresh" };
+  }
+
+  /**
+   * Remembers the background conversation the first run created, so later tasks
+   * resume it instead of forking again.
+   */
+  async #rememberWorker(
+    ws: WorkspaceState,
+    c: AttachedConversation,
+    workerSessionId: string | undefined,
+  ): Promise<void> {
+    if (!workerSessionId || c.mode !== "worker") return;
+    if (c.workerNativeSessionId === workerSessionId) return;
+    c.workerNativeSessionId = workerSessionId;
+    await saveWorkspaceState(this.#o.configDir, ws);
+    this.#changed();
   }
 
   /** Delivers at most one task per attached conversation. Returns tasks processed. */
@@ -615,6 +689,7 @@ export class RuntimeEngine {
         const outcome = await processNextTask({
           api: this.#o.api,
           executor: this.#executor(ws, c),
+          onWorkerSession: (id) => void this.#rememberWorker(ws, c, id),
           sessionId: c.sessionId,
           claimRef: this.#claimRef,
           heartbeatMs: this.#o.taskHeartbeatMs,

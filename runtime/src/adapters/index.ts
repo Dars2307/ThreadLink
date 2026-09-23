@@ -20,6 +20,15 @@ export class UnavailableAdapter implements ProviderAdapter {
       detail: `${this.displayName} support is not built yet.`,
     };
   }
+  supports() {
+    return {
+      supportsExactResume: false,
+      supportsFork: false,
+      supportsBackgroundWorker: false,
+      supportsBusyDetection: false,
+    };
+  }
+
   capabilities(): Record<string, string> {
     return { [this.id]: "unavailable" };
   }

@@ -133,6 +133,7 @@ describe("client operations", () => {
         displayName: "repo",
         status: "active",
         nativeSessionMode: "fresh",
+        workerNativeSessionId: null,
       },
     });
   });
@@ -145,6 +146,7 @@ describe("client operations", () => {
         "connectionId",
         "displayName",
         "nativeSessionMode",
+        "workerNativeSessionId",
         "platform",
         "role",
         "sessionId",

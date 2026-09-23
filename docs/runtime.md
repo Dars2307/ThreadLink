@@ -56,6 +56,33 @@ npx threadlink status | sessions | attach | detach | links | approve | rotate | 
 `npx threadlink` alone runs setup on a new machine and shows status afterwards. On a headless host
 the sign-in URL and code are printed instead of opening a browser.
 
+## Two ways to run a task
+
+| Mode                            | What it does                                                    | When it refuses                                           |
+| ------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------- |
+| **Background worker** (default) | Runs in ThreadLink's own Claude conversation for that workspace | Only while it is already running another task             |
+| **Exact conversation**          | Resumes the Claude conversation you attached, with its context  | While that conversation is open anywhere (`session_busy`) |
+
+Exact mode is unchanged and still fails closed: ThreadLink will not write into a
+conversation that is open, and never silently uses a different one. It is the
+explicit, advanced choice.
+
+Background delegation exists because that rule made the normal case unusable -
+delegating meant closing your editor first. The worker is branched **once** from
+the conversation you attached, so it starts with that context, and is resumed by
+id afterwards so forks do not pile up. Your conversation is never written to.
+
+Verified against Claude Code 2.1.266:
+
+- `--resume <id>` on a running session is refused, and Claude itself answers
+  _"Add --fork-session to branch off a copy instead"_;
+- `--resume <id> --fork-session` on a **running** session succeeds;
+- the fork gets its own session id, and the source transcript is byte-identical
+  afterwards.
+
+A worker is never presented as your conversation. The task records which mode
+ran it and in which native conversation, and the tray shows `· background`.
+
 ## Remote and cloud Runtimes
 
 Nothing in the Runtime assumes localhost or a desktop:

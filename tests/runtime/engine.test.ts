@@ -94,6 +94,12 @@ function fakeAdapter(running: Set<string> = new Set()) {
     displayName: "Claude Code",
     detect: async () => ({ available: true, version: "2.1.266" }),
     capabilities: () => ({ "claude-code": "available", "claude-resume": "available" }),
+    supports: () => ({
+      supportsExactResume: true,
+      supportsFork: true,
+      supportsBackgroundWorker: true,
+      supportsBusyDetection: true,
+    }),
     discoverWorkspaces: async () => [],
     discoverConversations: async (workspace) => [
       { nativeSessionId: A1, title: "Dashboard redesign", lastUsedAt: new Date(), workspace },
@@ -138,9 +144,9 @@ describe("ThreadLink Runtime engine", () => {
     const { adapter, executed } = fakeAdapter();
     const e = engine(api, adapter);
     await e.register();
-    await e.attach(wsA, A1, "Dashboard redesign");
-    await e.attach(wsA, A2, "Security review");
-    await e.attach(wsB, B1, "Nova implementation");
+    await e.attach(wsA, A1, "Dashboard redesign", "resume");
+    await e.attach(wsA, A2, "Security review", "resume");
+    await e.attach(wsB, B1, "Nova implementation", "resume");
 
     const snap = e.snapshot();
     expect(snap.workspaces.map((w) => w.name).sort()).toEqual(["Nova", "ThreadLink"]);
@@ -167,7 +173,7 @@ describe("ThreadLink Runtime engine", () => {
     const { api, sessions } = fakeApi();
     const first = engine(api, fakeAdapter().adapter);
     await first.register();
-    await first.attach(wsA, A1, "Dashboard redesign");
+    await first.attach(wsA, A1, "Dashboard redesign", "resume");
     const before = first.snapshot().workspaces[0]!.conversations[0]!.sessionId;
 
     const second = engine(api, fakeAdapter().adapter); // new process, same config dir
@@ -183,8 +189,8 @@ describe("ThreadLink Runtime engine", () => {
     const { api, sessions } = fakeApi();
     const e = engine(api, fakeAdapter(new Set([A2])).adapter);
     await e.register();
-    await e.attach(wsA, A1, "one");
-    await e.attach(wsA, A2, "two");
+    await e.attach(wsA, A1, "one", "resume");
+    await e.attach(wsA, A2, "two", "resume");
     await e.heartbeat();
     expect(api.runtimeHeartbeat).toHaveBeenLastCalledWith(
       expect.objectContaining({ busySessionIds: [sessions.get(`cc:${A2}`)] }),
@@ -223,7 +229,7 @@ describe("ThreadLink Runtime engine", () => {
       if (ev.type === "snapshot" && statuses.at(-1) !== ev.snapshot.status)
         statuses.push(ev.snapshot.status);
     });
-    await e.attach(wsA, A1, "one");
+    await e.attach(wsA, A1, "one", "resume");
     const result = await e.run(stop.signal);
     expect(result).toBe("stopped");
     expect(statuses).toEqual(expect.arrayContaining(["online", "offline", "paused"]));
@@ -237,7 +243,7 @@ describe("ThreadLink Runtime engine", () => {
     const stop = new AbortController();
     const e = engine(api, fakeAdapter().adapter, { sleep: async () => stop.abort() });
     await e.register();
-    await e.attach(wsA, A1, "one");
+    await e.attach(wsA, A1, "one", "resume");
     queue.set(sessions.get(`cc:${A1}`)!, [{ taskId: "tltask_1", title: "x", content: "y" }]);
     await e.run(stop.signal);
     expect(api.claim).not.toHaveBeenCalled();
@@ -275,7 +281,7 @@ describe("ThreadLink Runtime engine", () => {
     const { api, sessions } = fakeApi();
     const e = engine(api, fakeAdapter().adapter);
     await e.register();
-    await e.attach(wsA, A1, "Dashboard redesign");
+    await e.attach(wsA, A1, "Dashboard redesign", "resume");
     const sid = sessions.get(`cc:${A1}`)!;
     api.runtimeLinks.mockResolvedValue([
       {
@@ -322,7 +328,7 @@ describe("ThreadLink Runtime engine", () => {
     const { api, sessions } = fakeApi();
     const e = engine(api, fakeAdapter().adapter);
     await e.register();
-    await e.attach(wsA, A1, "Dashboard redesign");
+    await e.attach(wsA, A1, "Dashboard redesign", "resume");
     const sid = sessions.get(`cc:${A1}`)!;
     api.runtimeLinks.mockResolvedValue([
       {
@@ -370,7 +376,7 @@ describe("ThreadLink Runtime engine", () => {
     const { api, sessions } = fakeApi();
     const e = engine(api, fakeAdapter().adapter);
     await e.register();
-    await e.attach(wsA, A1, "Dashboard redesign");
+    await e.attach(wsA, A1, "Dashboard redesign", "resume");
     const sid = sessions.get(`cc:${A1}`)!;
     api.runtimeLinks.mockResolvedValue([
       {

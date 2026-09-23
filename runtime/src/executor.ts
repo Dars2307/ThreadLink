@@ -12,6 +12,9 @@ import type { AgentsLister } from "./claude-sessions.ts";
  *   fresh     claude -p --output-format json --permission-mode <m>
  *   resume    claude -p --resume <native-session-id> ...   (attached existing session)
  *   continue  claude -p --continue ...                      (most recent session in the workspace)
+ *   worker    claude -p --resume <worker-id> ...            (ThreadLink's own background worker)
+ *             claude -p --resume <source-id> --fork-session (first run: branch a worker off the
+ *                                                            user's conversation)
  *
  * The prompt always goes on stdin; the process is spawned without a shell in the
  * workspace directory. Verified on Claude Code 2.1.x: `-p --resume <id>` keeps the
@@ -26,6 +29,17 @@ import type { AgentsLister } from "./claude-sessions.ts";
  *
  * An already-open interactive UI does NOT live-refresh with turns added this way;
  * ThreadLink therefore refuses to write while the session is open.
+ *
+ * Background worker mode exists because that refusal is the right rule but the
+ * wrong daily experience: nobody should have to close Claude Code to delegate.
+ * Verified against Claude Code 2.1.266:
+ *   - `--resume <id>` on a running session is refused, and Claude itself says
+ *     "Add --fork-session to branch off a copy instead";
+ *   - `--resume <id> --fork-session` on a RUNNING session succeeds;
+ *   - the fork gets a new session ID and the source transcript is byte-identical
+ *     afterwards, so the user's open conversation is never written to.
+ * ThreadLink forks once to create a worker, then resumes that worker by ID, so
+ * repeated delegation does not litter the project with forks.
  */
 
 export type TaskInput = { taskId: string; title: string; content: string; priority: string };
@@ -33,8 +47,8 @@ export type TaskInput = { taskId: string; title: string; content: string; priori
 export type FailureReason = "session_busy" | "native_session_unavailable";
 
 export type ExecutionResult =
-  | { ok: true; result: string; artifacts: Artifact[] }
-  | { ok: false; error: string; reason?: FailureReason };
+  | { ok: true; result: string; artifacts: Artifact[]; workerSessionId?: string }
+  | { ok: false; error: string; reason?: FailureReason; workerSessionId?: string };
 
 export type Executor = {
   readonly name: string;
@@ -52,11 +66,35 @@ export const PERMISSION_MODES = [
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 export type NativeSession =
-  { mode: "fresh" } | { mode: "continue" } | { mode: "resume"; sessionId: string };
+  | { mode: "fresh" }
+  | { mode: "continue" }
+  | { mode: "resume"; sessionId: string }
+  /**
+   * ThreadLink's own background conversation for a workspace. `workerSessionId`
+   * is null until the first run creates it; `sourceSessionId` (optional) is the
+   * user's conversation to branch it from, so the worker starts with context.
+   */
+  | { mode: "worker"; sourceSessionId: string | null; workerSessionId: string | null };
 
 const NATIVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function buildPrompt(task: TaskInput, native: NativeSession["mode"] = "fresh"): string {
+  if (native === "worker") {
+    return [
+      `[ThreadLink] A task from the user's linked ChatGPT conversation (task ${task.taskId}, priority ${task.priority}).`,
+      `Title: ${task.title}`,
+      "",
+      "<task>",
+      task.content,
+      "</task>",
+      "",
+      "You are ThreadLink's background worker for this project. You are NOT the user's open Claude",
+      "Code conversation: they may be working in it right now, so do not assume they can see what",
+      "you do here. Work in this workspace within your permissions, then reply with a concise",
+      "summary of what you did and the outcome; your reply is returned to ChatGPT through ThreadLink.",
+      "If you could not complete the task, say why.",
+    ].join("\n");
+  }
   if (native !== "fresh") {
     return [
       `[ThreadLink] A message from the user's linked ChatGPT conversation (task ${task.taskId}, priority ${task.priority}).`,
@@ -124,6 +162,10 @@ const BUSY_PATTERNS = [
 ];
 const MISSING_PATTERNS = [/No conversation found/i];
 
+export const WORKER_BUSY_MESSAGE =
+  "ThreadLink's background worker for this project is already running another task. " +
+  "The request will be retried.";
+
 export const BUSY_MESSAGE =
   "The attached Claude Code session is open or running elsewhere (terminal, Claude desktop or a " +
   "background agent). ThreadLink will not write into a session that is open. Close or stop that " +
@@ -183,6 +225,13 @@ export class ClaudeCodeExecutor implements Executor {
     if (native.mode === "resume" && !NATIVE_ID.test(native.sessionId)) {
       throw new Error("Invalid native Claude Code session ID.");
     }
+    if (native.mode === "worker") {
+      for (const id of [native.sourceSessionId, native.workerSessionId]) {
+        if (id !== null && !NATIVE_ID.test(id)) {
+          throw new Error("Invalid native Claude Code session ID.");
+        }
+      }
+    }
   }
 
   get native(): NativeSession {
@@ -194,9 +243,32 @@ export class ClaudeCodeExecutor implements Executor {
     const native = this.#options.native;
     if (native.mode === "resume") args.push("--resume", native.sessionId);
     if (native.mode === "continue") args.push("--continue");
+    if (native.mode === "worker") {
+      if (native.workerSessionId) {
+        // The worker already exists: continue it, so delegated work accumulates
+        // in one conversation instead of a new fork every time.
+        args.push("--resume", native.workerSessionId);
+      } else if (native.sourceSessionId) {
+        // First run: branch a copy off the user's conversation. This is what
+        // Claude Code itself recommends for a session that is open, and it
+        // leaves the source transcript untouched.
+        args.push("--resume", native.sourceSessionId, "--fork-session");
+      }
+      // Neither: a plain fresh session becomes the worker.
+    }
     args.push("--output-format", "json", "--permission-mode", this.#options.permissionMode);
     if (this.#options.model) args.push("--model", this.#options.model);
     return args;
+  }
+
+  /** The native session this run must serialise against, if any. */
+  #lockTarget(): string | null {
+    const native = this.#options.native;
+    if (native.mode === "resume") return native.sessionId;
+    // A worker is ThreadLink's own conversation: two tasks must not write to it
+    // at once. Before it exists there is nothing to serialise against.
+    if (native.mode === "worker") return native.workerSessionId;
+    return null;
   }
 
   /** null = free; otherwise a failure result explaining why we will not run. */
@@ -226,11 +298,19 @@ export class ClaudeCodeExecutor implements Executor {
   async execute(task: TaskInput, signal: AbortSignal): Promise<ExecutionResult> {
     const native = this.#options.native;
     let release: (() => void) | null = null;
-    if (native.mode === "resume") {
-      if (this.#options.lockDir) {
-        release = acquireSessionLock(join(this.#options.lockDir, "locks"), native.sessionId);
-        if (!release) return { ok: false, reason: "session_busy", error: BUSY_MESSAGE };
+    const lockTarget = this.#lockTarget();
+    if (lockTarget && this.#options.lockDir) {
+      release = acquireSessionLock(join(this.#options.lockDir, "locks"), lockTarget);
+      if (!release) {
+        return native.mode === "worker"
+          ? { ok: false, reason: "session_busy", error: WORKER_BUSY_MESSAGE }
+          : { ok: false, reason: "session_busy", error: BUSY_MESSAGE };
       }
+    }
+    // Exact-conversation mode refuses to write into a session that is open.
+    // Worker mode deliberately does not ask that question of the user's
+    // conversation: not disturbing it is the whole point.
+    if (native.mode === "resume") {
       const busy = await this.#busyCheck();
       if (busy) {
         release?.();
@@ -338,6 +418,32 @@ export class ClaudeCodeExecutor implements Executor {
           return;
         }
         const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
+        // Worker mode: whatever session answered IS the worker from now on. On
+        // the first run that is the fork's new id; afterwards it must be the
+        // same worker we resumed, or something is wrong and we say so.
+        if (native.mode === "worker") {
+          if (!sessionId) {
+            done({ ok: false, error: "Claude Code did not report a session id for the worker." });
+            return;
+          }
+          if (native.workerSessionId && sessionId !== native.workerSessionId) {
+            done({
+              ok: false,
+              reason: "native_session_unavailable",
+              error:
+                "The background worker answered from a different Claude conversation than the " +
+                "one ThreadLink started; the result was discarded.",
+            });
+            return;
+          }
+          done({
+            ok: true,
+            result: parsed.result,
+            artifacts: [{ type: "other", reference: `claude-code-session:${sessionId}` }],
+            workerSessionId: sessionId,
+          });
+          return;
+        }
         if (native.mode === "resume" && sessionId !== native.sessionId) {
           // Never report a different (forked/new) session as the attached one.
           done({

@@ -48,13 +48,14 @@ export const sessionRowSchema = z.object({
   retired_at: z.string().nullable(),
   revoked_at: z.string().nullable(),
   native_provider_session_id: z.string().nullable().optional(),
-  native_session_mode: z.enum(["fresh", "resume", "continue"]).optional(),
+  native_session_mode: z.enum(["fresh", "resume", "continue", "worker"]).optional(),
+  worker_native_session_id: z.string().nullable().optional(),
   workspace_path: z.string().nullable().optional(),
   native_attached_at: z.string().nullable().optional(),
   created: z.boolean().optional(),
 });
 
-export const NATIVE_SESSION_MODES = ["fresh", "resume", "continue"] as const;
+export const NATIVE_SESSION_MODES = ["fresh", "resume", "continue", "worker"] as const;
 export type NativeSessionMode = (typeof NATIVE_SESSION_MODES)[number];
 /** Claude Code session IDs are lowercase UUIDs. */
 export const NATIVE_SESSION_ID_PATTERN =
@@ -91,6 +92,8 @@ export type ClientSession = {
   status: SessionStatus;
   /** fresh | resume | continue. The native ID and path are not echoed back to clients. */
   nativeSessionMode: NativeSessionMode;
+  /** Worker mode: the background conversation ThreadLink created, if any. */
+  workerNativeSessionId: string | null;
 };
 
 export function toClientSession(row: z.infer<typeof sessionRowSchema>): ClientSession {
@@ -102,5 +105,6 @@ export function toClientSession(row: z.infer<typeof sessionRowSchema>): ClientSe
     displayName: row.display_name,
     status: row.status,
     nativeSessionMode: row.native_session_mode ?? "fresh",
+    workerNativeSessionId: row.worker_native_session_id ?? null,
   };
 }
