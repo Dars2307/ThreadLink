@@ -86,15 +86,20 @@ export function LinkRow({ link, actions }: { link: LinkCard; actions?: ReactNode
             {link.runtime ? ` · ${link.runtime}` : ""}
           </p>
           <p className="truncate text-sm font-medium">{link.conversation}</p>
-          <p className="text-muted text-xs">{link.conversationDetail}</p>
+          <p className="text-muted text-xs">
+            <span className="font-medium">{link.modeLabel}</span> · {link.conversationDetail}
+          </p>
           {link.status === "offline" ? (
             <p className="text-warning pt-1 text-xs">
               Start the ThreadLink app on {link.runtime ?? "that computer"} to deliver requests.
             </p>
           ) : null}
+          {/* Only an exact-conversation link is actually blocked by this. A
+              background worker runs alongside the open conversation. */}
           {link.status === "busy" ? (
             <p className="text-warning pt-1 text-xs">
-              That Claude conversation is open right now. Close it and send again.
+              That Claude conversation is open right now. Close it and send again, or switch this
+              link to a background worker in the ThreadLink app.
             </p>
           ) : null}
         </div>

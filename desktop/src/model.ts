@@ -33,15 +33,18 @@ export function statusLine(state: AppState): { title: string; detail: string; to
       tone: "warn",
     };
   }
+  // Only an exact-conversation binding is blocked by Claude being open; a
+  // background worker runs alongside it and must not be reported as in use.
+  const inUse = attached.some((c) => c.mode === "resume" && c.busy);
   switch (snap?.status) {
     case "online":
       return attached.length
         ? {
             title: "ThreadLink Ready",
-            detail: attached.some((c) => c.busy)
+            detail: inUse
               ? "A Claude conversation is in use right now"
               : `${attached.length} conversation${attached.length === 1 ? "" : "s"} ready`,
-            tone: attached.some((c) => c.busy) ? "busy" : "ready",
+            tone: inUse ? "busy" : "ready",
           }
         : { title: "Choose a Claude conversation", detail: "Nothing attached yet", tone: "warn" };
     case "paused":

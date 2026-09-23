@@ -282,6 +282,13 @@ async function connect(): Promise<void> {
 // ---------------------------------------------------------------------------
 const asString = (v: unknown, max = 1024) => (typeof v === "string" && v.length <= max ? v : null);
 
+/**
+ * The renderer is sandboxed but still untrusted input: only the two real
+ * execution modes are accepted, and background is the default.
+ */
+const executionMode = (v: unknown): "worker" | "resume" =>
+  v === "resume" ? "resume" : "worker";
+
 function handlers() {
   ipcMain.handle("state:get", () => state);
 
@@ -379,12 +386,38 @@ function handlers() {
 
   ipcMain.handle(
     "conversation:attach",
-    async (_e, rawPath: unknown, rawId: unknown, rawTitle: unknown) => {
+    async (_e, rawPath: unknown, rawId: unknown, rawTitle: unknown, rawMode: unknown) => {
       const path = asString(rawPath);
       const id = rawId === null ? null : asString(rawId, 64);
-      if (!path || !engine) return { ok: false };
-      await engine.attach(path, id, asString(rawTitle, 200));
-      return { ok: true };
+      if (!path || !engine) return { ok: false, error: "No workspace." };
+      const mode = executionMode(rawMode);
+      try {
+        await engine.attach(path, id, asString(rawTitle, 200), id ? mode : "fresh");
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: messageFor(error) };
+      }
+    },
+  );
+
+  /**
+   * Changing how an attached conversation runs. Deliberately its own operation
+   * rather than detach-and-attach: the link, the workspace and this device's
+   * registration all have to survive it.
+   */
+  ipcMain.handle(
+    "conversation:mode",
+    async (_e, rawPath: unknown, rawRef: unknown, rawMode: unknown) => {
+      const path = asString(rawPath);
+      const ref = asString(rawRef, 200);
+      const mode = executionMode(rawMode);
+      if (!path || !ref || !engine) return { ok: false, error: "That conversation is not here." };
+      try {
+        const conversation = await engine.setConversationMode(path, ref, mode);
+        return { ok: true, mode: conversation.mode };
+      } catch (error) {
+        return { ok: false, error: messageFor(error) };
+      }
     },
   );
 

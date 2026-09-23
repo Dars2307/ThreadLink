@@ -9,7 +9,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(21);
+select plan(30);
 
 create function pg_temp.act_as_user(sub text) returns void language plpgsql as $$
 begin
@@ -34,6 +34,8 @@ create function pg_temp.session(s text) returns public.session_bindings language
   select * from public.session_bindings where id = s $$;
 create function pg_temp.task(t text) returns public.tasks language sql security definer as $$
   select * from public.tasks where id = t $$;
+create function pg_temp.link(l text) returns public.thread_links language sql security definer as $$
+  select * from public.thread_links where id = l $$;
 grant select, insert, update on ids to anon, authenticated;
 grant execute on all functions in schema pg_temp to anon, authenticated;
 
@@ -146,6 +148,47 @@ select throws_ok($$ select public.report_execution_mode(pg_temp.h('chat'), pg_te
 select throws_ok($$ select public.register_runtime_session(pg_temp.h('nobody'), pg_temp.id('ws'),
   'cc:x5', 'x', 'claude-code', 'worker', null) $$,
   '28000', null, 'an unknown credential cannot register a worker');
+
+-- ---------------------------------------------------------------------------
+-- Changing mode on a link that already exists
+-- ---------------------------------------------------------------------------
+-- The user's complaint: a link set up as an exact conversation could only be
+-- changed by doing the whole device setup again. Re-registering the SAME local
+-- binding reference must move the mode on the existing session, so the link,
+-- the workspace, the Runtime and the credential all survive.
+select pg_temp.put('chat', public.register_session(pg_temp.h('chat'), 'Phase planning', null,
+  'chat:1') ->> 'id');
+select pg_temp.put('link',
+  public.request_pairing(pg_temp.h('chat'), pg_temp.id('chat'), pg_temp.id('exact')) ->> 'id');
+select public.approve_pairing(pg_temp.h('rt'), pg_temp.id('exact'), pg_temp.id('link'));
+
+select is(
+  public.register_runtime_session(pg_temp.h('rt'), pg_temp.id('ws'),
+    'cc:' || pg_temp.user_convo(), 'Dashboard redesign', 'claude-code', 'worker',
+    pg_temp.user_convo()) ->> 'id',
+  pg_temp.id('exact'),
+  'changing mode reuses the same ThreadLink session, so no new setup is needed');
+select is((pg_temp.session(pg_temp.id('exact'))).native_session_mode, 'worker',
+  'and the session is now a background worker');
+select is((pg_temp.session(pg_temp.id('exact'))).native_provider_session_id, pg_temp.user_convo(),
+  'the user''s own Claude conversation is still the one it came from');
+select is((pg_temp.link(pg_temp.id('link'))).agent_session_id, pg_temp.id('exact'),
+  'the ChatGPT link still points at that session');
+select is((pg_temp.link(pg_temp.id('link'))).status, 'active',
+  'and the link is still active: nothing had to be approved again');
+select is((pg_temp.session(pg_temp.id('exact'))).workspace_id, pg_temp.id('ws'),
+  'the workspace is unchanged');
+select is((pg_temp.session(pg_temp.id('exact'))).runtime_id, pg_temp.id('rt'),
+  'and so is the Runtime: the device was not re-registered');
+
+-- And back again, because exact mode stays available as a deliberate choice.
+select is(
+  public.register_runtime_session(pg_temp.h('rt'), pg_temp.id('ws'),
+    'cc:' || pg_temp.user_convo(), 'Dashboard redesign', 'claude-code', 'resume',
+    pg_temp.user_convo()) ->> 'id',
+  pg_temp.id('exact'), 'switching back is the same one-step change');
+select is((pg_temp.session(pg_temp.id('exact'))).native_session_mode, 'resume',
+  'exact conversation mode is restored');
 
 select * from finish();
 rollback;

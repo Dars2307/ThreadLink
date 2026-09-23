@@ -98,7 +98,15 @@ export type EngineSnapshot = {
   detail: string | null;
   identity: RuntimeIdentity;
   runtime: RuntimeView | null;
-  providers: { id: string; name: string; available: boolean; version: string | null }[];
+  providers: {
+    id: string;
+    name: string;
+    available: boolean;
+    version: string | null;
+    /** False when this provider cannot run tasks in the background at all. */
+    supportsBackgroundWorker: boolean;
+    supportsExactResume: boolean;
+  }[];
   workspaces: WorkspaceView[];
   pendingLinks: PendingLink[];
   lastHeartbeatAt: string | null;
@@ -312,7 +320,13 @@ export class RuntimeEngine {
           workerNativeSessionId: c.workerNativeSessionId ?? null,
           sessionId: c.sessionId ?? null,
           localBindingRef: c.localBindingRef,
-          busy: Boolean(c.nativeSessionId && this.#busy.has(c.nativeSessionId)),
+          // Only an exact-conversation binding can be blocked by the user's
+          // own conversation being open. A background worker is ThreadLink's
+          // own conversation and runs regardless, so calling it "in use" would
+          // be both wrong and alarming.
+          busy:
+            c.mode === "resume" &&
+            Boolean(c.nativeSessionId && this.#busy.has(c.nativeSessionId)),
         })),
       })),
       pendingLinks: this.#pending,
@@ -339,11 +353,14 @@ export class RuntimeEngine {
     this.#providers = [];
     for (const a of this.#o.adapters) {
       const d = await a.detect();
+      const can = a.supports();
       this.#providers.push({
         id: a.id,
         name: a.displayName,
         available: d.available,
         version: d.version,
+        supportsBackgroundWorker: can.supportsBackgroundWorker,
+        supportsExactResume: can.supportsExactResume,
       });
       Object.assign(caps, a.capabilities(d));
     }
@@ -502,6 +519,62 @@ export class RuntimeEngine {
       .conversations.find((c) => c.localBindingRef === conv.localBindingRef)!;
   }
 
+  /**
+   * Changes how an already-attached conversation runs, keeping everything else.
+   *
+   * The binding keeps its local reference, so ThreadLink re-registers the SAME
+   * session: the ChatGPT link, the workspace and this Runtime all survive. That
+   * is the whole point -- switching from "exact conversation" to "background
+   * worker" must not mean setting the device up again.
+   *
+   * The user's own Claude conversation is never touched: worker mode branches
+   * from it, and switching back to exact mode simply resumes it again.
+   */
+  async setConversationMode(
+    path: string,
+    localBindingRef: string,
+    mode: AttachedConversation["mode"],
+  ): Promise<ConversationView> {
+    const ws = this.#find(path);
+    const conv = ws.conversations.find((c) => c.localBindingRef === localBindingRef);
+    if (!conv) throw new Error("That conversation is not attached on this computer.");
+
+    if (mode !== "fresh" && !conv.nativeSessionId) {
+      throw new Error(
+        "This binding starts a new Claude conversation each time, so there is no " +
+          "conversation to run in the background or resume. Attach one instead.",
+      );
+    }
+    if (mode === "fresh") {
+      throw new Error("Detach this conversation instead of turning it into a new one each time.");
+    }
+
+    // Never fall back silently: a provider that cannot do this says so.
+    const can = this.#adapter(conv.provider).supports();
+    if (mode === "worker" && !can.supportsBackgroundWorker) {
+      throw new Error(BACKGROUND_UNSUPPORTED_MESSAGE);
+    }
+    if (mode === "resume" && !can.supportsExactResume) {
+      throw new Error(`${conv.provider} cannot resume an existing conversation on this computer.`);
+    }
+
+    if (conv.mode !== mode) {
+      conv.mode = mode;
+      // A worker conversation only means something in worker mode, and the
+      // server rejects one otherwise. Keeping it locally would be a lie about
+      // which conversation this binding writes to.
+      if (mode !== "worker") conv.workerNativeSessionId = undefined;
+      await saveWorkspaceState(this.#o.configDir, ws);
+      // Re-registering under the same local reference updates the mode on the
+      // existing session rather than creating another one.
+      if (this.#runtime) await this.#syncWorkspace(ws);
+      this.#changed();
+    }
+    return this.snapshot()
+      .workspaces.find((w) => w.path === ws.workspace)!
+      .conversations.find((c) => c.localBindingRef === localBindingRef)!;
+  }
+
   /** Stop delivering to a conversation locally (links remain until unlinked in ThreadLink). */
   async detach(path: string, localBindingRef: string): Promise<void> {
     const ws = this.#find(path);
@@ -646,7 +719,13 @@ export class RuntimeEngine {
     const busySessionIds = busyKnown
       ? this.#workspaces.flatMap((w) =>
           w.conversations
-            .filter((c) => c.nativeSessionId && running.has(c.nativeSessionId) && c.sessionId)
+            .filter(
+              (c) =>
+                c.mode === "resume" &&
+                c.nativeSessionId &&
+                running.has(c.nativeSessionId) &&
+                c.sessionId,
+            )
             .map((c) => c.sessionId!),
         )
       : [];

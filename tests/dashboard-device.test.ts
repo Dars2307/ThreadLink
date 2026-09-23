@@ -124,7 +124,9 @@ describe("dashboard view model", () => {
     expect(view.links[0]).toMatchObject({
       chat: "Phase 6.6 planning",
       conversation: "Dashboard redesign",
-      conversationDetail: "Uses your existing Claude conversation, which must not be open",
+      conversationDetail: "Resumes this exact conversation, which must not be open",
+      modeLabel: "Exact conversation",
+      mode: "resume",
       workspace: "ThreadLink",
       runtime: "Joel's Laptop",
       status: "ready",
@@ -135,6 +137,37 @@ describe("dashboard view model", () => {
     expect(linkId + controllerSessionId + agentSessionId).toContain("tllnk_");
   });
 
+  it("keeps a background-worker link Ready while the user's Claude is open", () => {
+    // The bug this pins: a worker link showed "Claude conversation in use" and
+    // told the user to close Claude, even though the worker runs alongside it.
+    const view = deriveDashboard({
+      connections: [conn("chatgpt", "controller"), conn("claude-code", "agent")],
+      sessions: [
+        session("tlses_c", "controller"),
+        session("tlses_g", "agent", {
+          busy: true,
+          nativeSessionMode: "worker",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+        }),
+      ],
+      links: [link("active")],
+      tasks: [],
+      runtimes: [runtime()],
+      workspaces: [workspace()],
+      now: NOW,
+    });
+    expect(view.links[0]).toMatchObject({
+      mode: "worker",
+      modeLabel: "Background worker",
+      conversationDetail: "Works while Claude Code is open",
+      status: "ready",
+      statusLabel: "Ready",
+      busy: false,
+    });
+    expect(view.headline.text).toBe("Everything is connected");
+    expect(JSON.stringify(view.links[0])).not.toMatch(/in use|close Claude/i);
+  });
+
   it("reports a busy Claude conversation and an offline Runtime", () => {
     const base = {
       connections: [conn("chatgpt", "controller"), conn("claude-code", "agent")],
@@ -142,6 +175,7 @@ describe("dashboard view model", () => {
         session("tlses_c", "controller"),
         session("tlses_g", "agent", {
           busy: true,
+          nativeSessionMode: "resume",
           runtimeId: "tlrun_00000000000000000000000000000001",
         }),
       ],
@@ -152,7 +186,7 @@ describe("dashboard view model", () => {
     };
     expect(deriveDashboard({ ...base, runtimes: [runtime()] }).links[0]).toMatchObject({
       status: "busy",
-      statusLabel: "Claude conversation in use",
+      statusLabel: "Claude is currently open",
     });
     const offline = deriveDashboard({
       ...base,

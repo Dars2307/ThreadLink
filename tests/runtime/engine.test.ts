@@ -443,3 +443,151 @@ describe("when ThreadLink cannot be reached", () => {
     expect(seen.at(-1)?.detail).toMatch(/Still can't reach ThreadLink/);
   });
 });
+
+describe("changing how an attached conversation runs", () => {
+  /**
+   * The point of this operation: a link that was set up as an exact
+   * conversation can become a background worker without the user redoing the
+   * device setup, and without losing the ChatGPT link that points at it.
+   */
+  it("keeps the same ThreadLink session, so the link survives the switch", async () => {
+    const { api, sessions } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "resume");
+    const before = sessions.get(attached.localBindingRef)!;
+
+    const after = await e.setConversationMode(wsA, attached.localBindingRef, "worker");
+
+    expect(after.mode).toBe("worker");
+    expect(after.localBindingRef).toBe(attached.localBindingRef);
+    expect(sessions.get(after.localBindingRef)).toBe(before);
+    expect(new Set(sessions.values()).size).toBe(1);
+    // The server was told the new mode under the existing binding reference.
+    expect(api.registerConversation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ localBindingRef: attached.localBindingRef, mode: "worker" }),
+    );
+  });
+
+  it("keeps the user's own Claude conversation, so switching back resumes it", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "resume");
+
+    await e.setConversationMode(wsA, attached.localBindingRef, "worker");
+    const back = await e.setConversationMode(wsA, attached.localBindingRef, "resume");
+
+    expect(back.mode).toBe("resume");
+    expect(back.nativeSessionId).toBe(A1);
+  });
+
+  it("survives a restart: the new mode is what was written down", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "resume");
+    await e.setConversationMode(wsA, attached.localBindingRef, "worker");
+
+    const restarted = engine(api, fakeAdapter().adapter);
+    await restarted.register();
+    await restarted.sync();
+    const conv = restarted
+      .snapshot()
+      .workspaces.flatMap((w) => w.conversations)
+      .find((c) => c.localBindingRef === attached.localBindingRef);
+    expect(conv?.mode).toBe("worker");
+  });
+
+  it("does nothing when the mode is already what was asked for", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    const calls = api.registerConversation.mock.calls.length;
+
+    const same = await e.setConversationMode(wsA, attached.localBindingRef, "worker");
+
+    expect(same.mode).toBe("worker");
+    expect(api.registerConversation.mock.calls.length).toBe(calls);
+  });
+
+  it("refuses background mode on a provider that cannot do it, instead of falling back", async () => {
+    const { api } = fakeApi();
+    const { adapter } = fakeAdapter();
+    const limited: ProviderAdapter = {
+      ...adapter,
+      supports: () => ({
+        supportsExactResume: true,
+        supportsFork: false,
+        supportsBackgroundWorker: false,
+        supportsBusyDetection: true,
+      }),
+    };
+    const e = engine(api, limited);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "resume");
+
+    await expect(
+      e.setConversationMode(wsA, attached.localBindingRef, "worker"),
+    ).rejects.toThrow(/background/i);
+    // And it really did not change: no silent fallback either way.
+    expect(
+      e
+        .snapshot()
+        .workspaces.flatMap((w) => w.conversations)
+        .find((c) => c.localBindingRef === attached.localBindingRef)?.mode,
+    ).toBe("resume");
+  });
+
+  it("refuses a binding that has no conversation to run", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const fresh = await e.attach(wsA, null, null);
+
+    await expect(e.setConversationMode(wsA, fresh.localBindingRef, "worker")).rejects.toThrow();
+  });
+
+  it("refuses a conversation that is not attached here", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    await e.attach(wsA, A1, "Bootstrap", "resume");
+
+    await expect(e.setConversationMode(wsA, "cc:nope", "worker")).rejects.toThrow();
+  });
+});
+
+describe("what counts as 'in use'", () => {
+  it("an open Claude conversation blocks only the exact-mode binding", async () => {
+    const { api } = fakeApi();
+    // The user's own conversation A1 is open in Claude Code right now.
+    const { adapter } = fakeAdapter(new Set([A1]));
+    const e = engine(api, adapter);
+    await e.register();
+    const exact = await e.attach(wsA, A1, "Bootstrap", "resume");
+    const worker = await e.attach(wsA, A1, "Bootstrap", "worker");
+    await e.heartbeat();
+
+    const conversations = e.snapshot().workspaces.flatMap((w) => w.conversations);
+    const busyOf = (ref: string) => conversations.find((c) => c.localBindingRef === ref)?.busy;
+    expect(busyOf(exact.localBindingRef)).toBe(true);
+    expect(busyOf(worker.localBindingRef)).toBe(false);
+  });
+
+  it("does not report a background worker as busy to ThreadLink", async () => {
+    const { api, sessions } = fakeApi();
+    const { adapter } = fakeAdapter(new Set([A1]));
+    const e = engine(api, adapter);
+    await e.register();
+    const worker = await e.attach(wsA, A1, "Bootstrap", "worker");
+    await e.heartbeat();
+
+    // The web dashboard reads this; reporting it busy is what made a worker
+    // link say "Claude conversation in use" while working perfectly.
+    const call = api.runtimeHeartbeat.mock.calls.at(-1)?.[0] as { busySessionIds: string[] };
+    expect(call.busySessionIds).not.toContain(sessions.get(worker.localBindingRef));
+    expect(call.busySessionIds).toEqual([]);
+  });
+});

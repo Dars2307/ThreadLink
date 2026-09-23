@@ -48,14 +48,27 @@ export function relativeTime(iso: string | null, now: number): string {
   return d === 1 ? "yesterday" : `${d} days ago`;
 }
 
-/** How a Claude conversation behaves, in the user's words. */
+export type ExecutionMode = "worker" | "resume" | "fresh";
+
+export function executionMode(session: OwnerSession | undefined): ExecutionMode {
+  if (session?.nativeSessionMode === "worker") return "worker";
+  if (session?.nativeSessionMode === "resume") return "resume";
+  return "fresh";
+}
+
+/** The short name for a mode: what a card shows under the conversation title. */
+export function executionModeLabel(session: OwnerSession | undefined): string {
+  const mode = executionMode(session);
+  if (mode === "worker") return "Background worker";
+  if (mode === "resume") return "Exact conversation";
+  return "New conversation each time";
+}
+
+/** One line explaining what that mode actually does. */
 export function conversationMode(session: OwnerSession | undefined): string {
-  if (session?.nativeSessionMode === "worker") {
-    return "Works in the background, even while Claude Code is open";
-  }
-  if (session?.nativeSessionMode === "resume") {
-    return "Uses your existing Claude conversation, which must not be open";
-  }
+  const mode = executionMode(session);
+  if (mode === "worker") return "Works while Claude Code is open";
+  if (mode === "resume") return "Resumes this exact conversation, which must not be open";
   return "Starts a new Claude conversation for each request";
 }
 
@@ -75,6 +88,8 @@ export type LinkCard = {
   controllerSessionId: string;
   conversation: string;
   conversationDetail: string;
+  mode: ExecutionMode;
+  modeLabel: string;
   agentSessionId: string;
   workspace: string | null;
   runtime: string | null;
@@ -136,7 +151,9 @@ export function deriveDashboard(data: DashboardData) {
     const agent = sessionById.get(link.agentSessionId);
     const runtime = agent?.runtimeId ? runtimeById.get(agent.runtimeId) : undefined;
     const online = runtime ? runtimeOnline(runtime, data.now) : bridgeOnline(agent, data.now);
-    const busy = Boolean(agent?.busy);
+    // Only an exact-conversation link can be blocked by the user's own Claude
+    // conversation being open. A background worker runs alongside it.
+    const busy = Boolean(agent?.busy) && executionMode(agent) === "resume";
     const paused = Boolean(link.paused) || Boolean(runtime?.paused);
     const status = paused ? "paused" : !online ? "offline" : busy ? "busy" : "ready";
     return {
@@ -146,6 +163,8 @@ export function deriveDashboard(data: DashboardData) {
       controllerSessionId: link.controllerSessionId,
       conversation: conversationName(agent, link.agentDisplayName),
       conversationDetail: conversationMode(agent),
+      mode: executionMode(agent),
+      modeLabel: executionModeLabel(agent),
       agentSessionId: link.agentSessionId,
       workspace: agent?.workspaceId ? (workspaceById.get(agent.workspaceId)?.name ?? null) : null,
       runtime: runtime?.label ?? null,
@@ -157,7 +176,7 @@ export function deriveDashboard(data: DashboardData) {
         status === "ready"
           ? "Ready"
           : status === "busy"
-            ? "Claude conversation in use"
+            ? "Claude is currently open"
             : status === "paused"
               ? "Paused"
               : "Runtime offline",
@@ -171,7 +190,7 @@ export function deriveDashboard(data: DashboardData) {
     : links.some((l) => l.status === "ready")
       ? { tone: "success" as const, text: "Everything is connected" }
       : links.some((l) => l.status === "busy")
-        ? { tone: "warning" as const, text: "Claude is busy right now" }
+        ? { tone: "warning" as const, text: "Claude is open right now" }
         : { tone: "warning" as const, text: "Connected, but no Runtime is online" };
 
   const appOrder: ConnectionPlatform[] = [

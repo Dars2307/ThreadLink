@@ -169,6 +169,7 @@ async function mountApp() {
     },
     detach: vi.fn(),
     attach: vi.fn(),
+    setMode: vi.fn(async () => ({ ok: true, mode: "worker" })),
     addWorkspace: vi.fn(),
     listConversations: vi.fn(async () => []),
     detectedWorkspaces: vi.fn(async () => []),

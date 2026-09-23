@@ -18,8 +18,14 @@ const api = {
   detectedWorkspaces: () => ipcRenderer.invoke("workspaces:detected"),
   addWorkspace: (path?: string) => ipcRenderer.invoke("workspace:add", path ?? null),
   listConversations: (path: string) => ipcRenderer.invoke("conversations:list", path),
-  attach: (path: string, nativeSessionId: string | null, title: string | null) =>
-    ipcRenderer.invoke("conversation:attach", path, nativeSessionId, title),
+  attach: (
+    path: string,
+    nativeSessionId: string | null,
+    title: string | null,
+    mode?: "worker" | "resume",
+  ) => ipcRenderer.invoke("conversation:attach", path, nativeSessionId, title, mode ?? "worker"),
+  setMode: (path: string, localBindingRef: string, mode: "worker" | "resume") =>
+    ipcRenderer.invoke("conversation:mode", path, localBindingRef, mode),
   detach: (path: string, localBindingRef: string) =>
     ipcRenderer.invoke("conversation:detach", path, localBindingRef),
   decideLink: (linkId: string, approve: boolean) =>
