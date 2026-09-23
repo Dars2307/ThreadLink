@@ -5,7 +5,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(41);
+select plan(44);
 
 create function pg_temp.act_as_user(sub text) returns void language plpgsql as $$
 begin
@@ -229,6 +229,17 @@ select is((pg_temp.delivery(pg_temp.id('t3'), 'email')).status, 'unavailable',
 
 select throws_ok($$ select public.run_notification_sweep(100) $$,
   '42501', null, 'a client credential cannot run the sweep: it is the scheduler''s job');
+
+-- The sweep crosses every tenant's deliveries, so no client role may reach it.
+-- `anon` is not the whole client surface: a signed-in dashboard user is
+-- `authenticated`, and Supabase grants new public functions to that role by
+-- default, so the revoke has to name it.
+select ok(not has_function_privilege('authenticated', 'public.run_notification_sweep(integer)', 'execute'),
+  'a signed-in user cannot run the sweep either');
+select ok(not has_function_privilege('anon', 'public.run_notification_sweep(integer)', 'execute'),
+  'and neither can an anonymous client');
+select ok(has_function_privilege('service_role', 'public.run_notification_sweep(integer)', 'execute'),
+  'only the scheduler''s role may run it');
 
 -- ---------------------------------------------------------------------------
 -- A provider that cannot work in the background
