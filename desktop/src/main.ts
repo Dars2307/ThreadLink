@@ -34,7 +34,14 @@ import {
 } from "threadlink";
 
 import { applyAutoStart, autoStartEnabled } from "./autostart.js";
-import { notificationFor, statusLine, trayIconPixels, trayMenu, type AppState } from "./model.js";
+import {
+  messageFor,
+  notificationFor,
+  statusLine,
+  trayIconPixels,
+  trayMenu,
+  type AppState,
+} from "./model.js";
 import { loadSettings, saveSettings } from "./settings.js";
 
 /**
@@ -377,11 +384,20 @@ function handlers() {
   });
 
   ipcMain.handle("link:decide", async (_e, rawId: unknown, approve: unknown) => {
+    // Always resolves with a result. A rejected invoke would surface in the
+    // renderer as an unhandled promise, i.e. as a button that does nothing.
     const id = asString(rawId, 64);
-    if (!id || !engine) return { ok: false };
-    if (approve === true) await engine.approveLink(id);
-    else await engine.declineLink(id);
-    return { ok: true };
+    if (!id) return { ok: false, error: "That link request is not valid." };
+    if (!engine) {
+      return { ok: false, error: "ThreadLink is still connecting. Try again in a moment." };
+    }
+    try {
+      if (approve === true) await engine.approveLink(id);
+      else await engine.declineLink(id);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: messageFor(error) };
+    }
   });
 
   ipcMain.handle("runtime:pause", (_e, paused: unknown) => setPaused(paused === true));

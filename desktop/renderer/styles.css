@@ -244,3 +244,7 @@ code,
 .link {
   color: var(--accent);
 }
+
+.danger-text {
+  color: var(--danger);
+}

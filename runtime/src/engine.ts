@@ -451,18 +451,39 @@ export class RuntimeEngine {
     return found;
   }
 
+  /**
+   * Which of our conversations this link is for. The cached list can be stale -
+   * the UI may have been showing the request for a while - so ask the server
+   * again before giving up. ThreadLink authorizes the approval itself; this
+   * only works out which session to approve it as.
+   */
+  async #linkSession(linkId: string): Promise<string | null> {
+    const cached = this.#pending.find((x) => x.linkId === linkId);
+    if (cached) return cached.sessionId;
+    const fresh = await this.refreshPendingLinks();
+    return fresh.find((x) => x.linkId === linkId)?.sessionId ?? null;
+  }
+
   async approveLink(linkId: string): Promise<LinkView> {
-    const p = this.#pending.find((x) => x.linkId === linkId);
-    if (!p) throw new Error("That link request is no longer pending.");
-    const link = await this.#o.api.approvePairing(p.sessionId, linkId);
+    const sessionId = await this.#linkSession(linkId);
+    if (!sessionId) {
+      throw new Error(
+        "This request is for a Claude conversation that is not attached on this computer any more. Attach it again, then approve.",
+      );
+    }
+    const link = await this.#o.api.approvePairing(sessionId, linkId);
     await this.refreshPendingLinks();
     return link;
   }
 
   async declineLink(linkId: string): Promise<void> {
-    const p = this.#pending.find((x) => x.linkId === linkId);
-    if (!p) return;
-    await this.#o.api.declinePairing(p.sessionId, linkId);
+    const sessionId = await this.#linkSession(linkId);
+    if (!sessionId) {
+      throw new Error(
+        "This request is for a Claude conversation that is not attached on this computer any more.",
+      );
+    }
+    await this.#o.api.declinePairing(sessionId, linkId);
     await this.refreshPendingLinks();
   }
 

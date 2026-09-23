@@ -206,3 +206,21 @@ export function notificationFor(
   }
   return null;
 }
+
+/**
+ * Turns whatever went wrong into one sentence worth showing someone. Never a
+ * stack trace, never a credential.
+ */
+export function messageFor(error: unknown): string {
+  // Recognised by shape, not by `instanceof`: the app and its tests can load
+  // the Runtime through different module instances, and a message the user
+  // needs must not depend on which copy of the class threw.
+  const api = error as { name?: string; status?: number; kind?: string; message?: string };
+  if (api?.name === "ApiError" && typeof api.status === "number") {
+    if (api.status === 401) return "This computer's ThreadLink sign-in has expired. Sign in again.";
+    if (api.status === 403) return "This computer is not allowed to approve that request.";
+    if (api.status === 0) return "Could not reach ThreadLink. Check your connection and retry.";
+    return `ThreadLink could not complete that (${api.kind ?? "error"}).`;
+  }
+  return error instanceof Error && error.message ? error.message : "Something went wrong.";
+}

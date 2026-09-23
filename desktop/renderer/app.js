@@ -3,6 +3,8 @@ const api = window.threadlink;
 const view = document.getElementById("view");
 let state = null;
 let selectedWorkspace = null;
+/** Link decisions in flight, so a re-render cannot resend one. */
+const decided = new Set();
 
 const el = (id) => document.getElementById(id);
 const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(true);
@@ -188,18 +190,56 @@ function renderReady() {
     const p = document.createElement("p");
     p.className = "muted small";
     p.textContent = `“${link.from}” wants to use “${link.conversation}”.`;
-    const row = document.createElement("div");
-    row.className = "row";
+    const buttons = document.createElement("div");
+    buttons.className = "row";
     const approve = document.createElement("button");
     approve.className = "primary";
     approve.textContent = "Approve";
-    approve.addEventListener("click", () => api.decideLink(link.linkId, true));
     const decline = document.createElement("button");
     decline.className = "ghost";
     decline.textContent = "Decline";
-    decline.addEventListener("click", () => api.decideLink(link.linkId, false));
-    row.append(approve, decline);
-    card.append(h, p, row);
+    const problem = document.createElement("p");
+    problem.className = "small danger-text";
+    problem.hidden = true;
+
+    // One decision at a time: a second click must not send a second request,
+    // and whatever happens the user is told about it.
+    const decide = async (approved) => {
+      if (decided.has(link.linkId)) return;
+      decided.add(link.linkId);
+      approve.disabled = true;
+      decline.disabled = true;
+      problem.hidden = true;
+      approve.textContent = approved ? "Approving…" : "Approve";
+      decline.textContent = approved ? "Decline" : "Declining…";
+      let result;
+      try {
+        result = await api.decideLink(link.linkId, approved);
+      } catch (error) {
+        result = { ok: false, error: String(error?.message ?? error) };
+      }
+      if (result?.ok) {
+        // Say so at once; the next snapshot will drop the card entirely.
+        h.textContent = approved ? "Linked" : "Declined";
+        p.textContent = approved
+          ? `“${link.from}” is now linked to “${link.conversation}”.`
+          : `Declined the request from “${link.from}”.`;
+        buttons.remove();
+        return;
+      }
+      decided.delete(link.linkId);
+      approve.disabled = false;
+      decline.disabled = false;
+      approve.textContent = "Approve";
+      decline.textContent = "Decline";
+      problem.textContent = result?.error ?? "That did not work. Please try again.";
+      problem.hidden = false;
+    };
+
+    approve.addEventListener("click", () => void decide(true));
+    decline.addEventListener("click", () => void decide(false));
+    buttons.append(approve, decline);
+    card.append(h, p, buttons, problem);
     links.append(card);
   }
 

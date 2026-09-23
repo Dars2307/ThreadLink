@@ -69,11 +69,27 @@ export type WorkspaceState = {
   conversations: AttachedConversation[];
 };
 
+/**
+ * null means "there is no such file". Anything else - unreadable, locked by
+ * another process, half-written, not JSON - throws.
+ *
+ * This distinction matters more than it looks: callers fall back to empty
+ * state when this returns null, and then save that state back. Swallowing a
+ * read error here silently detached every conversation in a workspace and
+ * wrote the emptiness to disk.
+ */
 async function readJson<T>(file: string): Promise<T | null> {
+  let text: string;
   try {
-    return JSON.parse(await readFile(file, "utf8")) as T;
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`Could not read ${file}: ${(error as Error).message}`);
+  }
+  try {
+    return JSON.parse(text) as T;
   } catch {
-    return null;
+    throw new Error(`${file} is not valid JSON. ThreadLink will not overwrite it.`);
   }
 }
 
@@ -191,7 +207,17 @@ export async function loadWorkspaceState(
 }
 
 export async function saveWorkspaceState(configDir: string, state: WorkspaceState): Promise<void> {
-  await writeJson(join(configDir, "workspaces", `${workspaceKey(state.workspace)}.json`), state);
+  const file = join(configDir, "workspaces", `${workspaceKey(state.workspace)}.json`);
+  const next = `${JSON.stringify(state, null, 2)}
+`;
+  // An unchanged write is pointless, and every write is a chance for two
+  // processes (the app and the CLI) to race over the same file.
+  try {
+    if ((await readFile(file, "utf8")) === next) return;
+  } catch {
+    /* no readable file yet: write it */
+  }
+  await writeJson(file, state);
 }
 
 export async function listWorkspaceStates(configDir: string): Promise<WorkspaceState[]> {
