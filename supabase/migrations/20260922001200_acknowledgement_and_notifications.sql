@@ -388,6 +388,16 @@ begin
 end;
 $$;
 
+-- A provider that cannot work in the background is a real, reportable failure,
+-- so the column must accept it. fail_task validates the same set; without this
+-- the RPC would accept the reason and then trip a check constraint.
+alter table public.tasks drop constraint tasks_failure_reason_check;
+alter table public.tasks add constraint tasks_failure_reason_check
+  check (failure_reason in (
+    'lease_exhausted', 'session_busy', 'native_session_unavailable',
+    'background_mode_unsupported'
+  ));
+
 create or replace function public.fail_task(
   p_token_hash text, p_session_id text, p_task_id text, p_claim_ref text,
   p_error text, p_failure_reason text default null

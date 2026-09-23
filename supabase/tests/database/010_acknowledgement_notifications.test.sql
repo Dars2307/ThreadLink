@@ -5,7 +5,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(40);
+select plan(41);
 
 create function pg_temp.act_as_user(sub text) returns void language plpgsql as $$
 begin
@@ -229,6 +229,23 @@ select is((pg_temp.delivery(pg_temp.id('t3'), 'email')).status, 'unavailable',
 
 select throws_ok($$ select public.run_notification_sweep(100) $$,
   '42501', null, 'a client credential cannot run the sweep: it is the scheduler''s job');
+
+-- ---------------------------------------------------------------------------
+-- A provider that cannot work in the background
+-- ---------------------------------------------------------------------------
+-- fail_task accepts this reason, so the column must store it. Reported here
+-- because accepting a value the table then rejects is a failure the user would
+-- only ever see as an opaque database error.
+select pg_temp.put('t4', public.create_task(pg_temp.h('a-chat'), pg_temp.id('chat'), pg_temp.id('link'),
+  'Fourth task', 'more') ->> 'task_id');
+select public.claim_task(pg_temp.h('a-rt'), pg_temp.id('agent'), pg_temp.id('t4'), 'claim-4');
+select is(
+  public.fail_task(pg_temp.h('a-rt'), pg_temp.id('agent'), pg_temp.id('t4'), 'claim-4',
+    'This agent cannot work in the background', 'background_mode_unsupported')
+    ->> 'failure_reason',
+  'background_mode_unsupported',
+  'a background-unsupported failure is recorded, not rejected by the table');
+
 
 select * from finish();
 rollback;
