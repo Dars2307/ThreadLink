@@ -191,3 +191,79 @@ export async function rotateOwnCredential(db: ClientDatabase, hash: string, secr
   );
   return { token: credential.token };
 }
+
+/**
+ * Link requests for this Runtime's own sessions.
+ *
+ * The Runtime asks the server rather than reading its local files, so a
+ * request stays visible - and explains itself - even when its conversation has
+ * been detached on this computer. Only what the Runtime UI needs is returned:
+ * notably not the controller's session id.
+ */
+const runtimeLinkRowSchema = z.object({
+  id: z.string().regex(idPattern("threadLink")),
+  status: z.enum(["pending", "active"]),
+  paused: z.boolean(),
+  agent_session_id: z.string().regex(idPattern("sessionBinding")),
+  controller_display_name: z.string().nullable(),
+  requested_at: z.string(),
+  approved_at: z.string().nullable(),
+  conversation: z.object({
+    display_name: z.string().nullable(),
+    local_binding_ref: z.string(),
+    provider: z.string().nullable(),
+    mode: z.string().nullable(),
+    native_session_id: z.string().nullable(),
+    workspace_id: z.string().nullable(),
+    workspace_name: z.string().nullable(),
+    workspace_path: z.string().nullable(),
+  }),
+});
+
+export type RuntimeLinkView = {
+  linkId: string;
+  status: "pending" | "active";
+  paused: boolean;
+  agentSessionId: string;
+  controllerDisplayName: string | null;
+  requestedAt: string;
+  approvedAt: string | null;
+  conversation: {
+    displayName: string | null;
+    localBindingRef: string;
+    provider: string | null;
+    mode: string | null;
+    nativeSessionId: string | null;
+    workspaceId: string | null;
+    workspaceName: string | null;
+    workspacePath: string | null;
+  };
+};
+
+export async function listRuntimeLinks(
+  db: ClientDatabase,
+  hash: string,
+): Promise<RuntimeLinkView[]> {
+  const rows = await call(db, "list_runtime_links", { p_token_hash: hash }, (d) =>
+    z.array(runtimeLinkRowSchema).parse(d),
+  );
+  return rows.map((row) => ({
+    linkId: row.id,
+    status: row.status,
+    paused: row.paused,
+    agentSessionId: row.agent_session_id,
+    controllerDisplayName: row.controller_display_name,
+    requestedAt: row.requested_at,
+    approvedAt: row.approved_at,
+    conversation: {
+      displayName: row.conversation.display_name,
+      localBindingRef: row.conversation.local_binding_ref,
+      provider: row.conversation.provider,
+      mode: row.conversation.mode,
+      nativeSessionId: row.conversation.native_session_id,
+      workspaceId: row.conversation.workspace_id,
+      workspaceName: row.conversation.workspace_name,
+      workspacePath: row.conversation.workspace_path,
+    },
+  }));
+}

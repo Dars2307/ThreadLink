@@ -400,6 +400,20 @@ function handlers() {
     }
   });
 
+  ipcMain.handle("link:attach", async (_e, rawId: unknown) => {
+    const id = asString(rawId, 64);
+    if (!id) return { ok: false, error: "That link request is not valid." };
+    if (!engine) {
+      return { ok: false, error: "ThreadLink is still connecting. Try again in a moment." };
+    }
+    try {
+      await engine.attachForLink(id);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: messageFor(error) };
+    }
+  });
+
   ipcMain.handle("runtime:pause", (_e, paused: unknown) => setPaused(paused === true));
   ipcMain.handle("runtime:restart", () => restartEngine());
   ipcMain.handle("open:dashboard", () => openDashboard());

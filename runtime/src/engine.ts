@@ -70,6 +70,20 @@ export type PendingLink = {
   sessionId: string;
   from: string;
   conversation: string;
+  /**
+   * False when the target conversation is not attached on this computer any
+   * more. The request is still real and still approvable - it just needs the
+   * conversation back first, which `reattach` describes.
+   */
+  attached: boolean;
+  /** What to attach to make this approvable, when we know it. */
+  reattach: {
+    workspacePath: string | null;
+    workspaceName: string | null;
+    nativeSessionId: string | null;
+    title: string | null;
+    mode: "resume" | "fresh";
+  } | null;
 };
 
 export type EngineSnapshot = {
@@ -109,6 +123,7 @@ type Api = Pick<
   | "runtimeHeartbeat"
   | "upsertWorkspace"
   | "registerConversation"
+  | "runtimeLinks"
   | "links"
   | "approvePairing"
   | "declinePairing"
@@ -426,23 +441,45 @@ export class RuntimeEngine {
     this.#changed();
   }
 
+  /**
+   * Asks ThreadLink which of THIS Runtime's sessions have link requests.
+   *
+   * Discovery deliberately does not start from local files: a conversation
+   * that has been detached here still has a real pending request, and hiding
+   * it left the user with no way to approve or decline it.
+   */
   async refreshPendingLinks(): Promise<PendingLink[]> {
-    const found: PendingLink[] = [];
+    const attachedByRef = new Map<string, { ws: WorkspaceState; c: AttachedConversation }>();
     for (const ws of this.#workspaces) {
-      for (const c of ws.conversations) {
-        if (!c.sessionId) continue;
-        for (const l of await this.#o.api.links(c.sessionId)) {
-          if (l.status === "pending") {
-            found.push({
-              linkId: l.linkId,
-              sessionId: c.sessionId,
-              from: l.controllerDisplayName ?? "A ChatGPT conversation",
-              conversation: c.title ?? workspaceDisplayName(ws.workspace),
-            });
-          }
-        }
-      }
+      for (const c of ws.conversations) attachedByRef.set(c.localBindingRef, { ws, c });
     }
+
+    const found: PendingLink[] = [];
+    for (const l of await this.#o.api.runtimeLinks()) {
+      if (l.status !== "pending") continue;
+      const local = attachedByRef.get(l.conversation.localBindingRef);
+      found.push({
+        linkId: l.linkId,
+        sessionId: l.agentSessionId,
+        from: l.controllerDisplayName ?? "A ChatGPT conversation",
+        conversation:
+          local?.c.title ??
+          l.conversation.displayName ??
+          l.conversation.workspaceName ??
+          "a Claude conversation",
+        attached: Boolean(local),
+        reattach: local
+          ? null
+          : {
+              workspacePath: l.conversation.workspacePath,
+              workspaceName: l.conversation.workspaceName,
+              nativeSessionId: l.conversation.nativeSessionId,
+              title: l.conversation.displayName,
+              mode: l.conversation.mode === "resume" ? "resume" : "fresh",
+            },
+      });
+    }
+
     const known = new Set(this.#pending.map((p) => p.linkId));
     for (const p of found) if (!known.has(p.linkId)) this.#emit({ type: "link-request", link: p });
     this.#pending = found;
@@ -452,39 +489,59 @@ export class RuntimeEngine {
   }
 
   /**
-   * Which of our conversations this link is for. The cached list can be stale -
-   * the UI may have been showing the request for a while - so ask the server
-   * again before giving up. ThreadLink authorizes the approval itself; this
-   * only works out which session to approve it as.
+   * The request this decision is about. The cached list can be stale - the UI
+   * may have been showing it for a while - so ask the server again before
+   * giving up. ThreadLink authorizes the decision itself; this only works out
+   * which of our sessions to act as.
    */
-  async #linkSession(linkId: string): Promise<string | null> {
+  async #linkRequest(linkId: string): Promise<PendingLink | null> {
     const cached = this.#pending.find((x) => x.linkId === linkId);
-    if (cached) return cached.sessionId;
+    if (cached) return cached;
     const fresh = await this.refreshPendingLinks();
-    return fresh.find((x) => x.linkId === linkId)?.sessionId ?? null;
+    return fresh.find((x) => x.linkId === linkId) ?? null;
   }
 
   async approveLink(linkId: string): Promise<LinkView> {
-    const sessionId = await this.#linkSession(linkId);
-    if (!sessionId) {
+    const link = await this.#linkRequest(linkId);
+    if (!link) throw new Error("That request is no longer waiting for an answer.");
+    if (!link.attached) {
+      // Never approve on someone's behalf a conversation they detached: which
+      // Claude conversation a chat may drive is the user's choice, not ours.
+      const where = link.reattach?.workspaceName;
       throw new Error(
-        "This request is for a Claude conversation that is not attached on this computer any more. Attach it again, then approve.",
+        `Attach “${link.conversation}”${where ? ` in ${where}` : ""} again before approving, ` +
+          "so ThreadLink knows which Claude conversation to use.",
       );
     }
-    const link = await this.#o.api.approvePairing(sessionId, linkId);
+    const approved = await this.#o.api.approvePairing(link.sessionId, linkId);
     await this.refreshPendingLinks();
-    return link;
+    return approved;
   }
 
+  /** Declining never needs the conversation back: the user is saying no. */
   async declineLink(linkId: string): Promise<void> {
-    const sessionId = await this.#linkSession(linkId);
-    if (!sessionId) {
-      throw new Error(
-        "This request is for a Claude conversation that is not attached on this computer any more.",
-      );
-    }
-    await this.#o.api.declinePairing(sessionId, linkId);
+    const link = await this.#linkRequest(linkId);
+    if (!link) throw new Error("That request is no longer waiting for an answer.");
+    await this.#o.api.declinePairing(link.sessionId, linkId);
     await this.refreshPendingLinks();
+  }
+
+  /**
+   * Attach the conversation a pending request is waiting for. This is the one
+   * click out of "detached while a request was pending"; the user still
+   * approves afterwards.
+   */
+  async attachForLink(linkId: string): Promise<PendingLink | null> {
+    const link = await this.#linkRequest(linkId);
+    if (!link || link.attached) return link;
+    const path = link.reattach?.workspacePath;
+    if (!path) throw new Error("ThreadLink does not know which folder that conversation is in.");
+    if (!existsSync(path)) {
+      throw new Error(`That folder is not on this computer any more: ${path}`);
+    }
+    await this.attach(path, link.reattach?.nativeSessionId ?? null, link.reattach?.title ?? null);
+    const refreshed = await this.refreshPendingLinks();
+    return refreshed.find((x) => x.linkId === linkId) ?? null;
   }
 
   /** Local pause (e.g. from the tray); ThreadLink-side pause is applied via heartbeat. */

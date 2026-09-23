@@ -24,6 +24,7 @@ const api = {
     ipcRenderer.invoke("conversation:detach", path, localBindingRef),
   decideLink: (linkId: string, approve: boolean) =>
     ipcRenderer.invoke("link:decide", linkId, approve),
+  attachForLink: (linkId: string) => ipcRenderer.invoke("link:attach", linkId),
   setPaused: (paused: boolean) => ipcRenderer.invoke("runtime:pause", paused),
   restart: () => ipcRenderer.invoke("runtime:restart"),
   openDashboard: () => ipcRenderer.invoke("open:dashboard"),

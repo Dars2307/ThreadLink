@@ -66,7 +66,10 @@ function render() {
   if (why) return renderReconnect(why);
   if (!state.signedIn) return renderSignIn();
   const attached = (state.snapshot?.workspaces ?? []).flatMap((w) => w.conversations);
-  return attached.length ? renderReady() : renderSetup();
+  // A waiting request is shown even with nothing attached: it may be waiting
+  // for a conversation that was detached, and this is where it is answered.
+  const waiting = state.snapshot?.pendingLinks?.length ?? 0;
+  return attached.length || waiting ? renderReady() : renderSetup();
 }
 
 function renderSignIn() {
@@ -239,6 +242,42 @@ function renderReady() {
     approve.addEventListener("click", () => void decide(true));
     decline.addEventListener("click", () => void decide(false));
     buttons.append(approve, decline);
+
+    // The conversation this request is for is not attached here any more. The
+    // request is still real: explain it, and offer the one step that fixes it.
+    if (link.attached === false) {
+      const where = link.reattach?.workspaceName;
+      p.textContent =
+        `“${link.from}” wants to use “${link.conversation}”` +
+        `${where ? ` in ${where}` : ""}, which is not attached on this computer.`;
+      approve.disabled = true;
+      const reattach = document.createElement("button");
+      reattach.className = "primary";
+      reattach.textContent = "Attach it again";
+      reattach.disabled = !link.reattach?.workspacePath;
+      reattach.addEventListener("click", async () => {
+        reattach.disabled = true;
+        reattach.textContent = "Attaching…";
+        problem.hidden = true;
+        let result;
+        try {
+          result = await api.attachForLink(link.linkId);
+        } catch (error) {
+          result = { ok: false, error: String(error?.message ?? error) };
+        }
+        if (result?.ok) {
+          // The next snapshot re-renders this card with Approve enabled.
+          reattach.textContent = "Attached";
+          return;
+        }
+        reattach.disabled = false;
+        reattach.textContent = "Attach it again";
+        problem.textContent = result?.error ?? "That did not work. Please try again.";
+        problem.hidden = false;
+      });
+      buttons.prepend(reattach);
+    }
+
     card.append(h, p, buttons, problem);
     links.append(card);
   }

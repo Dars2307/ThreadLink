@@ -55,14 +55,11 @@ function fakeApi() {
         sessions.set(i.localBindingRef, `tlses_${String(++n).padStart(32, "0")}`);
       return { sessionId: sessions.get(i.localBindingRef)!, created: true };
     }),
-    links: vi.fn(
-      async (
-        sessionId: string,
-      ): Promise<{ linkId: string; status: string; controllerDisplayName: string | null }[]> => {
-        void sessionId;
-        return [];
-      },
-    ),
+    links: vi.fn(async (sessionId: string) => {
+      void sessionId;
+      return [];
+    }),
+    runtimeLinks: vi.fn(async (): Promise<unknown[]> => []),
     approvePairing: vi.fn(async (_s: string, linkId: string) => ({ linkId, status: "active" })),
     declinePairing: vi.fn(async () => ({})),
     inbox: vi.fn(async (sessionId: string) =>
@@ -280,11 +277,27 @@ describe("ThreadLink Runtime engine", () => {
     await e.register();
     await e.attach(wsA, A1, "Dashboard redesign");
     const sid = sessions.get(`cc:${A1}`)!;
-    api.links.mockImplementation(async (s: string) =>
-      s === sid
-        ? [{ linkId: "tllnk_1", status: "pending", controllerDisplayName: "Phase 6.6 planning" }]
-        : [],
-    );
+    api.runtimeLinks.mockResolvedValue([
+      {
+        linkId: "tllnk_1",
+        status: "pending",
+        paused: false,
+        agentSessionId: sid,
+        controllerDisplayName: "Phase 6.6 planning",
+        requestedAt: new Date().toISOString(),
+        approvedAt: null,
+        conversation: {
+          displayName: "Dashboard redesign",
+          localBindingRef: `cc:${A1}`,
+          provider: "claude-code",
+          mode: "resume",
+          nativeSessionId: A1,
+          workspaceId: "tlwsp_1",
+          workspaceName: "A",
+          workspacePath: wsA,
+        },
+      },
+    ]);
     const seen: EngineEvent[] = [];
     e.on((ev) => ev.type === "link-request" && seen.push(ev));
     const pending = await e.refreshPendingLinks();
@@ -294,11 +307,96 @@ describe("ThreadLink Runtime engine", () => {
         sessionId: sid,
         from: "Phase 6.6 planning",
         conversation: "Dashboard redesign",
+        attached: true,
+        reattach: null,
       },
     ]);
     expect(seen).toHaveLength(1);
     await e.approveLink("tllnk_1");
     expect(api.approvePairing).toHaveBeenCalledWith(sid, "tllnk_1");
+  });
+
+  it("finds a request for a conversation this computer has detached, and offers it back", async () => {
+    // The dead end this replaced: detaching hid the request from the only
+    // place it could be answered.
+    const { api, sessions } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    await e.attach(wsA, A1, "Dashboard redesign");
+    const sid = sessions.get(`cc:${A1}`)!;
+    api.runtimeLinks.mockResolvedValue([
+      {
+        linkId: "tllnk_1",
+        status: "pending",
+        paused: false,
+        agentSessionId: sid,
+        controllerDisplayName: "ChatGPT",
+        requestedAt: new Date().toISOString(),
+        approvedAt: null,
+        conversation: {
+          displayName: "Dashboard redesign",
+          localBindingRef: `cc:${A1}`,
+          provider: "claude-code",
+          mode: "resume",
+          nativeSessionId: A1,
+          workspaceId: "tlwsp_1",
+          workspaceName: "A",
+          workspacePath: wsA,
+        },
+      },
+    ]);
+
+    await e.detach(wsA, `cc:${A1}`);
+    const afterDetach = await e.refreshPendingLinks();
+    expect(afterDetach).toHaveLength(1);
+    expect(afterDetach[0]).toMatchObject({ attached: false });
+    expect(afterDetach[0]?.reattach).toMatchObject({ nativeSessionId: A1, workspacePath: wsA });
+
+    // It must not be approved behind the user's back.
+    await expect(e.approveLink("tllnk_1")).rejects.toThrow(/Attach .* again before approving/);
+    expect(api.approvePairing).not.toHaveBeenCalled();
+
+    // Attaching it again restores the ability to approve, on the same session.
+    const back = await e.attachForLink("tllnk_1");
+    expect(back).toMatchObject({ attached: true, sessionId: sid });
+    await e.approveLink("tllnk_1");
+    expect(api.approvePairing).toHaveBeenCalledWith(sid, "tllnk_1");
+
+    // Declining never needed the conversation back in the first place.
+    expect(api.declinePairing).not.toHaveBeenCalled();
+  });
+
+  it("lets the user decline a request whose conversation is detached", async () => {
+    const { api, sessions } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    await e.attach(wsA, A1, "Dashboard redesign");
+    const sid = sessions.get(`cc:${A1}`)!;
+    api.runtimeLinks.mockResolvedValue([
+      {
+        linkId: "tllnk_2",
+        status: "pending",
+        paused: false,
+        agentSessionId: sid,
+        controllerDisplayName: "ChatGPT",
+        requestedAt: new Date().toISOString(),
+        approvedAt: null,
+        conversation: {
+          displayName: "Dashboard redesign",
+          localBindingRef: `cc:${A1}`,
+          provider: "claude-code",
+          mode: "resume",
+          nativeSessionId: A1,
+          workspaceId: "tlwsp_1",
+          workspaceName: "A",
+          workspacePath: wsA,
+        },
+      },
+    ]);
+    await e.detach(wsA, `cc:${A1}`);
+    await e.refreshPendingLinks();
+    await e.declineLink("tllnk_2");
+    expect(api.declinePairing).toHaveBeenCalledWith(sid, "tllnk_2");
   });
 });
 

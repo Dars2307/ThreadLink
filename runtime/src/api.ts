@@ -28,6 +28,31 @@ export type TaskEnvelope = {
   claimedUntil?: string | null;
 };
 
+/**
+ * A link request as the Runtime sees it: scoped to this Runtime's own
+ * sessions, with enough about the conversation to find it locally - or to
+ * offer attaching it again. Never carries the controller's session id.
+ */
+export type RuntimeLinkView = {
+  linkId: string;
+  status: "pending" | "active";
+  paused: boolean;
+  agentSessionId: string;
+  controllerDisplayName: string | null;
+  requestedAt: string;
+  approvedAt: string | null;
+  conversation: {
+    displayName: string | null;
+    localBindingRef: string;
+    provider: string | null;
+    mode: string | null;
+    nativeSessionId: string | null;
+    workspaceId: string | null;
+    workspaceName: string | null;
+    workspacePath: string | null;
+  };
+};
+
 export type LinkView = {
   linkId: string;
   controllerSessionId: string;
@@ -201,6 +226,11 @@ export class ThreadLinkApi {
   // ---------------------------------------------------------------------------
   // Runtime
   // ---------------------------------------------------------------------------
+  async runtimeLinks(): Promise<RuntimeLinkView[]> {
+    const res = await this.#request<{ links: RuntimeLinkView[] }>("GET", "/api/runtime/links");
+    return res.links;
+  }
+
   registerRuntime(input: { label: string; platform: string; kind: string; version: string }) {
     return this.#request<RuntimeView>("POST", "/api/runtime/register", input);
   }

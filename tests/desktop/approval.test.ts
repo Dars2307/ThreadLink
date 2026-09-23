@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,10 +30,13 @@ const ROOT = resolve(import.meta.dirname, "..", "..");
 const HTML = readFileSync(join(ROOT, "desktop", "renderer", "index.html"), "utf8");
 const APP_JS = readFileSync(join(ROOT, "desktop", "renderer", "app.js"), "utf8");
 
-const WORKSPACE = resolve("C:/work/ThreadLink");
+// A real folder: reattaching refuses a workspace that is not on this machine,
+// which is correct behaviour and would otherwise mask the thing under test.
+const WORKSPACE = mkdtempSync(join(tmpdir(), "tl-workspace-"));
 const SESSION = "tlses_adb44e6d9603477ebc0d0ae41b8f7be9";
 const LINK = "tllnk_6420871d6b2d41a2b1116d7d9a659180";
-const BINDING = "cc:31a711b2-740c-4fe5-a551-e20e8080dce1";
+const NATIVE = "31a711b2-740c-4fe5-a551-e20e8080dce1";
+const BINDING = `cc:${NATIVE}`;
 
 type Server = {
   status: string;
@@ -48,18 +51,33 @@ function fakeServer(): { server: Server; api: Record<string, ReturnType<typeof v
     runtimeHeartbeat: vi.fn(async () => runtimeView()),
     upsertWorkspace: vi.fn(async () => ({ workspaceId: "tlwsp_1" })),
     registerConversation: vi.fn(async () => ({ sessionId: SESSION, created: false })),
-    links: vi.fn(async (sessionId: string) =>
-      sessionId === SESSION
-        ? [
+    links: vi.fn(async () => []),
+    // What /api/runtime/links returns: scoped to this Runtime's own sessions,
+    // and independent of whatever is attached locally.
+    runtimeLinks: vi.fn(async () =>
+      server.status === "revoked"
+        ? []
+        : [
             {
               linkId: LINK,
-              controllerSessionId: "tlses_ae6839e5236643de9e65e3421e113e81",
+              status: server.status,
+              paused: false,
               agentSessionId: SESSION,
               controllerDisplayName: "ChatGPT",
-              status: server.status,
+              requestedAt: "2026-09-23T06:07:06.922Z",
+              approvedAt: null,
+              conversation: {
+                displayName: "ThreadLink Alpha v0.1 bootstrap",
+                localBindingRef: BINDING,
+                provider: "claude-code",
+                mode: "resume",
+                nativeSessionId: NATIVE,
+                workspaceId: "tlwsp_1",
+                workspaceName: "ThreadLink",
+                workspacePath: WORKSPACE,
+              },
             },
-          ]
-        : [],
+          ],
     ),
     approvePairing: vi.fn(async (sessionId: string, linkId: string) => {
       server.approvals.push({ sessionId, linkId });
@@ -141,6 +159,14 @@ async function mountApp() {
     getState: async () => state,
     onState: (cb: (s: unknown) => void) => listeners.push(cb),
     decideLink,
+    attachForLink: async (linkId: string) => {
+      try {
+        await engine.attachForLink(linkId);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: messageFor(error) };
+      }
+    },
     detach: vi.fn(),
     attach: vi.fn(),
     addWorkspace: vi.fn(),
@@ -173,6 +199,11 @@ const declineButton = () =>
     (b.textContent ?? "").startsWith("Decline"),
   ) as HTMLButtonElement | undefined;
 
+const reattachButton = () =>
+  [...document.querySelectorAll("#links button")].find((b) =>
+    (b.textContent ?? "").startsWith("Attach"),
+  ) as HTMLButtonElement | undefined;
+
 const problemText = () => {
   const p = document.querySelector("#links p.danger-text") as HTMLElement | null;
   return p && !p.hidden ? (p.textContent ?? "") : null;
@@ -181,6 +212,15 @@ const problemText = () => {
 const settle = async () => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
   await new Promise((r) => setTimeout(r, 0));
+};
+
+/** Waits for work that touches the filesystem, without guessing at timings. */
+const waitFor = async (predicate: () => boolean, what: string) => {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`Timed out waiting for ${what}`);
 };
 
 beforeEach(async () => {
@@ -194,7 +234,7 @@ beforeEach(async () => {
       {
         provider: "claude-code",
         mode: "resume",
-        nativeSessionId: "31a711b2-740c-4fe5-a551-e20e8080dce1",
+        nativeSessionId: NATIVE,
         title: "ThreadLink Alpha v0.1 bootstrap",
         localBindingRef: BINDING,
         sessionId: SESSION,
@@ -275,16 +315,69 @@ describe("approving a link request from the desktop app", () => {
     expect(api.approvePairing).toHaveBeenCalledTimes(2);
   });
 
-  it("explains itself when the conversation is no longer attached", async () => {
-    // The exact situation that produced a dead button: the request is for a
-    // conversation this computer has since detached.
+  it("still shows the request after the conversation is detached here", async () => {
+    // The dead end this replaced: detaching used to hide the request from the
+    // only place it could be answered.
     await engine.detach(WORKSPACE, BINDING);
-    api.links.mockResolvedValue([]);
-    await engine.refreshPendingLinks(); // the ten-second poll notices
+    await engine.refreshPendingLinks();
+    await mountApp();
+
+    expect(engine.snapshot().pendingLinks).toHaveLength(1);
+    const text = document.querySelector("#links")?.textContent ?? "";
+    expect(text).toContain("not attached on this computer");
+    expect(approveButton()!.disabled).toBe(true);
+    expect(reattachButton()).toBeTruthy();
+  });
+
+  it("will not approve a detached conversation behind the user's back", async () => {
+    await engine.detach(WORKSPACE, BINDING);
+    await engine.refreshPendingLinks();
     const result = await decideLink(LINK, true);
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/not attached on this computer/i);
+    expect(result.error).toMatch(/again before approving/i);
     expect(api.approvePairing).not.toHaveBeenCalled();
+    expect(server.status).toBe("pending");
+  });
+
+  it("reattaching from the request restores the ability to approve", async () => {
+    await engine.detach(WORKSPACE, BINDING);
+    await engine.refreshPendingLinks();
+    await mountApp();
+
+    reattachButton()!.click();
+    await waitFor(
+      () => engine.snapshot().pendingLinks[0]?.attached === true,
+      "the conversation to be attached again",
+    );
+
+    // Same conversation, same ThreadLink session - not a new one.
+    expect(api.registerConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ localBindingRef: BINDING, nativeSessionId: NATIVE }),
+    );
+    expect(engine.snapshot().pendingLinks[0]).toMatchObject({ attached: true, sessionId: SESSION });
+
+    const result = await decideLink(LINK, true);
+    expect(result.ok).toBe(true);
+    expect(api.approvePairing).toHaveBeenCalledWith(SESSION, LINK);
+    expect(server.status).toBe("active");
+  });
+
+  it("a request survives a restart of the Runtime", async () => {
+    // Nothing about discovery is remembered locally, so a fresh engine with no
+    // memory of the request finds it again.
+    const fresh = new RuntimeEngine({
+      api: api as never,
+      configDir: dir,
+      adapters: [adapter],
+      identity: { label: "Joel's Laptop", platform: "windows", kind: "desktop" },
+      version: "0.6.6",
+      repo: async () => ({ remote: null, fingerprint: null, branch: null }),
+    });
+    await fresh.register();
+    await fresh.sync();
+    const pending = await fresh.refreshPendingLinks();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ linkId: LINK, attached: true });
   });
 
   it("declines through the same guarded path", async () => {
