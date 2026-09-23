@@ -21,12 +21,12 @@ export const CANONICAL_BASE_URL: Record<ThreadLinkChannel, string> = {
 };
 
 /**
- * The channel this build targets. Phase 6.6 acceptance testing runs against
- * Preview; moving testing to Production is a deliberate change here (or
- * THREADLINK_CHANNEL for a one-off).
+ * The channel this build targets. Production is ThreadLink's one canonical
+ * address; Preview exists for testing a build before it becomes that, and is
+ * selected deliberately with THREADLINK_CHANNEL=preview.
  */
 export const BUILD_CHANNEL: ThreadLinkChannel =
-  process.env.THREADLINK_CHANNEL === "production" ? "production" : "preview";
+  process.env.THREADLINK_CHANNEL === "preview" ? "preview" : "production";
 
 export function canonicalBaseUrl(channel: ThreadLinkChannel = BUILD_CHANNEL): string {
   return CANONICAL_BASE_URL[channel];
@@ -35,6 +35,17 @@ export function canonicalBaseUrl(channel: ThreadLinkChannel = BUILD_CHANNEL): st
 const CANONICAL_HOSTS = new Set(
   Object.values(CANONICAL_BASE_URL).map((url) => new URL(url).hostname),
 );
+
+/**
+ * True when a stored address is one of our stable hostnames, but belongs to a
+ * different channel than this build. An installed Runtime that was pointed at
+ * Preview must follow the build to Production rather than keep talking to a
+ * deployment this build no longer targets.
+ */
+function isOtherChannelHost(host: string, channel: ThreadLinkChannel): boolean {
+  const lower = host.toLowerCase();
+  return CANONICAL_HOSTS.has(lower) && lower !== new URL(canonicalBaseUrl(channel)).hostname;
+}
 
 /** True for a *.vercel.app host that is not one of ours: a generated build URL. */
 export function isGeneratedDeploymentHost(host: string): boolean {
@@ -73,6 +84,7 @@ export function canonicalizeBaseUrl(
     return { url: canonical, changed: true, previous: raw };
   }
 
-  if (!isGeneratedDeploymentHost(host)) return { url: origin, changed: false, previous: null };
+  const stale = isGeneratedDeploymentHost(host) || isOtherChannelHost(host, channel);
+  if (!stale) return { url: origin, changed: false, previous: null };
   return { url: canonical, changed: true, previous: origin };
 }

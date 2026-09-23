@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ApiError, ThreadLinkApi } from "../../runtime/src/api.ts";
 import {
+  BUILD_CHANNEL,
   CANONICAL_BASE_URL,
+  canonicalBaseUrl,
   canonicalizeBaseUrl,
   isGeneratedDeploymentHost,
 } from "../../runtime/src/endpoints.ts";
@@ -52,10 +54,9 @@ describe("canonical ThreadLink addresses", () => {
     expect(canonicalizeBaseUrl(GENERATED, "production").url).toBe(CANONICAL_BASE_URL.production);
   });
 
-  it("leaves stable, custom and local addresses untouched", () => {
+  it("leaves this channel's own address, custom domains and localhost untouched", () => {
     for (const url of [
       CANONICAL_BASE_URL.preview,
-      CANONICAL_BASE_URL.production,
       "https://threadlink.example.com",
       "http://localhost:3200",
     ]) {
@@ -65,6 +66,34 @@ describe("canonical ThreadLink addresses", () => {
         previous: null,
       });
     }
+    expect(canonicalizeBaseUrl(CANONICAL_BASE_URL.production, "production")).toEqual({
+      url: CANONICAL_BASE_URL.production,
+      changed: false,
+      previous: null,
+    });
+  });
+
+  it("follows the build to the other channel's address", () => {
+    // An installed Runtime pointed at Preview must move to Production when the
+    // build it is running targets Production, or it keeps talking to a
+    // deployment nobody is maintaining.
+    expect(canonicalizeBaseUrl(CANONICAL_BASE_URL.preview, "production")).toEqual({
+      url: CANONICAL_BASE_URL.production,
+      changed: true,
+      previous: CANONICAL_BASE_URL.preview,
+    });
+    expect(canonicalizeBaseUrl(CANONICAL_BASE_URL.production, "preview")).toEqual({
+      url: CANONICAL_BASE_URL.preview,
+      changed: true,
+      previous: CANONICAL_BASE_URL.production,
+    });
+    // A custom domain is still a deliberate choice, whatever the channel.
+    expect(canonicalizeBaseUrl("https://threadlink.example.com", "production").changed).toBe(false);
+  });
+
+  it("defaults to Production, the one canonical address", () => {
+    expect(BUILD_CHANNEL).toBe("production");
+    expect(canonicalBaseUrl()).toBe(CANONICAL_BASE_URL.production);
   });
 
   it("falls back to the stable address for nothing or nonsense", () => {
