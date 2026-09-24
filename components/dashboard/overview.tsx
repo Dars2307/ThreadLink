@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { Badge, Card, CardTitle, EmptyState, type Tone } from "@/components/ui";
-import type { deriveDashboard, LinkCard } from "@/lib/dashboard/view-model";
+import type { deriveDashboard, LinkActivity, LinkCard } from "@/lib/dashboard/view-model";
 
 type View = ReturnType<typeof deriveDashboard>;
 
@@ -177,6 +177,86 @@ export function RecentActivity({
                 </p>
               </div>
               <Badge tone={item.tone}>{item.statusLabel}</Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+const MODE_TONE: Record<LinkActivity["mode"], Tone> = {
+  worker: "accent",
+  resume: "neutral",
+  fresh: "neutral",
+};
+
+/**
+ * Activity grouped by the Claude conversation it ran against. A background
+ * worker runs out of sight, so its group still names the Claude conversation
+ * and workspace it belongs to.
+ */
+export function ConversationActivity({
+  groups,
+  limit = 5,
+}: {
+  groups: View["linkActivity"];
+  limit?: number;
+}) {
+  return (
+    <Card labelledBy="link-activity-title">
+      <CardTitle
+        id="link-activity-title"
+        description="What ran in each of your Claude conversations."
+      >
+        Activity by conversation
+      </CardTitle>
+      {groups.length === 0 ? (
+        <EmptyState title="Nothing is linked yet">
+          Link a chat to a Claude conversation to see its activity here.
+        </EmptyState>
+      ) : (
+        <ul className="flex flex-col gap-4">
+          {groups.map((group) => (
+            <li key={group.linkId} className="border-border rounded-xl border p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-subtle text-xs">
+                    {group.chatApp} · {group.chat}
+                  </p>
+                  <p className="truncate text-sm font-medium">{group.conversation}</p>
+                  <p className="text-muted text-xs">{group.attribution}</p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <Badge tone={MODE_TONE[group.mode]}>{group.modeLabel}</Badge>
+                  <Badge tone={LINK_TONE[group.status]}>{group.statusLabel}</Badge>
+                </div>
+              </div>
+              {group.tasks.length === 0 ? (
+                <p className="text-muted pt-3 text-xs">{group.emptyHint}</p>
+              ) : (
+                <>
+                  <ul className="divide-border mt-3 flex flex-col divide-y border-t pt-1">
+                    {group.tasks.slice(0, limit).map((task) => (
+                      <li
+                        key={task.taskId}
+                        className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm">{task.title}</p>
+                          <p className="text-muted text-xs">{task.when}</p>
+                        </div>
+                        <Badge tone={task.tone}>{task.statusLabel}</Badge>
+                      </li>
+                    ))}
+                  </ul>
+                  {group.taskCount > limit ? (
+                    <p className="text-subtle pt-2 text-xs">
+                      {group.taskCount - limit} more in this conversation
+                    </p>
+                  ) : null}
+                </>
+              )}
             </li>
           ))}
         </ul>

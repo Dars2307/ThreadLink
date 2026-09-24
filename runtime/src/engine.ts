@@ -112,6 +112,12 @@ export type EngineSnapshot = {
   lastHeartbeatAt: string | null;
   tasksCompleted: number;
   /**
+   * The mirrored feed, newest first. A background worker runs in a Claude
+   * conversation the user cannot see, and there is no supported way to write
+   * into the one they can; this is what they follow instead.
+   */
+  activity: ActivityEntry[];
+  /**
    * True once the trouble has lasted long enough that the user should be
    * offered a way out (sign in again / check the address) instead of watching
    * "Reconnecting..." forever. The engine keeps retrying regardless.
@@ -119,8 +125,58 @@ export type EngineSnapshot = {
   needsAttention: boolean;
 };
 
+/**
+ * One line in the mirror of what ThreadLink is doing for a linked conversation.
+ *
+ * A background worker runs in its own Claude conversation, which the user
+ * cannot see, and Claude Code has no supported way to write into the
+ * conversation they DO have open. So the work is mirrored here instead.
+ *
+ * Every field is safe to display: the task's own title, where it ran, and how.
+ * The prompt, the result and any diff are deliberately absent -- this is a
+ * status feed, not a second copy of the conversation.
+ */
+export type ActivityEntry = {
+  taskId: string;
+  event: "task_started" | "task_completed" | "task_failed" | "task_lost" | "task_blocked";
+  /** The task's title, as the sender wrote it. */
+  title: string;
+  /** The linked conversation this work belongs to, by display name. */
+  conversation: string;
+  /** Which attached conversation it belongs to, for grouping. */
+  localBindingRef: string;
+  workspace: string;
+  /** How it ran. "worker" is the case this whole feed exists for. */
+  mode: AttachedConversation["mode"];
+  at: string;
+  /** A short, safe explanation for a failure. Never a result or a diff. */
+  detail?: string;
+  /**
+   * One safe line about what came back. Built by removing code, credentials
+   * and paths from the result, never by quoting it; the full result stays in
+   * the task, behind the same authorization as everything else.
+   */
+  summary?: string;
+  /** Why a task that is alive is not progressing. */
+  blocked?: BlockedReason;
+};
+
+/** Why a claimed task cannot proceed. Mirrors the reasons the server accepts. */
+export type BlockedReason = "plan_mode" | "approval_required" | "user_input_required";
+
+/** What each blocked state means to the person waiting on it. */
+const BLOCKED_DETAIL: Record<BlockedReason, string> = {
+  plan_mode: "Claude is in Plan Mode, so it will not make changes.",
+  approval_required: "Claude needs your permission to continue.",
+  user_input_required: "Claude is waiting for an answer from you.",
+};
+
+/** How many mirrored lines are kept. Enough to follow along, not a log file. */
+export const ACTIVITY_LIMIT = 100;
+
 export type EngineEvent =
   | { type: "snapshot"; snapshot: EngineSnapshot }
+  | { type: "activity"; activity: ActivityEntry }
   | {
       type: "task";
       outcome: "completed" | "failed" | "lost";
@@ -149,6 +205,7 @@ type Api = Pick<
   | "progress"
   | "complete"
   | "fail"
+  | "blocked"
 >;
 
 export type EngineOptions = {
@@ -215,6 +272,18 @@ class UnsupportedModeExecutor implements Executor {
   }
 }
 
+/**
+ * Why a task failed, in the user's words. A mirrored line may carry one of
+ * these and nothing else: never the agent's error text, which can quote the
+ * prompt or the code it was working on.
+ */
+const FAILURE_DETAIL: Record<string, string> = {
+  session_busy: "That Claude conversation was open, so it was not touched.",
+  background_mode_unsupported: "This agent cannot work in the background.",
+  native_session_unavailable: "That Claude conversation could not be opened.",
+  lease_exhausted: "ThreadLink stopped hearing from this computer.",
+};
+
 /** The stored mode, defaulting safely when the server says something unknown. */
 function conversationMode(mode: string | null): AttachedConversation["mode"] {
   if (mode === "resume" || mode === "worker") return mode;
@@ -244,6 +313,10 @@ export class RuntimeEngine {
   #capabilities: Record<string, string> = {};
   #workspaces: WorkspaceState[] = [];
   #busy = new Set<string>();
+  /** Newest first, capped at ACTIVITY_LIMIT. */
+  #activity: ActivityEntry[] = [];
+  /** `${taskId}:${event}` already mirrored, so a retry cannot post it twice. */
+  #mirrored = new Set<string>();
   #pending: PendingLink[] = [];
   #lastHeartbeat = 0;
   #lastLinkPoll = 0;
@@ -332,8 +405,30 @@ export class RuntimeEngine {
       pendingLinks: this.#pending,
       lastHeartbeatAt: this.#lastHeartbeat ? new Date(this.#lastHeartbeat).toISOString() : null,
       tasksCompleted: this.#tasksCompleted,
+      activity: [...this.#activity],
       needsAttention: this.#needsAttention,
     };
+  }
+
+  /**
+   * Records one mirrored line and tells the UI.
+   *
+   * Milestones only, and each one at most once: a task that is retried, or a
+   * snapshot that arrives twice, must not turn into a second entry. Tool calls
+   * and progress never reach here at all -- the feed is meant to be readable,
+   * not complete.
+   */
+  #mirror(entry: ActivityEntry): void {
+    const key = `${entry.taskId}:${entry.event}`;
+    if (this.#mirrored.has(key)) return;
+    this.#mirrored.add(key);
+    this.#activity.unshift(entry);
+    if (this.#activity.length > ACTIVITY_LIMIT) {
+      const dropped = this.#activity.splice(ACTIVITY_LIMIT);
+      for (const old of dropped) this.#mirrored.delete(`${old.taskId}:${old.event}`);
+    }
+    this.#emit({ type: "activity", activity: entry });
+    this.#emit({ type: "snapshot", snapshot: this.snapshot() });
   }
 
   #adapter(id: string): ProviderAdapter {
@@ -824,6 +919,24 @@ export class RuntimeEngine {
       for (const c of ws.conversations) {
         if (!c.sessionId) continue;
         const title = c.title ?? workspaceDisplayName(ws.workspace);
+        /** One mirrored line, built only from fields that are safe to show. */
+        const mirror = (
+          event: ActivityEntry["event"],
+          task: { taskId: string; title: string },
+          extra: Pick<ActivityEntry, "detail" | "summary" | "blocked"> = {},
+        ): void => {
+          this.#mirror({
+            taskId: task.taskId,
+            event,
+            title: task.title,
+            conversation: title,
+            localBindingRef: c.localBindingRef,
+            workspace: workspaceDisplayName(ws.workspace),
+            mode: c.mode,
+            at: new Date().toISOString(),
+            ...extra,
+          });
+        };
         const outcome = await processNextTask({
           api: this.#o.api,
           executor: this.#executor(ws, c),
@@ -832,6 +945,12 @@ export class RuntimeEngine {
           claimRef: this.#claimRef,
           heartbeatMs: this.#o.taskHeartbeatMs,
           log: this.#o.log,
+          onStarted: (e) => mirror("task_started", e),
+          onBlocked: (e) =>
+            mirror("task_blocked", e, {
+              blocked: e.reason,
+              detail: BLOCKED_DETAIL[e.reason],
+            }),
           onOutcome: (e) => {
             if (e.outcome === "completed") this.#tasksCompleted++;
             this.#emit({
@@ -841,6 +960,23 @@ export class RuntimeEngine {
               conversation: title,
               reason: e.reason,
             });
+            mirror(
+              e.outcome === "completed"
+                ? "task_completed"
+                : e.outcome === "failed"
+                  ? "task_failed"
+                  : "task_lost",
+              e,
+              {
+                detail:
+                  e.outcome === "lost"
+                    ? "ThreadLink lost track of this task before it finished."
+                    : e.reason
+                      ? FAILURE_DETAIL[e.reason]
+                      : undefined,
+                summary: e.summary ?? undefined,
+              },
+            );
           },
         });
         if (outcome !== "none" && outcome !== "skipped") processed++;

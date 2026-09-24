@@ -100,6 +100,54 @@ export type LinkCard = {
   statusLabel: string;
 };
 
+/** One task in an activity list. Metadata only: never prompt or result content. */
+export type ActivityItem = {
+  taskId: string;
+  title: string;
+  statusLabel: string;
+  tone: "success" | "danger" | "neutral" | "accent";
+  when: string;
+  linkId: string | null;
+};
+
+/**
+ * Recent tasks grouped under the link (chat ↔ Claude conversation) they ran
+ * against, so a background worker's work is still attributed to the Claude
+ * conversation and workspace the user can actually see.
+ */
+export type LinkActivity = {
+  linkId: string;
+  chat: string;
+  chatApp: string;
+  conversation: string;
+  conversationDetail: string;
+  workspace: string | null;
+  runtime: string | null;
+  mode: ExecutionMode;
+  modeLabel: string;
+  /** One line naming the mode and the visible Claude conversation it belongs to. */
+  attribution: string;
+  status: LinkCard["status"];
+  statusLabel: string;
+  tasks: ActivityItem[];
+  taskCount: number;
+  lastRun: string | null;
+  emptyHint: string;
+};
+
+const EMPTY_ACTIVITY: Record<ExecutionMode, string> = {
+  worker: "Nothing has run in this background worker yet.",
+  resume: "Nothing has run in this Claude conversation yet.",
+  fresh: "Nothing has been sent to this link yet.",
+};
+
+function attributionLine(card: LinkCard): string {
+  const where = card.workspace ? `${card.conversation} · ${card.workspace}` : card.conversation;
+  if (card.mode === "worker") return `Background worker for ${where}`;
+  if (card.mode === "resume") return `Runs in ${where}`;
+  return `New conversation each time, alongside ${where}`;
+}
+
 export function deriveDashboard(data: DashboardData) {
   const live = data.connections.filter(isLive);
   const controllers = live.filter((c) => c.role === "controller");
@@ -225,6 +273,18 @@ export function deriveDashboard(data: DashboardData) {
       };
     });
 
+  // A task belongs to a link only when BOTH ends match: the chat it came from
+  // and the Claude conversation it ran against. Matching the agent session
+  // alone would let another chat's (or another link's) work show up here.
+  const linkIdByRoute = new Map<string, string>();
+  for (const l of activeLinks) {
+    linkIdByRoute.set(`${l.controllerSessionId}\u0000${l.agentSessionId}`, l.linkId);
+  }
+  const linkIdForTask = (t: RecentTask): string | null =>
+    linkIdByRoute.get(`${t.originSessionId}\u0000${t.targetSessionId}`) ?? null;
+
+  const taskTime = (t: RecentTask) => new Date(t.finishedAt ?? t.createdAt).getTime();
+
   const activity = data.tasks.map((t) => {
     const origin = sessionById.get(t.originSessionId);
     const target = sessionById.get(t.targetSessionId);
@@ -234,7 +294,40 @@ export function deriveDashboard(data: DashboardData) {
       title: t.title,
       ...taskStatus(t.status, t.failureReason),
       when: relativeTime(t.finishedAt ?? t.createdAt, data.now),
-      linkId: null as string | null,
+      linkId: linkIdForTask(t),
+    };
+  });
+
+  /** Recent tasks grouped under the link / Claude conversation they ran against. */
+  const linkActivity: LinkActivity[] = links.map((card) => {
+    const mine = data.tasks
+      .filter((t) => linkIdForTask(t) === card.linkId)
+      .slice()
+      .sort((a, b) => taskTime(b) - taskTime(a));
+    const tasks: ActivityItem[] = mine.map((t) => ({
+      taskId: t.taskId,
+      title: t.title,
+      ...taskStatus(t.status, t.failureReason),
+      when: relativeTime(t.finishedAt ?? t.createdAt, data.now),
+      linkId: card.linkId,
+    }));
+    return {
+      linkId: card.linkId,
+      chat: card.chat,
+      chatApp: card.chatApp,
+      conversation: card.conversation,
+      conversationDetail: card.conversationDetail,
+      workspace: card.workspace,
+      runtime: card.runtime,
+      mode: card.mode,
+      modeLabel: card.modeLabel,
+      attribution: attributionLine(card),
+      status: card.status,
+      statusLabel: card.statusLabel,
+      tasks,
+      taskCount: tasks.length,
+      lastRun: mine[0] ? relativeTime(mine[0].finishedAt ?? mine[0].createdAt, data.now) : null,
+      emptyHint: EMPTY_ACTIVITY[card.mode],
     };
   });
 
@@ -271,6 +364,7 @@ export function deriveDashboard(data: DashboardData) {
     controllerSessions,
     agentSessions,
     activity,
+    linkActivity,
     runtimeTree,
     anyRuntimeOnline,
   };

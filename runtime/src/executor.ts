@@ -50,9 +50,24 @@ export type FailureReason =
   /** The provider cannot run this execution mode; the user must choose another. */
   | "background_mode_unsupported";
 
+/** Why a claimed task is alive but not progressing. */
+export type BlockedReason = "plan_mode" | "approval_required" | "user_input_required";
+
 export type ExecutionResult =
   | { ok: true; result: string; artifacts: Artifact[]; workerSessionId?: string }
-  | { ok: false; error: string; reason?: FailureReason; workerSessionId?: string };
+  | {
+      ok: false;
+      error: string;
+      reason?: FailureReason;
+      workerSessionId?: string;
+      /**
+       * Set only when the run failed AND said why in terms of a person: it is
+       * waiting for permission or an answer, rather than having gone wrong.
+       * Never set for a successful run -- exact-conversation mode runs in Plan
+       * Mode on purpose and its plans are results, not blockages.
+       */
+      blocked?: BlockedReason;
+    };
 
 export type Executor = {
   readonly name: string;
@@ -165,6 +180,28 @@ const BUSY_PATTERNS = [
   /is currently in use/i,
 ];
 const MISSING_PATTERNS = [/No conversation found/i];
+
+/**
+ * A failure that is really a person-shaped wait. Deliberately narrow: these
+ * match Claude Code saying it needs something from the user, not any error
+ * that happens to contain the word "permission". A false positive here leaves
+ * a task claimed until its lease expires, so the cost of guessing is real.
+ */
+const BLOCKED_PATTERNS: [RegExp, BlockedReason][] = [
+  [/\brequires? (?:your )?approval\b/i, "approval_required"],
+  [/\bneeds? (?:your )?permission to\b/i, "approval_required"],
+  [/\brequested permissions? to\b/i, "approval_required"],
+  [/\bpermission to use [^\n]{0,60}(?:was )?denied\b/i, "approval_required"],
+  [/\bwaiting for (?:your |user )?(?:input|answer|response)\b/i, "user_input_required"],
+  [/\bneeds? (?:more )?information from you\b/i, "user_input_required"],
+  [/\bin plan mode\b[^\n]{0,80}\b(?:cannot|can't|will not|won't)\b/i, "plan_mode"],
+];
+
+/** The blocked reason a failing run is really reporting, if any. */
+export function blockedReason(text: string): BlockedReason | null {
+  for (const [pattern, reason] of BLOCKED_PATTERNS) if (pattern.test(text)) return reason;
+  return null;
+}
 
 export const BACKGROUND_UNSUPPORTED_MESSAGE =
   "This agent cannot run work in the background. Choose “Exact conversation” for it instead " +
@@ -419,10 +456,8 @@ export class ClaudeCodeExecutor implements Executor {
           return;
         }
         if (parsed.is_error === true || code !== 0) {
-          done({
-            ok: false,
-            error: parsed.result || `Claude Code reported an error (exit ${code ?? "?"}).`,
-          });
+          const error = parsed.result || `Claude Code reported an error (exit ${code ?? "?"}).`;
+          done({ ok: false, error, blocked: blockedReason(error) ?? undefined });
           return;
         }
         const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;

@@ -8,6 +8,7 @@ import { formatUserCode, newUserCode, normalizeUserCode } from "@/lib/device/ser
 import type { ThreadLinkView } from "@/lib/pairing/model";
 import type { OwnerRuntime, OwnerWorkspace } from "@/lib/runtimes/queries";
 import type { OwnerSession } from "@/lib/sessions/queries";
+import type { RecentTask } from "@/lib/tasks/queries";
 
 const NOW = Date.parse("2026-09-22T12:00:00Z");
 const conn = (platform: Connection["platform"], role: Connection["role"]): Connection => ({
@@ -49,7 +50,10 @@ const session = (
   busy: false,
   ...extra,
 });
-const link = (status: ThreadLinkView["status"]): ThreadLinkView => ({
+const link = (
+  status: ThreadLinkView["status"],
+  over: Partial<ThreadLinkView> = {},
+): ThreadLinkView => ({
   linkId: "tllnk_00000000000000000000000000000000",
   controllerSessionId: "tlses_c",
   agentSessionId: "tlses_g",
@@ -61,6 +65,20 @@ const link = (status: ThreadLinkView["status"]): ThreadLinkView => ({
   requestedAt: "2026-09-22T10:00:00Z",
   approvedAt: null,
   revokedAt: null,
+  ...over,
+});
+
+const task = (over: Partial<RecentTask> = {}): RecentTask => ({
+  taskId: "tltask_00000000000000000000000000000001",
+  originSessionId: "tlses_c",
+  targetSessionId: "tlses_g",
+  status: "completed",
+  priority: "B",
+  title: "Run the test suite",
+  createdAt: "2026-09-22T11:00:00Z",
+  finishedAt: "2026-09-22T11:30:00Z",
+  failureReason: null,
+  ...over,
 });
 
 const runtime = (over: Partial<OwnerRuntime> = {}): OwnerRuntime => ({
@@ -228,6 +246,195 @@ describe("dashboard view model", () => {
     ]);
     expect(view.runtimeTree[0]!.online).toBe(true);
     expect(view.runtimeTree[0]!.claudeAvailable).toBe(true);
+  });
+
+  it("groups activity under the link and Claude conversation it ran against", () => {
+    const view = deriveDashboard({
+      connections: [conn("chatgpt", "controller"), conn("claude-code", "agent")],
+      sessions: [
+        session("tlses_c1", "controller", { displayName: "Phase 6.6 planning" }),
+        session("tlses_c2", "controller", { displayName: "Security chat" }),
+        session("tlses_g1", "agent", {
+          displayName: "Dashboard redesign",
+          nativeSessionMode: "resume",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+          workspaceId: "tlwsp_00000000000000000000000000000001",
+        }),
+        session("tlses_g2", "agent", {
+          displayName: "Security review",
+          nativeSessionMode: "resume",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+          workspaceId: "tlwsp_00000000000000000000000000000001",
+        }),
+      ],
+      links: [
+        link("active", {
+          linkId: "tllnk_00000000000000000000000000000001",
+          controllerSessionId: "tlses_c1",
+          agentSessionId: "tlses_g1",
+        }),
+        link("active", {
+          linkId: "tllnk_00000000000000000000000000000002",
+          controllerSessionId: "tlses_c2",
+          agentSessionId: "tlses_g2",
+        }),
+      ],
+      tasks: [
+        task({
+          taskId: "tltask_1",
+          originSessionId: "tlses_c1",
+          targetSessionId: "tlses_g1",
+          title: "Fix the login bug",
+        }),
+        task({
+          taskId: "tltask_2",
+          originSessionId: "tlses_c2",
+          targetSessionId: "tlses_g2",
+          title: "Audit the RLS policies",
+          status: "failed",
+          failureReason: "session_busy",
+        }),
+        // Same chat, but a conversation it is not linked to: belongs to no link.
+        task({
+          taskId: "tltask_3",
+          originSessionId: "tlses_c1",
+          targetSessionId: "tlses_g2",
+          title: "Crossed route",
+        }),
+        // Sessions that are not this account's links at all.
+        task({
+          taskId: "tltask_4",
+          originSessionId: "tlses_other_c",
+          targetSessionId: "tlses_other_g",
+          title: "Someone else's work",
+        }),
+      ],
+      runtimes: [runtime()],
+      workspaces: [workspace()],
+      now: NOW,
+    });
+
+    expect(view.linkActivity.map((g) => [g.conversation, g.tasks.map((t) => t.title)])).toEqual([
+      ["Dashboard redesign", ["Fix the login bug"]],
+      ["Security review", ["Audit the RLS policies"]],
+    ]);
+    const shown = view.linkActivity.flatMap((g) => g.tasks.map((t) => t.title));
+    expect(shown).not.toContain("Crossed route");
+    expect(shown).not.toContain("Someone else's work");
+    expect(view.linkActivity[1]!.tasks[0]).toMatchObject({
+      statusLabel: "Claude conversation was in use",
+      tone: "danger",
+    });
+    expect(view.linkActivity[0]).toMatchObject({ taskCount: 1, lastRun: "30 min ago" });
+  });
+
+  it("attributes background-worker activity to the Claude conversation it belongs to", () => {
+    const view = deriveDashboard({
+      connections: [conn("chatgpt", "controller"), conn("claude-code", "agent")],
+      sessions: [
+        session("tlses_c", "controller", { displayName: "Phase 6.6 planning" }),
+        session("tlses_g", "agent", {
+          displayName: "Dashboard redesign",
+          busy: true,
+          nativeSessionMode: "worker",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+          workspaceId: "tlwsp_00000000000000000000000000000001",
+        }),
+      ],
+      links: [link("active")],
+      tasks: [task({ title: "Rebuild the activity view" })],
+      runtimes: [runtime()],
+      workspaces: [workspace()],
+      now: NOW,
+    });
+    const group = view.linkActivity[0]!;
+    expect(group).toMatchObject({
+      mode: "worker",
+      modeLabel: "Background worker",
+      conversation: "Dashboard redesign",
+      workspace: "ThreadLink",
+      attribution: "Background worker for Dashboard redesign · ThreadLink",
+      // A worker is not blocked by the user's own Claude conversation being open.
+      status: "ready",
+      statusLabel: "Ready",
+    });
+    expect(group.tasks.map((t) => t.title)).toEqual(["Rebuild the activity view"]);
+    expect(JSON.stringify(group)).not.toMatch(/in use|close Claude/i);
+  });
+
+  it("leaks no identifiers into the activity view", () => {
+    const view = deriveDashboard({
+      connections: [conn("chatgpt", "controller"), conn("claude-code", "agent")],
+      sessions: [
+        session("tlses_c", "controller"),
+        session("tlses_g", "agent", {
+          displayName: "Dashboard redesign",
+          nativeSessionMode: "resume",
+          nativeSessionId: "04158991-0630-4b8b-b461-58c86ee35453",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+          workspaceId: "tlwsp_00000000000000000000000000000001",
+        }),
+      ],
+      links: [link("active")],
+      tasks: [task()],
+      runtimes: [runtime()],
+      workspaces: [workspace()],
+      now: NOW,
+    });
+    // Identifier fields are keys and form values only; everything else is rendered.
+    const withoutIds = (o: object) =>
+      Object.fromEntries(Object.entries(o).filter(([k]) => !k.endsWith("Id")));
+    const group = view.linkActivity[0]!;
+    const visible = {
+      ...withoutIds(group),
+      tasks: group.tasks.map(withoutIds),
+    };
+    expect(JSON.stringify(visible)).not.toMatch(
+      /tlses_|tlcon_|tllnk_|tlrun_|tlwsp_|tltask_|04158991|C:/,
+    );
+    expect(group.linkId).toContain("tllnk_");
+    expect(group.tasks[0]!.taskId).toContain("tltask_");
+  });
+
+  it("says plainly when a linked conversation has run nothing yet", () => {
+    const base = {
+      connections: [conn("chatgpt", "controller"), conn("claude-code", "agent")],
+      links: [link("active")],
+      tasks: [],
+      runtimes: [runtime()],
+      workspaces: [workspace()],
+      now: NOW,
+    };
+    const worker = deriveDashboard({
+      ...base,
+      sessions: [
+        session("tlses_c", "controller"),
+        session("tlses_g", "agent", {
+          nativeSessionMode: "worker",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+        }),
+      ],
+    });
+    expect(worker.linkActivity[0]).toMatchObject({
+      taskCount: 0,
+      tasks: [],
+      lastRun: null,
+      emptyHint: "Nothing has run in this background worker yet.",
+    });
+    const exact = deriveDashboard({
+      ...base,
+      sessions: [
+        session("tlses_c", "controller"),
+        session("tlses_g", "agent", {
+          nativeSessionMode: "resume",
+          runtimeId: "tlrun_00000000000000000000000000000001",
+        }),
+      ],
+    });
+    expect(exact.linkActivity[0]!.emptyHint).toBe(
+      "Nothing has run in this Claude conversation yet.",
+    );
+    expect(deriveDashboard({ ...base, sessions: [], links: [] }).linkActivity).toEqual([]);
   });
 
   it("labels Claude desktop connections correctly (not as ChatGPT)", () => {

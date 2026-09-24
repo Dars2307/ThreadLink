@@ -1,6 +1,7 @@
 import { ApiError, type ThreadLinkApi, type TaskEnvelope } from "./api.ts";
 import { DEFAULT_BACKOFF, nextDelay, type BackoffOptions } from "./backoff.ts";
-import type { Executor } from "./executor.ts";
+import type { BlockedReason, Executor } from "./executor.ts";
+import { summarize } from "./summary.ts";
 
 /**
  * Poll -> claim -> start -> heartbeat while executing -> complete/fail.
@@ -21,7 +22,7 @@ export type Log = (message: string) => void;
 export type WorkerDeps = {
   api: Pick<
     ThreadLinkApi,
-    "inbox" | "claim" | "start" | "heartbeat" | "progress" | "complete" | "fail"
+    "inbox" | "claim" | "start" | "heartbeat" | "progress" | "complete" | "fail" | "blocked"
   >;
   executor: Executor;
   sessionId: string;
@@ -34,16 +35,32 @@ export type WorkerDeps = {
    * branching a new one.
    */
   onWorkerSession?: (nativeSessionId: string) => void;
-  /** Observes each finished task (for UI/notifications). Never receives content. */
+  /**
+   * Observes a task beginning, once the claim and lease are real. Never
+   * receives the prompt: a mirror of what the worker is doing must not become
+   * a second copy of what it was asked to do.
+   */
+  onStarted?: (event: { taskId: string; title: string }) => void;
+  /**
+   * Observes a task that is alive but waiting on a person. The task keeps its
+   * claim; this is not an outcome.
+   */
+  onBlocked?: (event: { taskId: string; title: string; reason: BlockedReason }) => void;
+  /**
+   * Observes each finished task (for UI/notifications). Never receives the
+   * result itself -- only a summary already stripped of code, credentials and
+   * paths, which may be absent when nothing safe was left to say.
+   */
   onOutcome?: (event: {
     taskId: string;
     title: string;
     outcome: "completed" | "failed" | "lost";
     reason?: string;
+    summary?: string | null;
   }) => void;
 };
 
-export type Outcome = "none" | "completed" | "failed" | "lost" | "skipped";
+export type Outcome = "none" | "completed" | "failed" | "lost" | "skipped" | "blocked";
 
 export function truncateBytes(text: string, maxBytes: number): string {
   const buf = Buffer.from(text, "utf8");
@@ -88,6 +105,8 @@ export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
     if (isLeaseLoss(error)) return "lost";
     throw error;
   }
+  // Only now is the task really ours and really running.
+  deps.onStarted?.({ taskId: task.taskId, title: task.title });
 
   const heartbeat = setInterval(() => {
     api.heartbeat(task.taskId, sessionId, claimRef).catch((error: unknown) => {
@@ -129,8 +148,21 @@ export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
         result.artifacts,
       );
       log(`completed ${task.taskId}`);
-      deps.onOutcome?.({ taskId: task.taskId, title: task.title, outcome: "completed" });
+      deps.onOutcome?.({
+        taskId: task.taskId,
+        title: task.title,
+        outcome: "completed",
+        summary: summarize(result.result),
+      });
       return "completed";
+    }
+    // A run that stopped because it needs a person is not a failure: say so,
+    // and leave the claim alone so the task is not lost while they decide.
+    if (result.blocked) {
+      await api.blocked(task.taskId, sessionId, claimRef, result.blocked);
+      log(`blocked ${task.taskId} (${result.blocked})`);
+      deps.onBlocked?.({ taskId: task.taskId, title: task.title, reason: result.blocked });
+      return "blocked";
     }
     const error = truncateBytes(result.error, MAX_ERROR_BYTES);
     if (result.reason) await api.fail(task.taskId, sessionId, claimRef, error, result.reason);

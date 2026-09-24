@@ -236,6 +236,15 @@ function renderHome() {
   }
   for (const { w, c } of all) list.append(conversationCard(w, c, false));
 
+  const recent = el("home-activity");
+  recent.replaceChildren(
+    activityList(activityOf(state), {
+      withConversation: true,
+      emptyText: "No activity yet. When a task runs, what it did shows up here.",
+    }),
+  );
+  el("home-activity-dashboard").addEventListener("click", () => api.openDashboard());
+
   el("home-manage").addEventListener("click", () => go("conversations"));
   el("mcp-url").textContent = `${state.baseUrl}/mcp`;
   el("copy-mcp").addEventListener("click", async () => {
@@ -367,6 +376,9 @@ function renderConversations() {
     );
   }
   for (const { w, c } of all) attached.append(conversationCard(w, c, true));
+  for (const group of detachedActivity(new Set(all.map(({ c }) => c.localBindingRef)))) {
+    attached.append(group);
+  }
   el("add-more").addEventListener("click", () => {
     selectedWorkspace = null;
     attachMode = "worker";
@@ -423,7 +435,16 @@ function conversationCard(workspace, c, withActions) {
   actions.append(change, detach);
   item.append(actions);
 
-  if (changing !== c.localBindingRef) return item;
+  // The mirror of what has actually happened for this conversation, right
+  // under the conversation itself, so it is never in doubt which is which.
+  const feed = conversationActivity(c);
+
+  if (changing !== c.localBindingRef) {
+    const group = document.createElement("div");
+    group.className = "stack tight";
+    group.append(item, feed);
+    return group;
+  }
 
   // The switch itself: same conversation, same link, different mode.
   const wrapper = document.createElement("div");
@@ -480,8 +501,8 @@ function conversationCard(workspace, c, withActions) {
   wrapper.append(heading, picker, note, row, problem);
 
   const group = document.createElement("div");
-  group.className = "stack";
-  group.append(item, wrapper);
+  group.className = "stack tight";
+  group.append(item, feed, wrapper);
   return group;
 }
 
@@ -653,21 +674,18 @@ function renderRuntime() {
     );
   }
 
-  kv(
-    el("runtime-advanced"),
-    [
-      ["ThreadLink address", state.baseUrl ?? "—"],
-      ["Runtime ID", snap?.runtime?.runtimeId ?? "—"],
-      ...(snap?.workspaces ?? []).flatMap((w) =>
-        w.conversations.map((c) => [
-          `${w.name} · ${c.title}`,
-          `${c.mode}${c.nativeSessionId ? ` · ${c.nativeSessionId}` : ""}${
-            c.workerNativeSessionId ? ` · worker ${c.workerNativeSessionId}` : ""
-          }`,
-        ]),
-      ),
-    ],
-  );
+  kv(el("runtime-advanced"), [
+    ["ThreadLink address", state.baseUrl ?? "—"],
+    ["Runtime ID", snap?.runtime?.runtimeId ?? "—"],
+    ...(snap?.workspaces ?? []).flatMap((w) =>
+      w.conversations.map((c) => [
+        `${w.name} · ${c.title}`,
+        `${c.mode}${c.nativeSessionId ? ` · ${c.nativeSessionId}` : ""}${
+          c.workerNativeSessionId ? ` · worker ${c.workerNativeSessionId}` : ""
+        }`,
+      ]),
+    ),
+  ]);
 }
 
 // ----------------------------------------------------- notifications, settings
@@ -686,15 +704,182 @@ function renderSettings() {
   el("set-autostart").addEventListener("change", (e) =>
     api.setSettings({ autoStart: e.target.checked }),
   );
-  kv(
-    el("settings-advanced"),
-    [
-      ["ThreadLink address", state.baseUrl ?? "—"],
-      ["Connector URL", `${state.baseUrl}/mcp`],
-      ["This computer", state.snapshot?.identity?.kind ?? "—"],
-    ],
-  );
+  kv(el("settings-advanced"), [
+    ["ThreadLink address", state.baseUrl ?? "—"],
+    ["Connector URL", `${state.baseUrl}/mcp`],
+    ["This computer", state.snapshot?.identity?.kind ?? "—"],
+  ]);
   el("signout").addEventListener("click", () => api.signOut());
+}
+
+// ---------------------------------------------------------------- activity
+
+/**
+ * The mirrored activity feed.
+ *
+ * A background worker runs in a Claude conversation the user cannot see, and
+ * there is no supported way to write into the one they do have open. So the
+ * milestones are mirrored here, under the conversation they belong to. Only
+ * the safe fields of an entry are ever shown: never the prompt, the result,
+ * a raw error, or any identifier.
+ */
+
+/** What each mirrored event is called, and the badge it wears. */
+const EVENTS = {
+  task_started: { label: "Task started", tone: "run" },
+  task_completed: { label: "Task completed", tone: "ready" },
+  task_failed: { label: "Task failed", tone: "fail" },
+  task_blocked: { label: "Needs you", tone: "wait" },
+  task_lost: { label: "Task interrupted", tone: "lost" },
+};
+
+/** What each blocked state means to the person waiting on it. */
+const BLOCKED = {
+  plan_mode: "Claude is in Plan Mode, so it will not make changes.",
+  approval_required: "Claude needs your permission to continue.",
+  user_input_required: "Claude is waiting for an answer from you.",
+};
+
+/** Where a started task is running, in the user's words. */
+const RUNNING_IN = {
+  worker: "Running in background worker",
+  resume: "Running in your linked Claude conversation",
+  fresh: "Running in a new Claude conversation",
+};
+
+/** How many lines one conversation shows before the dashboard takes over. */
+const FEED_LIMIT = 6;
+
+const activityOf = (s) => s.snapshot?.activity ?? [];
+
+/** The single plain line under a mirrored event. Safe fields only. */
+function activityLine(entry) {
+  if (entry.event === "task_started") return RUNNING_IN[entry.mode] ?? "Running in Claude Code";
+  if (entry.event === "task_completed")
+    return entry.summary ?? "Finished. Open the dashboard for the full result.";
+  if (entry.event === "task_blocked")
+    return BLOCKED[entry.blocked] ?? entry.detail ?? "Waiting before it can carry on.";
+  if (entry.event === "task_failed")
+    return entry.detail ?? "It did not finish. Open the dashboard for the details.";
+  return entry.detail ?? "It stopped before finishing. Send it again when you are ready.";
+}
+
+/** One mirrored line. `withConversation` attributes it where the feed is mixed. */
+function activityItem(entry, withConversation) {
+  const node = document.createElement("div");
+  node.className = "activity-item";
+
+  const head = document.createElement("div");
+  head.className = "activity-top";
+  const event = EVENTS[entry.event] ?? { label: "Update", tone: "" };
+  const badge = document.createElement("span");
+  badge.className = `badge ${event.tone}`.trim();
+  badge.textContent = event.label;
+  const when = document.createElement("span");
+  when.className = "activity-when";
+  when.textContent = ago(entry.at);
+  head.append(badge, when);
+
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = entry.title;
+
+  const line = document.createElement("div");
+  line.className = "activity-said";
+  line.textContent = activityLine(entry);
+
+  node.append(head, title, line);
+
+  if (withConversation) {
+    const where = document.createElement("div");
+    where.className = "meta";
+    where.textContent = `in ${entry.conversation}`;
+    node.append(where);
+  }
+  return node;
+}
+
+/** A list of mirrored lines, newest first, with something useful when empty. */
+function activityList(entries, { withConversation = false, emptyText } = {}) {
+  const list = document.createElement("div");
+  list.className = "activity-list";
+  if (!entries.length) {
+    list.append(empty(emptyText));
+    return list;
+  }
+  for (const entry of entries.slice(0, FEED_LIMIT)) {
+    list.append(activityItem(entry, withConversation));
+  }
+  return list;
+}
+
+/** The feed for one attached conversation, with a way to see the full detail. */
+function conversationActivity(c) {
+  const mine = activityOf(state).filter((e) => e.localBindingRef === c.localBindingRef);
+  const panel = document.createElement("div");
+  panel.className = "activity";
+  const head = document.createElement("div");
+  head.className = "activity-head";
+  const heading = document.createElement("span");
+  heading.className = "activity-heading";
+  heading.textContent = "Activity";
+  head.append(heading);
+  if (mine.length) {
+    const open = document.createElement("button");
+    open.className = "ghost small-btn";
+    open.type = "button";
+    open.textContent = "Open dashboard";
+    open.addEventListener("click", () => api.openDashboard());
+    head.append(open);
+  }
+  panel.append(
+    head,
+    activityList(mine, {
+      emptyText: "Nothing has run here yet. Send a task from ChatGPT and it will show up here.",
+    }),
+  );
+  return panel;
+}
+
+/**
+ * Mirrored lines whose conversation is no longer attached on this computer.
+ * They still happened, so they are kept — just plainly marked as past.
+ */
+function detachedActivity(attachedRefs) {
+  const groups = new Map();
+  for (const entry of activityOf(state)) {
+    if (attachedRefs.has(entry.localBindingRef)) continue;
+    const group = groups.get(entry.localBindingRef) ?? { name: entry.conversation, entries: [] };
+    group.entries.push(entry);
+    groups.set(entry.localBindingRef, group);
+  }
+  return [...groups.values()].map((group) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "stack tight";
+    const item = document.createElement("div");
+    item.className = "item";
+    const body = document.createElement("div");
+    body.className = "item-body";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = group.name;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = "No longer attached on this computer";
+    body.append(title, meta);
+    item.append(body);
+    const panel = document.createElement("div");
+    panel.className = "activity";
+    const head = document.createElement("div");
+    head.className = "activity-head";
+    const heading = document.createElement("span");
+    heading.className = "activity-heading";
+    heading.textContent = "Earlier activity";
+    head.append(heading);
+    panel.append(head, activityList(group.entries));
+    wrapper.append(item, panel);
+    return wrapper;
+  });
 }
 
 // ------------------------------------------------------------------- bits

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ConversationBinding, ProviderAdapter } from "../../runtime/src/adapters/types.ts";
 import { ApiError, type RuntimeView } from "../../runtime/src/api.ts";
-import { RuntimeEngine, type EngineEvent } from "../../runtime/src/engine.ts";
+import { ACTIVITY_LIMIT, RuntimeEngine, type EngineEvent } from "../../runtime/src/engine.ts";
 import type { Executor } from "../../runtime/src/executor.ts";
 import { loadWorkspaceState, saveWorkspaceState } from "../../runtime/src/state.ts";
 
@@ -66,13 +66,18 @@ function fakeApi() {
     inbox: vi.fn(async (sessionId: string) =>
       (queue.get(sessionId) ?? []).map((t) => ({ ...t, priority: "C", status: "queued" })),
     ),
-    claim: vi.fn(async (taskId: string) => ({
-      taskId,
-      title: "t",
-      content: "c",
-      priority: "C",
-      status: "claimed",
-    })),
+    // Answer with the task that was actually queued: a claim that invents a
+    // title hides whether the real one is carried through.
+    claim: vi.fn(async (taskId: string) => {
+      const queued = [...queue.values()].flat().find((t) => t.taskId === taskId);
+      return {
+        taskId,
+        title: queued?.title ?? "t",
+        content: queued?.content ?? "c",
+        priority: "C",
+        status: "claimed",
+      };
+    }),
     start: vi.fn(async () => ({})),
     heartbeat: vi.fn(async () => ({})),
     progress: vi.fn(async () => ({})),
@@ -84,6 +89,7 @@ function fakeApi() {
       return {};
     }),
     fail: vi.fn(async () => ({})),
+    blocked: vi.fn(async () => ({})),
   };
   return { api, sessions, queue };
 }
@@ -166,8 +172,10 @@ describe("ThreadLink Runtime engine", () => {
       { workspace: wsA, binding: { mode: "resume", nativeSessionId: A1 } },
       { workspace: wsA, binding: { mode: "resume", nativeSessionId: A2 } },
     ]);
-    expect(api.complete).toHaveBeenCalledWith("tltask_1", sA1, expect.any(String), `${A1}:c`, []);
-    expect(api.complete).toHaveBeenCalledWith("tltask_2", sA2, expect.any(String), `${A2}:c`, []);
+    // The executor echoes the conversation it ran in and the task's own
+    // content, so this also shows each task reached the right conversation.
+    expect(api.complete).toHaveBeenCalledWith("tltask_1", sA1, expect.any(String), `${A1}:x`, []);
+    expect(api.complete).toHaveBeenCalledWith("tltask_2", sA2, expect.any(String), `${A2}:y`, []);
   });
 
   it("a restarted Runtime keeps its workspaces, conversations and ThreadLink sessions", async () => {
@@ -629,5 +637,264 @@ describe("what counts as 'in use'", () => {
     const call = api.runtimeHeartbeat.mock.calls.at(-1)?.[0] as { busySessionIds: string[] };
     expect(call.busySessionIds).not.toContain(sessions.get(worker.localBindingRef));
     expect(call.busySessionIds).toEqual([]);
+  });
+});
+
+describe("mirroring background work back to the user", () => {
+  /**
+   * Claude Code has no supported way to write into a conversation the user has
+   * open, and ThreadLink deliberately forks so their transcript is untouched.
+   * The mirror is how they can still follow along -- so it has to say enough to
+   * be useful and nothing that belongs to the conversation itself.
+   */
+  const activityOf = (e: RuntimeEngine) => {
+    const seen: EngineEvent[] = [];
+    e.on((event) => seen.push(event));
+    return () =>
+      seen
+        .filter((x) => x.type === "activity")
+        .map((x) => (x as Extract<EngineEvent, { type: "activity" }>).activity);
+  };
+
+  it("mirrors a background task from start to finish", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    const activity = activityOf(e);
+    queue.set(sessions.get(attached.localBindingRef)!, [
+      { taskId: "tltask_1", title: "Phase 6.8", content: "secret prompt" },
+    ]);
+
+    await e.deliverOnce();
+
+    const entries = activity();
+    expect(entries.map((x) => x.event)).toEqual(["task_started", "task_completed"]);
+    expect(entries[0]).toMatchObject({
+      title: "Phase 6.8",
+      conversation: "Bootstrap",
+      mode: "worker",
+      localBindingRef: attached.localBindingRef,
+    });
+    expect(entries[0]!.at).toBeTruthy();
+  });
+
+  it("never carries the prompt, the result or a diff", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    const activity = activityOf(e);
+    queue.set(sessions.get(attached.localBindingRef)!, [
+      {
+        taskId: "tltask_1",
+        title: "Phase 6.8",
+        content: "export const API_KEY = 'sk-live-must-never-appear'",
+      },
+    ]);
+
+    await e.deliverOnce();
+
+    const text = JSON.stringify(activity());
+    expect(text).not.toContain("sk-live");
+    expect(text).not.toContain("export const");
+  });
+
+  it("explains a failure without quoting the agent's error", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const { adapter } = fakeAdapter();
+    const failing: ProviderAdapter = {
+      ...adapter,
+      createExecutor: () => ({
+        name: "fake",
+        execute: async () => ({
+          ok: false as const,
+          reason: "background_mode_unsupported" as const,
+          error: "raw error quoting /home/secret/path and the prompt",
+        }),
+      }),
+    };
+    const e = engine(api, failing);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    const activity = activityOf(e);
+    queue.set(sessions.get(attached.localBindingRef)!, [
+      { taskId: "tltask_1", title: "Phase 6.8", content: "x" },
+    ]);
+
+    await e.deliverOnce();
+
+    const entries = activity();
+    expect(entries.at(-1)).toMatchObject({
+      event: "task_failed",
+      detail: "This agent cannot work in the background.",
+    });
+    expect(JSON.stringify(entries)).not.toContain("/home/secret/path");
+  });
+
+  it("says which conversation the work belongs to, and how it ran", async () => {
+    // Two conversations in the same workspace, one exact and one background:
+    // a feed that cannot tell them apart is not worth having.
+    const { api, sessions, queue } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const worker = await e.attach(wsA, A1, "Bootstrap", "worker");
+    const exact = await e.attach(wsA, A2, "Security review", "resume");
+    const activity = activityOf(e);
+    queue.set(sessions.get(worker.localBindingRef)!, [
+      { taskId: "tltask_1", title: "one", content: "x" },
+    ]);
+    queue.set(sessions.get(exact.localBindingRef)!, [
+      { taskId: "tltask_2", title: "two", content: "y" },
+    ]);
+
+    await e.deliverOnce();
+
+    const entries = activity();
+    const byTitle = (t: string) => entries.filter((x) => x.title === t);
+    expect(byTitle("one")[0]).toMatchObject({ conversation: "Bootstrap", mode: "worker" });
+    expect(byTitle("two")[0]).toMatchObject({ conversation: "Security review", mode: "resume" });
+    expect(entries.every((x) => x.workspace === "ThreadLink")).toBe(true);
+  });
+});
+
+describe("the mirror as a feed the app can read", () => {
+  const queueFor = (
+    api: ReturnType<typeof fakeApi>["api"],
+    sessions: Map<string, string>,
+    queue: Map<string, { taskId: string; title: string; content: string }[]>,
+    ref: string,
+    tasks: { taskId: string; title: string; content: string }[],
+  ) => {
+    void api;
+    queue.set(sessions.get(ref)!, tasks);
+  };
+
+  it("keeps the mirrored lines in the snapshot, newest first", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+
+    queueFor(api, sessions, queue, attached.localBindingRef, [
+      { taskId: "tltask_1", title: "First", content: "x" },
+    ]);
+    await e.deliverOnce();
+    queueFor(api, sessions, queue, attached.localBindingRef, [
+      { taskId: "tltask_2", title: "Second", content: "y" },
+    ]);
+    await e.deliverOnce();
+
+    const activity = e.snapshot().activity;
+    expect(activity.map((a) => `${a.title}:${a.event}`)).toEqual([
+      "Second:task_completed",
+      "Second:task_started",
+      "First:task_completed",
+      "First:task_started",
+    ]);
+  });
+
+  it("mirrors a milestone once, however many times it is reported", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    queueFor(api, sessions, queue, attached.localBindingRef, [
+      { taskId: "tltask_1", title: "Once", content: "x" },
+    ]);
+
+    await e.deliverOnce();
+    // The same task offered again (a retry, a duplicate snapshot) adds nothing.
+    queueFor(api, sessions, queue, attached.localBindingRef, [
+      { taskId: "tltask_1", title: "Once", content: "x" },
+    ]);
+    await e.deliverOnce();
+
+    expect(e.snapshot().activity.filter((a) => a.event === "task_completed")).toHaveLength(1);
+  });
+
+  it("does not grow without limit", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    for (let i = 0; i < ACTIVITY_LIMIT; i++) {
+      queueFor(api, sessions, queue, attached.localBindingRef, [
+        { taskId: `tltask_${i}`, title: `T${i}`, content: "x" },
+      ]);
+      await e.deliverOnce();
+    }
+    expect(e.snapshot().activity).toHaveLength(ACTIVITY_LIMIT);
+    expect(e.snapshot().activity[0]!.title).toBe(`T${ACTIVITY_LIMIT - 1}`);
+  });
+
+  it("carries a safe one-line summary of what came back", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const { adapter } = fakeAdapter();
+    const talkative: ProviderAdapter = {
+      ...adapter,
+      createExecutor: () => ({
+        name: "fake",
+        execute: async () => ({
+          ok: true as const,
+          result:
+            "Added the activity feed.\n\n```ts\nconst KEY = 'sk-live-abcdefghijklmnop';\n```\n",
+          artifacts: [],
+        }),
+      }),
+    };
+    const e = engine(api, talkative);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    queueFor(api, sessions, queue, attached.localBindingRef, [
+      { taskId: "tltask_1", title: "Feed", content: "x" },
+    ]);
+
+    await e.deliverOnce();
+
+    const done = e.snapshot().activity.find((a) => a.event === "task_completed")!;
+    expect(done.summary).toBe("Added the activity feed.");
+    expect(JSON.stringify(e.snapshot().activity)).not.toContain("sk-live");
+  });
+
+  it("reports a task that is waiting on a person as blocked, not failed", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const { adapter } = fakeAdapter();
+    const waiting: ProviderAdapter = {
+      ...adapter,
+      createExecutor: () => ({
+        name: "fake",
+        execute: async () => ({
+          ok: false as const,
+          error: "Claude requested permissions to edit src/index.ts, but you have not granted it.",
+          blocked: "approval_required" as const,
+        }),
+      }),
+    };
+    const e = engine(api, waiting);
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Bootstrap", "worker");
+    const session = sessions.get(attached.localBindingRef)!;
+    queueFor(api, sessions, queue, attached.localBindingRef, [
+      { taskId: "tltask_1", title: "Needs you", content: "x" },
+    ]);
+
+    await e.deliverOnce();
+
+    // Reported to ThreadLink as blocked; the claim is deliberately not dropped.
+    expect(api.blocked).toHaveBeenCalledWith(
+      "tltask_1",
+      session,
+      expect.any(String),
+      "approval_required",
+    );
+    expect(api.fail).not.toHaveBeenCalled();
+    const entry = e.snapshot().activity.find((a) => a.event === "task_blocked")!;
+    expect(entry).toMatchObject({
+      blocked: "approval_required",
+      detail: "Claude needs your permission to continue.",
+    });
+    // The agent's own words can name files and quote the prompt.
+    expect(JSON.stringify(e.snapshot().activity)).not.toContain("src/index.ts");
   });
 });

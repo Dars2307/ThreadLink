@@ -230,6 +230,11 @@ function onEngineEvent(event: EngineEvent) {
     void restartEngine();
     return;
   }
+  if (event.type === "activity") {
+    // The feed rides along in the snapshot that follows every mirrored line.
+    // Notifying here as well would tell the user the same thing twice.
+    return;
+  }
   if (event.type === "link-request") showWindow();
   notify(event);
 }

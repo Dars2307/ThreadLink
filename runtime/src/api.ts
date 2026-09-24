@@ -194,6 +194,18 @@ export class ThreadLinkApi {
   progress(taskId: string, sessionId: string, claimRef: string, content: string) {
     return this.#step(taskId, "progress", { sessionId, claimRef, content });
   }
+  /**
+   * "Alive, but not progressing": Plan Mode, or waiting on a person. The task
+   * keeps its claim and its lease; this only stops it claiming to be working.
+   */
+  blocked(
+    taskId: string,
+    sessionId: string,
+    claimRef: string,
+    reason: "plan_mode" | "approval_required" | "user_input_required",
+  ) {
+    return this.#step(taskId, "blocked", { sessionId, claimRef, reason });
+  }
   complete(
     taskId: string,
     sessionId: string,

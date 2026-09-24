@@ -104,6 +104,15 @@
           <div id="home-conversations" class="list"></div>
         </div>
         <div class="card stack">
+          <div class="card-head">
+            <h2>Recent activity</h2>
+            <button id="home-activity-dashboard" class="ghost small-btn" type="button">
+              Open dashboard
+            </button>
+          </div>
+          <div id="home-activity" class="activity"></div>
+        </div>
+        <div class="card stack">
           <h2>Connect ChatGPT</h2>
           <p class="muted small">
             Add ThreadLink as a connector in ChatGPT (Settings → Apps &amp; Connectors), then say
@@ -190,9 +199,9 @@
             <span>Tell me when a request finishes or needs me</span>
           </label>
           <p class="muted small">
-            You are told when a request finishes, when one fails, and when a chat asks to be
-            linked. Progress and routine checks never interrupt you. Notifications show the request
-            name and where it ran — never the request, the result or anything secret.
+            You are told when a request finishes, when one fails, and when a chat asks to be linked.
+            Progress and routine checks never interrupt you. Notifications show the request name and
+            where it ran — never the request, the result or anything secret.
           </p>
         </div>
       </section>
@@ -214,8 +223,8 @@
         <div class="card stack">
           <h2>Sign out</h2>
           <p class="muted small">
-            Disconnects this computer from ThreadLink. Your project folders and chosen
-            conversations stay on this machine.
+            Disconnects this computer from ThreadLink. Your project folders and chosen conversations
+            stay on this machine.
           </p>
           <div class="row">
             <button id="signout" class="ghost danger" type="button">Sign out</button>

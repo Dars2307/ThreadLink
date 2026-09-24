@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { RecentActivity } from "@/components/dashboard/overview";
+import { ConversationActivity, RecentActivity } from "@/components/dashboard/overview";
 import { PageHeader, Shell } from "@/components/dashboard/shell";
 import { Card } from "@/components/ui";
 import { loadAccount } from "@/lib/dashboard/data";
@@ -23,6 +23,7 @@ export default async function ActivityPage() {
         title="Activity"
         description="Requests sent from your chats to Claude, newest first."
       />
+      <ConversationActivity groups={view.linkActivity} limit={10} />
       <RecentActivity activity={view.activity} limit={50} />
     </Shell>
   );

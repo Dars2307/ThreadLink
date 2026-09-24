@@ -232,6 +232,97 @@ describe("task routing over HTTP", () => {
     expect([403, 404]).toContain(byOther.status);
   });
 
+  /**
+   * Blocked is not an outcome: the agent is saying "I am alive but cannot
+   * proceed". The claim and the lease have to survive it, or the work is lost
+   * the moment Claude asks the user a question. These run before revocation,
+   * which tears the link down.
+   */
+  it("keeps its claim, and only the agent holding that claim may say so", async () => {
+    const created = await api("/api/tasks", controller.token, {
+      method: "POST",
+      body: {
+        originSessionId: controller.session,
+        threadLinkId: linkId,
+        title: "Needs permission",
+        content: "edit the file",
+        idempotencyKey: `blocked-${Date.now()}`,
+      },
+    });
+    const blockedTask = (created.json.task as { taskId: string }).taskId;
+    const claimRef = "worker-blocked";
+    expect(
+      (
+        await api(`/api/tasks/${blockedTask}/claim`, agent.token, {
+          method: "POST",
+          body: { sessionId: agent.session, claimRef },
+        })
+      ).status,
+    ).toBe(200);
+    await api(`/api/tasks/${blockedTask}/start`, agent.token, {
+      method: "POST",
+      body: { sessionId: agent.session, claimRef },
+    });
+
+    // The controller cannot speak for the agent.
+    const byController = await api(`/api/tasks/${blockedTask}/blocked`, controller.token, {
+      method: "POST",
+      body: { sessionId: controller.session, claimRef, reason: "approval_required" },
+    });
+    expect(byController.status).toBeGreaterThanOrEqual(400);
+
+    // Nor can another agent that does not hold the claim.
+    const byOther = await api(`/api/tasks/${blockedTask}/blocked`, otherAgent.token, {
+      method: "POST",
+      body: { sessionId: otherAgent.session, claimRef, reason: "approval_required" },
+    });
+    expect(byOther.status).toBeGreaterThanOrEqual(400);
+
+    const reported = await api(`/api/tasks/${blockedTask}/blocked`, agent.token, {
+      method: "POST",
+      body: { sessionId: agent.session, claimRef, reason: "approval_required" },
+    });
+    expect(reported.status).toBe(200);
+
+    // Still claimed by us: reporting a blockage must not release the work.
+    const heartbeat = await api(`/api/tasks/${blockedTask}/heartbeat`, agent.token, {
+      method: "POST",
+      body: { sessionId: agent.session, claimRef },
+    });
+    expect(heartbeat.status).toBe(200);
+
+    // And it can still be finished once the person answers.
+    const done = await api(`/api/tasks/${blockedTask}/complete`, agent.token, {
+      method: "POST",
+      body: { sessionId: agent.session, claimRef, result: "done" },
+    });
+    expect(done.status).toBe(200);
+  });
+
+  it("refuses a reason it does not recognise", async () => {
+    const created = await api("/api/tasks", controller.token, {
+      method: "POST",
+      body: {
+        originSessionId: controller.session,
+        threadLinkId: linkId,
+        title: "Bad reason",
+        content: "x",
+        idempotencyKey: `bad-reason-${Date.now()}`,
+      },
+    });
+    const id = (created.json.task as { taskId: string }).taskId;
+    const claimRef = "worker-bad-reason";
+    await api(`/api/tasks/${id}/claim`, agent.token, {
+      method: "POST",
+      body: { sessionId: agent.session, claimRef },
+    });
+    const res = await api(`/api/tasks/${id}/blocked`, agent.token, {
+      method: "POST",
+      body: { sessionId: agent.session, claimRef, reason: "because_i_said_so" },
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+
   it("after revocation the link cannot send and queued work is not delivered", async () => {
     const queued = await api("/api/tasks", controller.token, {
       method: "POST",
