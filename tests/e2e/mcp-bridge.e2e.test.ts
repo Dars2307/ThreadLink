@@ -254,6 +254,13 @@ describe("MCP tools -> bridge -> result", () => {
         "list_recent_tasks",
         "send_to_agent",
         "threadlink_status",
+        // Team Mode: projects (rooms) and team jobs.
+        "create_room",
+        "get_room",
+        "get_team_log",
+        "get_team_status",
+        "list_rooms",
+        "start_team_job",
       ].sort(),
     );
   });

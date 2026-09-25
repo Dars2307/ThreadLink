@@ -41,6 +41,8 @@ const isConnectionRoute = createRouteMatcher([
   "/api/tasks",
   "/api/tasks/(.*)",
   "/api/runtime/(.*)",
+  // Team Mode state written by the Runtime, authorised by the carrier task's claim.
+  "/api/team/(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, request) => {

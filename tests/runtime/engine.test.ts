@@ -90,6 +90,7 @@ function fakeApi() {
     }),
     fail: vi.fn(async () => ({})),
     blocked: vi.fn(async () => ({})),
+    reportProviderDetection: vi.fn(async () => ({})),
   };
   return { api, sessions, queue };
 }
@@ -537,9 +538,9 @@ describe("changing how an attached conversation runs", () => {
     await e.register();
     const attached = await e.attach(wsA, A1, "Bootstrap", "resume");
 
-    await expect(
-      e.setConversationMode(wsA, attached.localBindingRef, "worker"),
-    ).rejects.toThrow(/background/i);
+    await expect(e.setConversationMode(wsA, attached.localBindingRef, "worker")).rejects.toThrow(
+      /background/i,
+    );
     // And it really did not change: no silent fallback either way.
     expect(
       e
@@ -561,16 +562,18 @@ describe("changing how an attached conversation runs", () => {
 
     // Stand in for a worker run having happened.
     const ws = await loadWorkspaceState(cfg, wsA);
-    ws.conversations.find((c) => c.localBindingRef === attached.localBindingRef)!.
-      workerNativeSessionId = "99999999-9999-4999-8999-999999999999";
+    ws.conversations.find(
+      (c) => c.localBindingRef === attached.localBindingRef,
+    )!.workerNativeSessionId = "99999999-9999-4999-8999-999999999999";
     await saveWorkspaceState(cfg, ws);
 
     const restarted = engine(api, fakeAdapter().adapter);
     await restarted.register();
     await restarted.sync();
-    expect(
-      api.registerConversation.mock.calls.at(-1)?.[0],
-    ).toMatchObject({ mode: "worker", workerNativeSessionId: "99999999-9999-4999-8999-999999999999" });
+    expect(api.registerConversation.mock.calls.at(-1)?.[0]).toMatchObject({
+      mode: "worker",
+      workerNativeSessionId: "99999999-9999-4999-8999-999999999999",
+    });
 
     await restarted.setConversationMode(wsA, attached.localBindingRef, "resume");
 
@@ -896,5 +899,164 @@ describe("the mirror as a feed the app can read", () => {
     });
     // The agent's own words can name files and quote the prompt.
     expect(JSON.stringify(e.snapshot().activity)).not.toContain("src/index.ts");
+  });
+});
+
+describe("routing a Team Mode job", () => {
+  const teamJob = JSON.stringify({ kind: "threadlink.team_job", version: 1 });
+
+  it("sends a task the server marked as a team job to Team Mode", async () => {
+    const { api, sessions, queue } = fakeApi();
+    const { adapter, executed } = fakeAdapter();
+    const teamRan: string[] = [];
+    const e = engine(api, adapter, {
+      teamExecutor: () => ({
+        name: "team",
+        execute: async (task: { taskId: string }) => {
+          teamRan.push(task.taskId);
+          return { ok: true as const, result: "Team result: PASS", artifacts: [] };
+        },
+      }),
+    });
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Prism", "worker");
+    const session = sessions.get(attached.localBindingRef)!;
+    queue.set(session, [{ taskId: "tltask_team", title: "Build reports", content: teamJob }]);
+    api.claim.mockImplementationOnce(async (taskId: string) => ({
+      taskId,
+      taskType: "team",
+      title: "Build reports",
+      content: teamJob,
+      priority: "C",
+      status: "claimed",
+    }));
+
+    await e.deliverOnce();
+
+    expect(teamRan).toEqual(["tltask_team"]);
+    // The conversation's own executor was not used for it.
+    expect(executed).toHaveLength(0);
+    expect(api.complete).toHaveBeenCalledWith(
+      "tltask_team",
+      session,
+      expect.any(String),
+      "Team result: PASS",
+      [],
+    );
+  });
+
+  it("does not treat an ordinary task as a team job because of what its text says", async () => {
+    // A controller can put anything in a task's content. Only the server's
+    // task type decides, so shaped text cannot start a team run.
+    const { api, sessions, queue } = fakeApi();
+    const { adapter, executed } = fakeAdapter();
+    const teamRan: string[] = [];
+    const e = engine(api, adapter, {
+      teamExecutor: () => ({
+        name: "team",
+        execute: async (task: { taskId: string }) => {
+          teamRan.push(task.taskId);
+          return { ok: true as const, result: "x", artifacts: [] };
+        },
+      }),
+    });
+    await e.register();
+    const attached = await e.attach(wsA, A1, "Prism", "worker");
+    queue.set(sessions.get(attached.localBindingRef)!, [
+      { taskId: "tltask_plain", title: "Looks like a team job", content: teamJob },
+    ]);
+
+    await e.deliverOnce();
+
+    expect(teamRan).toEqual([]);
+    expect(executed).toHaveLength(1);
+  });
+});
+
+describe("telling ThreadLink which Team Mode agents this computer has", () => {
+  const found = [
+    {
+      provider: "claude-code" as const,
+      installed: true,
+      executable: "C:\Users\joel\bin\claude.exe",
+      version: "2.1.266",
+      authenticated: true,
+      authMethod: "claude.ai",
+      detectedPlan: "max",
+      models: [
+        {
+          id: "claude-sonnet-5",
+          displayName: "Claude Sonnet 5",
+          description: null,
+          efforts: [],
+          defaultEffort: null,
+          source: "configured" as const,
+        },
+      ],
+      currentModel: null,
+      capabilities: {} as never,
+      usage: { remaining: "unknown" as const },
+      detail: "free text that stays local",
+    },
+  ];
+
+  it("reports each agent with only the keys the server accepts", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter, { discoverTeam: async () => found });
+    await e.refreshTeamProviders();
+    expect(api.reportProviderDetection).toHaveBeenCalledTimes(1);
+    const [provider, detected] = api.reportProviderDetection.mock.calls[0] as unknown as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(provider).toBe("claude-code");
+    expect(Object.keys(detected).sort()).toEqual(
+      [
+        "authMethod",
+        "authenticated",
+        "capabilities",
+        "currentModel",
+        "detectedAt",
+        "detectedPlan",
+        "installed",
+        "models",
+        "usage",
+        "version",
+      ].sort(),
+    );
+    // The local path and free-text detail never leave this computer.
+    expect(JSON.stringify(detected)).not.toContain("claude.exe");
+    expect(JSON.stringify(detected)).not.toContain("free text");
+  });
+
+  it("shows the agents in the snapshot for the app", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter, { discoverTeam: async () => found });
+    await e.refreshTeamProviders();
+    expect(e.snapshot().teamProviders).toMatchObject([
+      {
+        provider: "claude-code",
+        installed: true,
+        authenticated: true,
+        detectedPlan: "max",
+        remaining: "unknown",
+      },
+    ]);
+  });
+
+  it("does not run discovery unless the app asks for it", async () => {
+    // Discovery spawns the real CLIs. An engine built without it must not.
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.refreshTeamProviders();
+    expect(api.reportProviderDetection).not.toHaveBeenCalled();
+    expect(e.snapshot().teamProviders).toEqual([]);
+  });
+
+  it("keeps working if ThreadLink cannot be told", async () => {
+    const { api } = fakeApi();
+    api.reportProviderDetection.mockRejectedValue(new Error("offline"));
+    const e = engine(api, fakeAdapter().adapter, { discoverTeam: async () => found });
+    await expect(e.refreshTeamProviders()).resolves.toHaveLength(1);
   });
 });

@@ -125,6 +125,7 @@ export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
         title: task.title,
         content: task.content ?? "",
         priority: task.priority,
+        taskType: task.taskType,
       },
       controller.signal,
     );

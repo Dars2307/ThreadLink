@@ -40,3 +40,30 @@ export function PageHeader({
     </header>
   );
 }
+
+/** A page whose data could not be loaded: fail closed, say so plainly. */
+export function LoadError({ what }: { what: string }) {
+  return (
+    <Shell>
+      <div className="border-border bg-surface shadow-card rounded-2xl border p-6">
+        <h1 className="text-lg font-semibold">Could not load {what}</h1>
+        <p className="text-muted pt-1 text-sm">Try again in a moment.</p>
+      </div>
+    </Shell>
+  );
+}
+
+/** A compact number with a label, for page summaries. */
+export function StatTile({ label, value, hint }: { label: string; value: number; hint?: string }) {
+  return (
+    <div className="border-border bg-surface shadow-card flex flex-col gap-1 rounded-2xl border px-4 py-3">
+      <span className="text-2xl font-semibold tracking-tight tabular-nums">{value}</span>
+      <span className="text-muted text-xs">{label}</span>
+      {hint ? <span className="text-subtle text-[0.7rem]">{hint}</span> : null}
+    </div>
+  );
+}
+
+export function StatGrid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{children}</div>;
+}

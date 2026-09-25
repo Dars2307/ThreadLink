@@ -16,7 +16,11 @@ export default async function DashboardLayout({ children }: LayoutProps<"/dashbo
     <div className="flex min-h-dvh flex-col lg:flex-row">
       <Sidebar
         profile={<ProfileMenu theme={theme} />}
-        badges={pending ? { "/dashboard/links": pending } : undefined}
+        badges={
+          pending
+            ? { "/dashboard/conversations": pending, "/dashboard/notifications": pending }
+            : undefined
+        }
       />
       <main className="min-w-0 flex-1">{children}</main>
     </div>

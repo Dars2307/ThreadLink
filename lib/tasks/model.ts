@@ -69,6 +69,10 @@ export const createTaskInputSchema = z
     taskType: z
       .string()
       .regex(/^[a-z][a-z0-9_.-]{0,63}$/)
+      // "team" is reserved: a team job is created only by start_team_job, with
+      // a job record behind it. A task merely labelled "team" would reach the
+      // Runtime's Team Mode with nothing real to report to.
+      .refine((t) => t !== "team", "The task type 'team' is reserved for team jobs.")
       .optional(),
     idempotencyKey: z.string().regex(REF_PATTERN).optional(),
     expiresInSeconds: z.number().int().min(60).max(604_800).optional(),

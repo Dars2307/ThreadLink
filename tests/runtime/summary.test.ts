@@ -22,7 +22,9 @@ describe("what a mirrored summary says", () => {
   });
 
   it("caps a long line rather than filling the feed", () => {
-    const summary = summarize(`Rewrote the activity feed ${"and tidied the renderer ".repeat(20)}`)!;
+    const summary = summarize(
+      `Rewrote the activity feed ${"and tidied the renderer ".repeat(20)}`,
+    )!;
     expect(summary.length).toBeLessThanOrEqual(SUMMARY_MAX_CHARS);
     expect(summary.endsWith("…")).toBe(true);
   });

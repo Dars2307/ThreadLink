@@ -19,6 +19,8 @@ export type Artifact = { type: string; reference: string; metadata?: Record<stri
 
 export type TaskEnvelope = {
   taskId: string;
+  /** Set by the server when the task is created; "team" means a Team Mode job. */
+  taskType?: string;
   title: string;
   content: string | null;
   priority: string;
@@ -172,6 +174,30 @@ export class ThreadLinkApi {
       `/api/tasks/inbox?sessionId=${encodeURIComponent(sessionId)}&limit=${limit}`,
     );
     return res.tasks;
+  }
+
+  /**
+   * Tells ThreadLink what a Team Mode agent looks like on this computer. Only
+   * a Team-capable Runtime sends this, which is what lets the server refuse to
+   * hand a team job to an older one. Never carries a token, email or account id.
+   */
+  reportProviderDetection(provider: "claude-code" | "codex", detected: Record<string, unknown>) {
+    return this.#request<Record<string, unknown>>("POST", "/api/team/providers", {
+      provider,
+      detected,
+    });
+  }
+
+  /**
+   * Writes one piece of a team job's state. Authorised by the carrier task's
+   * claim: only the session holding `claimRef` for that job's task may write.
+   */
+  teamWrite(jobId: string, sessionId: string, claimRef: string, op: string, payload: unknown) {
+    return this.#request<Record<string, unknown>>(
+      "POST",
+      `/api/team/jobs/${encodeURIComponent(jobId)}/state`,
+      { sessionId, claimRef, op, payload },
+    );
   }
 
   #step(taskId: string, step: string, body: Record<string, unknown>) {

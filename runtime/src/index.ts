@@ -2,6 +2,7 @@
  * ThreadLink Runtime public API. The CLI (`threadlink`) and the desktop app
  * both build on this module, so they behave identically.
  */
+import { discoverProviders } from "./team/discovery.ts";
 import { defaultAdapters } from "./adapters/index.ts";
 import type { ProviderAdapter } from "./adapters/types.ts";
 import {
@@ -43,7 +44,7 @@ export {
 export type { CanonicalizeResult, ThreadLinkChannel } from "./endpoints.ts";
 export { maskSessionId } from "./claude-sessions.ts";
 
-export const RUNTIME_VERSION = "0.6.6";
+export const RUNTIME_VERSION = "0.7.0";
 
 export type RuntimeContext = {
   configDir: string;
@@ -123,6 +124,8 @@ export function createEngine(
     adapters: adapters ?? (defaultAdapters() as ProviderAdapter[]),
     identity: identity ?? detectIdentity({ kind, label }),
     version: RUNTIME_VERSION,
+    // The real app finds out which Team Mode agents this computer has.
+    discoverTeam: discoverProviders,
     ...rest,
   });
 }

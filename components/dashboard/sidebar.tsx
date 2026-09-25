@@ -7,15 +7,21 @@ import { useState, type ReactNode } from "react";
 import { cx } from "@/components/ui";
 
 const NAV = [
-  { href: "/dashboard", label: "Overview" },
-  { href: "/dashboard/links", label: "Links" },
-  { href: "/dashboard/sessions", label: "Conversations" },
-  { href: "/dashboard/runtimes", label: "Runtimes" },
-  { href: "/dashboard/activity", label: "Activity" },
-  { href: "/dashboard/apps", label: "Apps" },
+  { href: "/dashboard", label: "Home" },
+  { href: "/dashboard/projects", label: "Projects" },
+  { href: "/dashboard/conversations", label: "Conversations" },
+  { href: "/dashboard/team", label: "Team" },
+  { href: "/dashboard/tasks", label: "Tasks" },
+  { href: "/dashboard/devices", label: "Devices" },
+  { href: "/dashboard/notifications", label: "Notifications" },
   { href: "/dashboard/settings", label: "Settings" },
-  { href: "/dashboard/advanced", label: "Advanced" },
 ] as const;
+
+/** Home matches exactly; every other section also owns its sub-pages. */
+function isActive(pathname: string, href: string): boolean {
+  if (href === "/dashboard") return pathname === href;
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function Sidebar({
   profile,
@@ -30,7 +36,7 @@ export function Sidebar({
   const nav = (
     <nav className="flex flex-col gap-0.5" aria-label="ThreadLink">
       {NAV.map((item) => {
-        const active = pathname === item.href;
+        const active = isActive(pathname, item.href);
         const badge = badges?.[item.href];
         return (
           <Link

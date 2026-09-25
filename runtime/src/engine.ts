@@ -10,6 +10,7 @@ import {
   BACKGROUND_UNSUPPORTED_MESSAGE,
   type ExecutionResult,
   type Executor,
+  type TaskInput,
 } from "./executor.ts";
 import { repoInfo, type RepoInfo } from "./git.ts";
 import type { RuntimeIdentity } from "./platform.ts";
@@ -24,6 +25,10 @@ import {
   type AttachedConversation,
   type WorkspaceState,
 } from "./state.ts";
+import type { ProviderDiscovery } from "./team/discovery.ts";
+import { TEAM_TASK_TYPE, TeamExecutor } from "./team/executor.ts";
+import type { TeamProgress } from "./team/orchestrator.ts";
+import { UsageGovernor } from "./team/usage.ts";
 import { processNextTask } from "./worker.ts";
 
 /**
@@ -118,6 +123,18 @@ export type EngineSnapshot = {
    */
   activity: ActivityEntry[];
   /**
+   * Team jobs this Runtime is running or recently ran, newest first: who is
+   * doing what, the review round and how many findings are open. The detail
+   * lives in ThreadLink's team log; this is what the app shows at a glance.
+   */
+  team: TeamProgress[];
+  /**
+   * What each Team Mode agent looks like on this computer: installed, signed
+   * in, which plan it reports and which models it offers. Never a token, an
+   * email address or an account id -- those stop at discovery.
+   */
+  teamProviders: TeamProviderView[];
+  /**
    * True once the trouble has lasted long enough that the user should be
    * offered a way out (sign in again / check the address) instead of watching
    * "Reconnecting..." forever. The engine keeps retrying regardless.
@@ -174,9 +191,24 @@ const BLOCKED_DETAIL: Record<BlockedReason, string> = {
 /** How many mirrored lines are kept. Enough to follow along, not a log file. */
 export const ACTIVITY_LIMIT = 100;
 
+export type TeamProviderView = {
+  provider: "claude-code" | "codex";
+  installed: boolean;
+  authenticated: boolean;
+  version: string | null;
+  /** As the provider reports it, e.g. "max". Null when it does not say. */
+  detectedPlan: string | null;
+  models: { id: string; displayName: string }[];
+  /** No CLI reports remaining usage today, so this is never a guessed number. */
+  remaining: "unknown";
+  detail: string | null;
+};
+
 export type EngineEvent =
   | { type: "snapshot"; snapshot: EngineSnapshot }
   | { type: "activity"; activity: ActivityEntry }
+  /** A team job's concise state changed. Carries no prompt, code or result. */
+  | { type: "team"; progress: TeamProgress }
   | {
       type: "task";
       outcome: "completed" | "failed" | "lost";
@@ -206,6 +238,8 @@ type Api = Pick<
   | "complete"
   | "fail"
   | "blocked"
+  | "teamWrite"
+  | "reportProviderDetection"
 >;
 
 export type EngineOptions = {
@@ -228,6 +262,10 @@ export type EngineOptions = {
   model?: string;
   taskHeartbeatMs?: number;
   repo?: (path: string) => Promise<RepoInfo>;
+  /** Test seam: build the executor for a team job instead of the real one. */
+  teamExecutor?: (workspace: string, sessionId: string) => Executor;
+  /** How to find Team Mode agents on this computer. Omitted = no discovery. */
+  discoverTeam?: (() => Promise<ProviderDiscovery[]>) | null;
 };
 
 const defaultSleep = (ms: number, signal: AbortSignal) =>
@@ -284,6 +322,27 @@ const FAILURE_DETAIL: Record<string, string> = {
   lease_exhausted: "ThreadLink stopped hearing from this computer.",
 };
 
+/**
+ * Sends a Team Mode job to the team executor and every other task to the
+ * conversation's own executor, unchanged. The choice is made on the server's
+ * task type, never on what the task's text looks like.
+ */
+class DispatchingExecutor implements Executor {
+  readonly name: string;
+  readonly #single: Executor;
+  readonly #team: () => Executor;
+  constructor(single: Executor, team: () => Executor) {
+    this.#single = single;
+    this.#team = team;
+    this.name = single.name;
+  }
+  execute(task: TaskInput, signal: AbortSignal): Promise<ExecutionResult> {
+    return task.taskType === TEAM_TASK_TYPE
+      ? this.#team().execute(task, signal)
+      : this.#single.execute(task, signal);
+  }
+}
+
 /** The stored mode, defaulting safely when the server says something unknown. */
 function conversationMode(mode: string | null): AttachedConversation["mode"] {
   if (mode === "resume" || mode === "worker") return mode;
@@ -301,10 +360,15 @@ const isNetworkError = (e: unknown) =>
   e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429);
 
 export class RuntimeEngine {
-  readonly #o: Required<Omit<EngineOptions, "model" | "log">> &
-    Pick<EngineOptions, "model" | "log">;
+  readonly #o: Required<Omit<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam">> &
+    Pick<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam">;
   readonly #listeners = new Set<(e: EngineEvent) => void>();
   readonly #claimRef = `runtime-${randomUUID()}`;
+  /**
+   * Shared by every team job this Runtime runs, so a provider that has run out
+   * stays marked out until it resets, and paid usage stays off.
+   */
+  readonly #governor = new UsageGovernor();
   #status: EngineStatus = "idle";
   #detail: string | null = null;
   #needsAttention = false;
@@ -315,6 +379,9 @@ export class RuntimeEngine {
   #busy = new Set<string>();
   /** Newest first, capped at ACTIVITY_LIMIT. */
   #activity: ActivityEntry[] = [];
+  #teamProviders: TeamProviderView[] = [];
+  /** Team job progress by job id, in insertion order; capped. */
+  #team = new Map<string, TeamProgress>();
   /** `${taskId}:${event}` already mirrored, so a retry cannot post it twice. */
   #mirrored = new Set<string>();
   #pending: PendingLink[] = [];
@@ -398,14 +465,15 @@ export class RuntimeEngine {
           // own conversation and runs regardless, so calling it "in use" would
           // be both wrong and alarming.
           busy:
-            c.mode === "resume" &&
-            Boolean(c.nativeSessionId && this.#busy.has(c.nativeSessionId)),
+            c.mode === "resume" && Boolean(c.nativeSessionId && this.#busy.has(c.nativeSessionId)),
         })),
       })),
       pendingLinks: this.#pending,
       lastHeartbeatAt: this.#lastHeartbeat ? new Date(this.#lastHeartbeat).toISOString() : null,
       tasksCompleted: this.#tasksCompleted,
       activity: [...this.#activity],
+      team: [...this.#team.values()].reverse(),
+      teamProviders: this.#teamProviders,
       needsAttention: this.#needsAttention,
     };
   }
@@ -476,7 +544,55 @@ export class RuntimeEngine {
     this.#runtime = runtime;
     await saveConfig(this.#o.configDir, { runtimeId: runtime.runtimeId });
     this.#changed();
+    // Discovery spawns the CLIs, so it runs in the background and never
+    // delays registration or fails it.
+    void this.refreshTeamProviders();
     return runtime;
+  }
+
+  /** Finds out which Team Mode agents this computer has. Never throws. */
+  async refreshTeamProviders(): Promise<TeamProviderView[]> {
+    // Opt-in: discovery spawns the real CLIs, so only an engine built for the
+    // real app (createEngine) does it. Tests and embedded engines do not.
+    const discover = this.#o.discoverTeam;
+    if (!discover) return this.#teamProviders;
+    try {
+      const found = await discover();
+      this.#teamProviders = found.map((p) => ({
+        provider: p.provider,
+        installed: p.installed,
+        authenticated: p.authenticated,
+        version: p.version,
+        detectedPlan: p.detectedPlan,
+        models: p.models.map((m) => ({ id: m.id, displayName: m.displayName })),
+        remaining: "unknown" as const,
+        detail: p.detail ?? null,
+      }));
+      this.#changed();
+      // Report to ThreadLink with exactly the keys it accepts. The local
+      // executable path and any free-text detail stay on this computer.
+      for (const p of found) {
+        await this.#o.api
+          .reportProviderDetection(p.provider, {
+            installed: p.installed,
+            authenticated: p.authenticated,
+            version: p.version,
+            authMethod: p.authMethod,
+            detectedPlan: p.detectedPlan,
+            models: p.models.map((m) => ({ id: m.id, displayName: m.displayName })),
+            currentModel: p.currentModel,
+            capabilities: p.capabilities,
+            usage: { remaining: "unknown" },
+            detectedAt: new Date().toISOString(),
+          })
+          .catch((error: unknown) =>
+            this.#o.log?.(`could not report ${p.provider}: ${String(error)}`),
+          );
+      }
+    } catch {
+      /* discovery is advisory; a failure leaves the last known state */
+    }
+    return this.#teamProviders;
   }
 
   async loadWorkspaces() {
@@ -845,6 +961,10 @@ export class RuntimeEngine {
   }
 
   #executor(ws: WorkspaceState, c: AttachedConversation): Executor {
+    return new DispatchingExecutor(this.#singleExecutor(ws, c), () => this.#teamExecutor(ws, c));
+  }
+
+  #singleExecutor(ws: WorkspaceState, c: AttachedConversation): Executor {
     const binding = this.#binding(c);
     // The user's chosen mode is never quietly swapped for another one.
     if (!binding) return new UnsupportedModeExecutor(c.mode, this.#adapter(c.provider).displayName);
@@ -852,6 +972,30 @@ export class RuntimeEngine {
       permissionMode: this.#permissionMode(c.mode),
       model: this.#o.model,
       lockDir: this.#o.configDir,
+    });
+  }
+
+  /**
+   * A team job runs in this conversation's workspace, authorised by this
+   * conversation's ThreadLink session and this Runtime's claim.
+   */
+  #teamExecutor(ws: WorkspaceState, c: AttachedConversation): Executor {
+    if (this.#o.teamExecutor) return this.#o.teamExecutor(ws.workspace, c.sessionId!);
+    return new TeamExecutor({
+      workspace: ws.workspace,
+      sessionId: c.sessionId!,
+      claimRef: this.#claimRef,
+      governor: this.#governor,
+      write: (jobId, sessionId, claimRef, op, payload) =>
+        this.#o.api.teamWrite(jobId, sessionId, claimRef, op, payload),
+      onProgress: (progress) => {
+        this.#team.delete(progress.jobId);
+        this.#team.set(progress.jobId, progress);
+        while (this.#team.size > 10) this.#team.delete(this.#team.keys().next().value!);
+        this.#emit({ type: "team", progress });
+        this.#emit({ type: "snapshot", snapshot: this.snapshot() });
+      },
+      log: this.#o.log,
     });
   }
 

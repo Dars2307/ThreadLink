@@ -19,7 +19,7 @@ export function ConnectedApps({ apps }: { apps: View["apps"] }) {
       <CardTitle
         id="apps-title"
         action={
-          <Link href="/dashboard/apps" className="text-accent text-sm">
+          <Link href="/dashboard/settings/apps" className="text-accent text-sm">
             Manage
           </Link>
         }
@@ -120,7 +120,7 @@ export function CurrentLinks({ links }: { links: View["links"] }) {
         id="links-title"
         description="Say “send this to Claude” in a linked chat. The answer comes back there."
         action={
-          <Link href="/dashboard/links" className="text-accent text-sm">
+          <Link href="/dashboard/conversations" className="text-accent text-sm">
             Manage
           </Link>
         }
@@ -154,7 +154,7 @@ export function RecentActivity({
       <CardTitle
         id="activity-title"
         action={
-          <Link href="/dashboard/activity" className="text-accent text-sm">
+          <Link href="/dashboard/tasks" className="text-accent text-sm">
             All activity
           </Link>
         }
@@ -273,7 +273,7 @@ export function RuntimeSummary({ runtimes }: { runtimes: View["runtimeTree"] }) 
         id="runtimes-title"
         description="Where your Claude conversations actually run."
         action={
-          <Link href="/dashboard/runtimes" className="text-accent text-sm">
+          <Link href="/dashboard/devices" className="text-accent text-sm">
             Manage
           </Link>
         }

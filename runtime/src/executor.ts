@@ -42,7 +42,18 @@ import type { AgentsLister } from "./claude-sessions.ts";
  * repeated delegation does not litter the project with forks.
  */
 
-export type TaskInput = { taskId: string; title: string; content: string; priority: string };
+export type TaskInput = {
+  taskId: string;
+  title: string;
+  content: string;
+  priority: string;
+  /**
+   * The server's classification of the task. Routing on this, rather than on
+   * what the content looks like, means a controller cannot make an ordinary
+   * task run as a team job by shaping its text.
+   */
+  taskType?: string;
+};
 
 export type FailureReason =
   | "session_busy"

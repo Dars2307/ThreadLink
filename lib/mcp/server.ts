@@ -4,14 +4,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
   acknowledgeResultTool,
+  createRoomTool,
   describeError,
   ensureSession,
+  getRoomTool,
   getTaskResultTool,
   getTaskStatus,
+  getTeamLogTool,
+  getTeamStatusTool,
   linkToClaude,
   listLinks,
   listRecentTasks,
+  listRoomsTool,
   sendToAgent,
+  startTeamJobTool,
   threadlinkStatus,
   toolInputs,
   type McpContext,
@@ -149,6 +155,84 @@ export function buildThreadLinkMcpServer(ctx: McpContext): McpServer {
       annotations: READ_ONLY,
     },
     (input) => run(() => listRecentTasks(ctx, input)),
+  );
+
+  // Team Mode ---------------------------------------------------------------
+  server.registerTool(
+    "list_rooms",
+    {
+      title: "List team rooms",
+      description:
+        "List the user's Team Mode rooms (projects). A room is a workspace on the user's computer " +
+        "where Claude Code and Codex work together on a goal.",
+      inputSchema: toolInputs.list_rooms,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => listRoomsTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "create_room",
+    {
+      title: "Create a team room",
+      description:
+        "Create a Team Mode room for the workspace of the linked Claude Code session. Calling it " +
+        "again with the same name returns the existing room.",
+      inputSchema: toolInputs.create_room,
+      annotations: { openWorldHint: false, destructiveHint: false, idempotentHint: true },
+    },
+    (input) => run(() => createRoomTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_room",
+    {
+      title: "Team room",
+      description: "A room's agents, policy and recent jobs.",
+      inputSchema: toolInputs.get_room,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => getRoomTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "start_team_job",
+    {
+      title: "Start a team job",
+      description:
+        "Give a room's team (Claude Code and Codex, on the user's computer) a goal. They plan, " +
+        "build, cross-review and test it within bounded rounds. Returns a jobId immediately; the " +
+        "work is asynchronous, so check get_team_status.",
+      inputSchema: toolInputs.start_team_job,
+      annotations: { openWorldHint: false, destructiveHint: false },
+    },
+    (input) => run(() => startTeamJobTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_team_status",
+    {
+      title: "Team job status",
+      description:
+        "Concise status of a team job started from this conversation: phase, rounds used, each " +
+        "work item's status and open findings. Use this for polling.",
+      inputSchema: toolInputs.get_team_status,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => getTeamStatusTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_team_log",
+    {
+      title: "Team job log",
+      description:
+        "The full structured log of a team job (messages, findings, decisions, model runs), " +
+        "paginated. Only when the user asks for detail; get_team_status is enough for polling.",
+      inputSchema: toolInputs.get_team_log,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => getTeamLogTool(ctx, input)),
   );
 
   return server;

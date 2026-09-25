@@ -35,14 +35,29 @@ const SECRET_PATTERNS: RegExp[] = [
   // would leave the user reading "[redacted]" for no reason.
   /\b[0-9a-f]{32,}\b/gi,
   /\b(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]{40,}={0,2}\b/g,
-  // key = value / key: value where the key names a secret. The value runs to
-  // the end of the line: "Authorization: Bearer <token>" is two words, and
-  // stopping at the first would leave the token sitting there.
-  /\b(?:api[-_ ]?key|secret|token|password|passwd|bearer|authorization)\b\s*[:=]?\s*\S.*/gi,
+  // Credentials inside a URL: scheme://user:password@host.
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/gi,
+  // key = value / key: value where the key names a secret, including prefixed
+  // names such as DB_PASSWORD or MY_API_KEY (an underscore is a word character,
+  // so a plain \b would miss them). The value runs to the end of the line:
+  // "Authorization: Bearer <token>" is two words, and stopping at the first
+  // would leave the token sitting there.
+  /[A-Za-z0-9_]*(?:api[-_ ]?key|secret|token|password|passwd|pwd|bearer|authorization|credential)[A-Za-z0-9_]*\s*[:=]?\s*\S.*/gi,
+  // Email addresses identify a person.
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
 ];
 
-/** Absolute paths can name a person and their machine; they are not summary material. */
-const PATH_PATTERNS: RegExp[] = [/\b[A-Za-z]:\\[^\s"']+/g, /(?:^|\s)\/(?:home|Users)\/[^\s"']+/g];
+/**
+ * Absolute paths can name a person and their machine; they are not summary
+ * material. Windows paths with either slash, including folder names with
+ * spaces (up to the end of the path's last segment), and home directories on
+ * Unix-like systems wherever they appear -- a stack trace puts them in
+ * brackets, not after a space.
+ */
+const PATH_PATTERNS: RegExp[] = [
+  /\b[A-Za-z]:[\\/](?:[^\\/\r\n"'<>|?*()]+[\\/])*[^\\/\s"'<>|?*():]*/g,
+  /(?<![A-Za-z0-9])\/(?:home|Users|root)\/[^\s"'()]+/g,
+];
 
 const REDACTED = "[redacted]";
 
@@ -72,7 +87,8 @@ function looksLikeCode(line: string): boolean {
 
 function redact(text: string): string {
   let out = text;
-  for (const pattern of [...SECRET_PATTERNS, ...PATH_PATTERNS]) out = out.replace(pattern, REDACTED);
+  for (const pattern of [...SECRET_PATTERNS, ...PATH_PATTERNS])
+    out = out.replace(pattern, REDACTED);
   return out;
 }
 
@@ -86,7 +102,11 @@ export function summarize(result: string | null | undefined): string | null {
   if (!result) return null;
   const line = withoutCode(result)
     .split("\n")
-    .map((l) => redact(l).replace(/[\u0000-\u001f\u007f]/g, " ").trim())
+    .map((l) =>
+      redact(l)
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .trim(),
+    )
     // A markdown heading labels the result rather than describing it, so it
     // is skipped entirely; a list bullet just loses its marker.
     .filter((l) => !/^#{1,6}\s/.test(l))
@@ -103,4 +123,40 @@ export function summarize(result: string | null | undefined): string | null {
   if (collapsed.replace(/\[redacted\]/g, "").trim().length < 3) return null;
   if (collapsed.length <= SUMMARY_MAX_CHARS) return collapsed;
   return collapsed.slice(0, SUMMARY_MAX_CHARS - 1).trimEnd() + "…";
+}
+
+/** Longest body a team message or finding may carry after redaction. */
+export const REDACTED_TEXT_MAX_CHARS = 8_000;
+
+/**
+ * Redacts a whole block of text for storage in the team log.
+ *
+ * Unlike `summarize`, this keeps the text's shape -- a review has to stay
+ * readable -- but applies the same credential and path redaction line by line,
+ * strips control characters other than newlines and tabs, and caps the length.
+ * Code is kept, because a review that cannot quote code is useless; secrets in
+ * it are still redacted.
+ */
+export function redactText(
+  text: string | null | undefined,
+  maxChars = REDACTED_TEXT_MAX_CHARS,
+): string {
+  if (!text) return "";
+  const cleaned = text
+    .split("\n")
+    .map((line) => redact(line).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " "))
+    .join("\n");
+  const capped = cleaned.length <= maxChars ? cleaned : `${cleaned.slice(0, maxChars - 1)}…`;
+  // The server limits bytes, not characters; text heavy in multi-byte
+  // characters would otherwise pass here and be refused there.
+  return capBytes(capped, maxChars);
+}
+
+function capBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const room = maxBytes - Buffer.byteLength("…", "utf8");
+  let out = Buffer.from(text, "utf8").subarray(0, room).toString("utf8");
+  // A cut through a multi-byte character decodes as U+FFFD; drop it.
+  out = out.replace(/�$/, "");
+  return `${out}…`;
 }

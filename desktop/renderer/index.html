@@ -91,11 +91,8 @@
 
     <template id="tpl-home">
       <section class="stack">
+        <div id="home-summary" class="tiles" aria-label="Summary"></div>
         <div id="links" class="stack"></div>
-        <div class="card stack">
-          <h2>Status</h2>
-          <div id="home-status" class="kv"></div>
-        </div>
         <div class="card stack">
           <div class="card-head">
             <h2>Linked conversations</h2>
@@ -135,6 +132,12 @@
           </div>
           <div id="attached" class="list"></div>
         </div>
+      </section>
+    </template>
+
+    <template id="tpl-team">
+      <section class="stack">
+        <div id="team-jobs" class="stack"></div>
       </section>
     </template>
 
@@ -185,7 +188,7 @@
         </div>
         <details class="card advanced">
           <summary>Advanced</summary>
-          <div id="runtime-advanced" class="kv mono"></div>
+          <div id="runtime-advanced"></div>
         </details>
       </section>
     </template>
@@ -216,9 +219,22 @@
             <span>Start ThreadLink when I log in</span>
           </label>
         </div>
+        <div class="card stack">
+          <h2>Providers &amp; plans</h2>
+          <p class="muted small">
+            ThreadLink only uses your included subscription usage. Paid usage is off.
+          </p>
+          <div id="providers" class="list"></div>
+          <div class="card-head">
+            <p class="muted small">The ThreadLink plan you pay for is set in the web dashboard.</p>
+            <button id="plan-dashboard" class="ghost small-btn" type="button">
+              Open dashboard
+            </button>
+          </div>
+        </div>
         <details class="card advanced">
           <summary>Advanced</summary>
-          <div id="settings-advanced" class="kv mono"></div>
+          <div id="settings-advanced"></div>
         </details>
         <div class="card stack">
           <h2>Sign out</h2>

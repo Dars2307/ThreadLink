@@ -167,11 +167,11 @@ beforeEach(() => {
 });
 
 describe("the app's shape", () => {
-  it("offers the five sections, not one long page", async () => {
+  it("offers the six sections, not one long page", async () => {
     mount(appState([conversation()]));
     await settle();
     expect([...document.querySelectorAll("#nav button")].map((b) => b.textContent?.trim())).toEqual(
-      ["Home", "Conversations", "Runtime", "Notifications", "Settings"],
+      ["Home", "Conversations", "Team", "This computer", "Notifications", "Settings"],
     );
   });
 
@@ -184,10 +184,10 @@ describe("the app's shape", () => {
     expect(text).not.toMatch(/tlses_|tlrun_|tlwsp_|cc:|31a711b2/);
   });
 
-  it("puts the raw detail under Advanced on the Runtime page", async () => {
+  it("puts the raw detail under Advanced on the This computer page", async () => {
     mount(appState([conversation({ mode: "worker" })]));
     await settle();
-    await navTo("Runtime");
+    await navTo("This computer");
     const advanced = document.querySelector("details.advanced");
     expect(advanced).toBeTruthy();
     expect((advanced as HTMLDetailsElement).open).toBe(false);
@@ -289,7 +289,13 @@ describe("attaching a conversation", () => {
     });
     // The state helper merges `snapshot`, so restore the parts it replaced.
     (state.snapshot as Record<string, unknown>).workspaces = [
-      { path: WORKSPACE, name: "ThreadLink", workspaceId: "tlwsp_1", exists: true, conversations: [] },
+      {
+        path: WORKSPACE,
+        name: "ThreadLink",
+        workspaceId: "tlwsp_1",
+        exists: true,
+        conversations: [],
+      },
     ];
     (state.snapshot as Record<string, unknown>).status = "online";
     (state.snapshot as Record<string, unknown>).pendingLinks = [];

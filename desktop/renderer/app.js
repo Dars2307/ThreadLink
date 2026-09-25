@@ -24,7 +24,8 @@ const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(t
 const SECTIONS = [
   { id: "home", label: "Home", title: "Home" },
   { id: "conversations", label: "Conversations", title: "Conversations" },
-  { id: "runtime", label: "Runtime", title: "Runtime" },
+  { id: "team", label: "Team", title: "Team" },
+  { id: "runtime", label: "This computer", title: "This computer" },
   { id: "notifications", label: "Notifications", title: "Notifications" },
   { id: "settings", label: "Settings", title: "Settings" },
 ];
@@ -128,6 +129,7 @@ function render() {
   el("page-sub").textContent = subtitleFor();
   if (section === "attach") return void renderAttach(mine);
   if (section === "conversations") return renderConversations();
+  if (section === "team") return renderTeam();
   if (section === "runtime") return renderRuntime();
   if (section === "notifications") return renderNotifications();
   if (section === "settings") return renderSettings();
@@ -140,6 +142,10 @@ function subtitleFor() {
   if (section === "conversations") {
     const n = conversationsOf(state).length;
     return n ? `${n} attached` : "Nothing attached yet";
+  }
+  if (section === "team") {
+    const running = teamOf(state).filter(jobRunning).length;
+    return running ? `${running} running` : "";
   }
   if (section === "runtime") return snap?.identity?.platform ?? "";
   return "";
@@ -217,16 +223,7 @@ function renderHome() {
   view.append(tpl("home"));
   const snap = state.snapshot;
   renderLinkRequests();
-
-  const status = statusOf(state);
-  kv(el("home-status"), [
-    ["Connection", status.title],
-    ["This computer", snap?.runtime?.label ?? snap?.identity?.label ?? "—"],
-    [
-      "Project folders",
-      (snap?.workspaces ?? []).map((w) => w.name).join(", ") || "None chosen yet",
-    ],
-  ]);
+  renderSummary(el("home-summary"));
 
   const list = el("home-conversations");
   list.replaceChildren();
@@ -240,6 +237,7 @@ function renderHome() {
   recent.replaceChildren(
     activityList(activityOf(state), {
       withConversation: true,
+      limit: HOME_FEED_LIMIT,
       emptyText: "No activity yet. When a task runs, what it did shows up here.",
     }),
   );
@@ -247,11 +245,66 @@ function renderHome() {
 
   el("home-manage").addEventListener("click", () => go("conversations"));
   el("mcp-url").textContent = `${state.baseUrl}/mcp`;
-  el("copy-mcp").addEventListener("click", async () => {
-    await navigator.clipboard.writeText(`${state.baseUrl}/mcp`);
-    el("copy-mcp").textContent = "Copied";
-    setTimeout(() => (el("copy-mcp").textContent = "Copy"), 1500);
-  });
+  bindCopy(el("copy-mcp"), () => `${state.baseUrl}/mcp`);
+}
+
+/** Who can work right now: Team Mode's view if it has one, else the classic providers. */
+function agentsOnline(s) {
+  const team = s.snapshot?.teamProviders ?? [];
+  if (team.length) return team.filter((p) => p.installed && p.authenticated).map((p) => p.provider);
+  return (s.snapshot?.providers ?? []).filter((p) => p.available).map((p) => p.id);
+}
+
+/** The Home summary: four numbers a person can take in at a glance. */
+function renderSummary(node) {
+  if (!node) return;
+  node.replaceChildren();
+  const online = agentsOnline(state);
+  const jobs = teamOf(state);
+  const running = jobs.filter(jobRunning).length;
+  const waiting = (state.snapshot?.pendingLinks ?? []).length;
+  const decisions = jobs.filter((j) => j.verdict === "NEEDS_USER_DECISION").length;
+  // A conversation needs you only while its newest line (the feed is newest
+  // first) says it is waiting on you.
+  const latest = new Map();
+  for (const a of activityOf(state))
+    if (!latest.has(a.localBindingRef)) latest.set(a.localBindingRef, a);
+  const blocked = [...latest.values()].filter((a) => a.event === "task_blocked").length;
+  const needs = waiting + decisions + blocked;
+  const linked = conversationsOf(state).length;
+
+  const tiles = [
+    {
+      label: "Agents online",
+      value: online.length ? online.map(providerName).join(" · ") : "None",
+      tone: online.length ? "ready" : "warn",
+      go: "settings",
+    },
+    { label: "Conversations linked", value: String(linked), go: "conversations" },
+    { label: "Team jobs running", value: String(running), tone: running ? "run" : "", go: "team" },
+    {
+      label: "Needs attention",
+      value: needs ? String(needs) : "Nothing",
+      tone: needs ? "warn" : "",
+      go: decisions ? "team" : null,
+    },
+  ];
+  for (const t of tiles) {
+    const tile = document.createElement(t.go ? "button" : "div");
+    tile.className = `tile${t.tone ? ` ${t.tone}` : ""}`;
+    if (t.go) {
+      tile.type = "button";
+      tile.addEventListener("click", () => go(t.go));
+    }
+    const value = document.createElement("span");
+    value.className = "tile-value";
+    value.textContent = t.value;
+    const label = document.createElement("span");
+    label.className = "tile-label";
+    label.textContent = t.label;
+    tile.append(value, label);
+    node.append(tile);
+  }
 }
 
 /**
@@ -667,24 +720,24 @@ function renderRuntime() {
     workspaces.append(
       row(
         w.name,
-        w.exists ? w.path : `${w.path} — folder missing`,
+        w.exists ? "Folder found" : "Folder missing — choose it again",
         null,
         `${w.conversations.length} attached`,
       ),
     );
   }
 
-  kv(el("runtime-advanced"), [
-    ["ThreadLink address", state.baseUrl ?? "—"],
-    ["Runtime ID", snap?.runtime?.runtimeId ?? "—"],
-    ...(snap?.workspaces ?? []).flatMap((w) =>
-      w.conversations.map((c) => [
-        `${w.name} · ${c.title}`,
-        `${c.mode}${c.nativeSessionId ? ` · ${c.nativeSessionId}` : ""}${
-          c.workerNativeSessionId ? ` · worker ${c.workerNativeSessionId}` : ""
-        }`,
+  copyRows(el("runtime-advanced"), [
+    ["ThreadLink address", state.baseUrl],
+    ["Computer ID", snap?.runtime?.runtimeId],
+    ...(snap?.workspaces ?? []).flatMap((w) => [
+      [`${w.name} · folder`, w.path],
+      ...w.conversations.flatMap((c) => [
+        [`${c.title} · mode`, c.mode],
+        [`${c.title} · Claude conversation`, c.nativeSessionId],
+        [`${c.title} · background worker`, c.workerNativeSessionId],
       ]),
-    ),
+    ]),
   ]);
 }
 
@@ -704,12 +757,325 @@ function renderSettings() {
   el("set-autostart").addEventListener("change", (e) =>
     api.setSettings({ autoStart: e.target.checked }),
   );
-  kv(el("settings-advanced"), [
-    ["ThreadLink address", state.baseUrl ?? "—"],
-    ["Connector URL", `${state.baseUrl}/mcp`],
-    ["This computer", state.snapshot?.identity?.kind ?? "—"],
+  renderProviders(el("providers"));
+  el("plan-dashboard").addEventListener("click", () => api.openDashboard());
+  copyRows(el("settings-advanced"), [
+    ["ThreadLink address", state.baseUrl],
+    ["Connector URL", state.baseUrl ? `${state.baseUrl}/mcp` : null],
+    ["This computer", state.snapshot?.identity?.kind],
   ]);
   el("signout").addEventListener("click", () => api.signOut());
+}
+
+// -------------------------------------------------------- providers & plans
+
+const PROVIDER_NAMES = { "claude-code": "Claude Code", codex: "Codex" };
+const providerName = (id) => PROVIDER_NAMES[id] ?? "Another agent";
+
+/** How each provider's own account family is named, for the plan it reports. */
+const PLAN_FAMILY = { "claude-code": "Claude", codex: "ChatGPT" };
+
+/** The plan exactly as the provider reported it. Null stays unknown. */
+function planName(provider, plan) {
+  if (!plan) return "Plan not reported";
+  const word = String(plan)
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return `${PLAN_FAMILY[provider] ?? ""} ${word}`.trim();
+}
+
+/** One card per Team Mode agent this computer knows about. */
+function renderProviders(node) {
+  if (!node) return;
+  node.replaceChildren();
+  const list = state.snapshot?.teamProviders ?? [];
+  if (!list.length) {
+    node.append(
+      empty(
+        "ThreadLink has not found Claude Code or Codex on this computer yet. Install one, then restart ThreadLink.",
+      ),
+    );
+    return;
+  }
+  for (const p of list) {
+    const card = document.createElement("div");
+    card.className = "provider";
+
+    const head = document.createElement("div");
+    head.className = "provider-head";
+    const name = document.createElement("div");
+    name.className = "title";
+    name.textContent = providerName(p.provider);
+    const tags = document.createElement("div");
+    tags.className = "tags";
+    tags.append(
+      badge(p.installed ? "Installed" : "Not installed", p.installed ? "ready" : "fail"),
+      badge(p.authenticated ? "Signed in" : "Not signed in", p.authenticated ? "ready" : "wait"),
+    );
+    head.append(name, tags);
+
+    const facts = document.createElement("div");
+    facts.className = "kv";
+    kvAppend(facts, "Plan", planName(p.provider, p.detectedPlan));
+    kvAppend(facts, "Version", p.version ?? "Not reported");
+    kvAppend(facts, "Remaining usage", `not reported by ${providerName(p.provider)}`);
+
+    const models = document.createElement("div");
+    models.className = "models";
+    const label = document.createElement("span");
+    label.className = "models-label";
+    label.textContent = "Models";
+    models.append(label);
+    if (!p.models?.length) {
+      const none = document.createElement("span");
+      none.className = "muted small";
+      none.textContent = "None reported";
+      models.append(none);
+    }
+    for (const m of p.models ?? []) models.append(badge(m.displayName, "model"));
+
+    card.append(head, facts, models);
+    const tech = techDetails([
+      ["Version", p.version],
+      ["Detail", p.detail],
+    ]);
+    if (tech) card.append(tech);
+    node.append(card);
+  }
+}
+
+// -------------------------------------------------------------------- team
+
+const teamOf = (s) => s.snapshot?.team ?? [];
+const FINISHED = new Set([
+  "completed",
+  "needs_fix",
+  "blocked",
+  "needs_user_decision",
+  "failed",
+  "cancelled",
+]);
+const jobRunning = (j) => !j.verdict && !FINISHED.has(j.status);
+
+/** Each final verdict, in plain words. */
+const VERDICTS = {
+  PASS: { label: "Done — passed final review", tone: "ready" },
+  NEEDS_FIX: { label: "Needs fixes", tone: "wait" },
+  BLOCKED: { label: "Blocked", tone: "fail" },
+  NEEDS_USER_DECISION: { label: "Needs your decision", tone: "wait" },
+};
+
+/** What a job is doing overall, when it has no verdict yet. */
+const JOB_PHASES = {
+  normalising: "Getting started",
+  planning: "Planning",
+  building: "Building",
+  reviewing: "Reviewing",
+  integrating: "Putting it together",
+  inspecting: "Final review",
+  failed: "Stopped — it did not finish",
+  cancelled: "Cancelled",
+};
+
+/** The four states a step can be in, and how each one looks. */
+const STEP = {
+  done: { sym: "✓", label: "Done" },
+  active: { sym: "●", label: "In progress" },
+  waiting: { sym: "○", label: "Waiting" },
+  failed: { sym: "✕", label: "Failed" },
+  skipped: { sym: "–", label: "Skipped" },
+  attention: { sym: "!", label: "Needs attention" },
+};
+
+const UNIT_STEP = {
+  pending: "waiting",
+  ready: "waiting",
+  running: "active",
+  in_review: "active",
+  changes_requested: "active",
+  approved: "done",
+  integrated: "done",
+  failed: "failed",
+  skipped: "skipped",
+};
+
+function renderTeam() {
+  view.append(tpl("team"));
+  const list = el("team-jobs");
+  list.replaceChildren();
+  const jobs = teamOf(state);
+  if (!jobs.length) {
+    const box = document.createElement("div");
+    box.className = "card stack team-empty";
+    const h = document.createElement("h2");
+    h.textContent = "No team jobs yet";
+    const what = document.createElement("p");
+    what.className = "muted";
+    what.textContent =
+      "Team Mode has Claude Code and Codex work on one goal together: each builds part of it, " +
+      "reviews the other's work, and ThreadLink keeps only what passed review.";
+    const how = document.createElement("p");
+    how.className = "muted small";
+    how.textContent = "Ask ChatGPT to start a team job in a room. Its progress shows up here.";
+    box.append(h, what, how);
+    list.append(box);
+    return;
+  }
+  for (const job of jobs) list.append(teamJob(job));
+}
+
+function teamJob(job) {
+  const card = document.createElement("article");
+  card.className = "card stack team-job";
+
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const h = document.createElement("h3");
+  h.className = "team-room";
+  h.textContent = /\bteam$/i.test(job.room) ? job.room : `${job.room} Team`;
+  const verdict = VERDICTS[job.verdict];
+  const running = jobRunning(job);
+  head.append(
+    h,
+    verdict
+      ? badge(verdict.label, verdict.tone)
+      : badge(
+          running ? "Running" : (JOB_PHASES[job.status] ?? "Finished"),
+          running ? "run" : "lost",
+        ),
+  );
+
+  const goal = document.createElement("p");
+  goal.className = "team-goal";
+  goal.textContent = job.goal;
+  card.append(head, goal);
+
+  if (running) {
+    const agents = document.createElement("div");
+    agents.className = "team-agents";
+    const doing = new Map((job.agents ?? []).map((a) => [a.provider, a.doing]));
+    const involved = new Set([
+      ...doing.keys(),
+      ...(job.units ?? []).flatMap((u) => [u.owner, u.reviewer]),
+    ]);
+    for (const provider of involved) {
+      const line = document.createElement("div");
+      line.className = `team-agent${doing.has(provider) ? " busy" : ""}`;
+      const who = document.createElement("span");
+      who.className = "team-agent-name";
+      who.textContent = providerName(provider);
+      const what = document.createElement("span");
+      what.className = "team-agent-doing";
+      what.textContent = doing.get(provider) ?? "Waiting";
+      line.append(who, document.createTextNode(" — "), what);
+      agents.append(line);
+    }
+    if (!involved.size) {
+      const line = document.createElement("div");
+      line.className = "team-agent";
+      line.textContent = job.line || JOB_PHASES[job.status] || "Working";
+      agents.append(line);
+    }
+    card.append(agents);
+  }
+
+  const round = document.createElement("p");
+  round.className = "team-round";
+  const findings =
+    job.openFindings === 1
+      ? "1 finding remaining"
+      : job.openFindings
+        ? `${job.openFindings} findings remaining`
+        : "No findings open";
+  round.textContent = job.reviewRound
+    ? `Review round ${job.reviewRound} / ${job.maxReviewRounds} · ${findings}`
+    : `No review round yet · ${findings}`;
+  card.append(round, teamSteps(job));
+
+  if (verdict) {
+    const final = document.createElement("div");
+    final.className = `team-verdict ${verdict.tone}`;
+    final.textContent = verdict.label;
+    card.append(final);
+  } else if (!running) {
+    const final = document.createElement("div");
+    final.className = "team-verdict fail";
+    final.textContent = JOB_PHASES[job.status] ?? "Finished";
+    card.append(final);
+  }
+  return card;
+}
+
+/** Plan, each unit, then integration and final review, without graph jargon. */
+function teamSteps(job) {
+  const units = job.units ?? [];
+  const early = job.status === "normalising" || job.status === "planning";
+  const steps = [];
+  steps.push({
+    state:
+      early && !job.verdict
+        ? "active"
+        : units.length
+          ? "done"
+          : job.verdict
+            ? "skipped"
+            : "waiting",
+    text: "Plan",
+    branch: "",
+  });
+  for (const u of units) {
+    const state = UNIT_STEP[u.status] ?? "waiting";
+    const owner = providerName(u.owner);
+    const reviewer = providerName(u.reviewer);
+    const who = {
+      done: `${owner}, reviewed by ${reviewer}`,
+      failed: `${owner}, did not finish`,
+      skipped: `${owner}, skipped`,
+      waiting: `${owner}, waiting`,
+      active:
+        u.status === "in_review"
+          ? `${owner}, being reviewed by ${reviewer}`
+          : u.status === "changes_requested"
+            ? `${owner}, fixing review notes from ${reviewer}`
+            : owner,
+    }[state];
+    steps.push({ state, text: `${u.title} — ${who}`, branch: "├─" });
+  }
+  let last = "waiting";
+  if (job.status === "integrating" || job.status === "inspecting") last = "active";
+  else if (job.verdict === "PASS") last = "done";
+  else if (job.verdict) last = "attention";
+  else if (job.status === "failed" || job.status === "cancelled") last = "skipped";
+  steps.push({ state: last, text: "Integration → Final review", branch: "└─" });
+  if (!units.length) for (const s of steps) s.branch = "";
+  steps[0].branch = "";
+
+  const list = document.createElement("ol");
+  list.className = "steps";
+  list.setAttribute("aria-label", "Progress");
+  for (const s of steps) {
+    const item = document.createElement("li");
+    item.className = `step ${s.state}`;
+    item.dataset.state = s.state;
+    if (s.branch) {
+      const branch = document.createElement("span");
+      branch.className = "branch";
+      branch.setAttribute("aria-hidden", "true");
+      branch.textContent = s.branch;
+      item.append(branch);
+    }
+    const sym = document.createElement("span");
+    sym.className = "sym";
+    sym.textContent = STEP[s.state].sym;
+    sym.title = STEP[s.state].label;
+    sym.setAttribute("aria-label", STEP[s.state].label);
+    const text = document.createElement("span");
+    text.className = "step-text";
+    text.textContent = s.text;
+    item.append(sym, text);
+    list.append(item);
+  }
+  return list;
 }
 
 // ---------------------------------------------------------------- activity
@@ -749,6 +1115,8 @@ const RUNNING_IN = {
 
 /** How many lines one conversation shows before the dashboard takes over. */
 const FEED_LIMIT = 6;
+/** Home keeps it shorter still: a glance, not a feed. */
+const HOME_FEED_LIMIT = 4;
 
 const activityOf = (s) => s.snapshot?.activity ?? [];
 
@@ -800,14 +1168,14 @@ function activityItem(entry, withConversation) {
 }
 
 /** A list of mirrored lines, newest first, with something useful when empty. */
-function activityList(entries, { withConversation = false, emptyText } = {}) {
+function activityList(entries, { withConversation = false, emptyText, limit = FEED_LIMIT } = {}) {
   const list = document.createElement("div");
   list.className = "activity-list";
   if (!entries.length) {
     list.append(empty(emptyText));
     return list;
   }
-  for (const entry of entries.slice(0, FEED_LIMIT)) {
+  for (const entry of entries.slice(0, limit)) {
     list.append(activityItem(entry, withConversation));
   }
   return list;
@@ -895,6 +1263,85 @@ function kv(node, pairs) {
     value.textContent = v;
     node.append(key, value);
   }
+}
+
+function kvAppend(node, k, v) {
+  const key = document.createElement("div");
+  key.className = "k";
+  key.textContent = k;
+  const value = document.createElement("div");
+  value.className = "v";
+  value.textContent = v;
+  node.append(key, value);
+}
+
+function badge(text, tone) {
+  const node = document.createElement("span");
+  node.className = `badge${tone ? ` ${tone}` : ""}`;
+  node.textContent = text;
+  return node;
+}
+
+/**
+ * A Copy button for one value. The clipboard may be missing (or refuse), so
+ * the button says what happened instead of failing silently.
+ */
+function bindCopy(button, value) {
+  const reset = button.textContent;
+  button.addEventListener("click", async () => {
+    let said = "Copied";
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(value());
+    } catch {
+      said = "Copy not available";
+    }
+    button.textContent = said;
+    setTimeout(() => (button.textContent = reset), 1500);
+  });
+}
+
+/**
+ * Identifiers and paths, one per row, each with its own Copy button. Rows with
+ * no value are left out rather than shown as a dash.
+ */
+function copyRows(node, pairs) {
+  node.replaceChildren();
+  node.classList.add("copy-rows");
+  let any = false;
+  for (const [label, value] of pairs) {
+    if (value === null || value === undefined || value === "") continue;
+    any = true;
+    const row = document.createElement("div");
+    row.className = "copy-row";
+    const k = document.createElement("div");
+    k.className = "k";
+    k.textContent = label;
+    const v = document.createElement("code");
+    v.className = "v";
+    v.textContent = String(value);
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "ghost small-btn copy";
+    copy.textContent = "Copy";
+    copy.setAttribute("aria-label", `Copy ${label}`);
+    bindCopy(copy, () => String(value));
+    row.append(k, v, copy);
+    node.append(row);
+  }
+  if (!any) node.append(empty("Nothing to show yet."));
+  return any;
+}
+
+/** A closed "Technical details" section, or null when there is nothing in it. */
+function techDetails(pairs) {
+  const details = document.createElement("details");
+  details.className = "tech";
+  const summary = document.createElement("summary");
+  summary.textContent = "Technical details";
+  const body = document.createElement("div");
+  details.append(summary, body);
+  return copyRows(body, pairs) ? details : null;
 }
 
 function empty(text) {

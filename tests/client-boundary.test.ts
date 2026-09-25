@@ -138,7 +138,7 @@ describe("client/server boundary", () => {
     expect(routes.length).toBeGreaterThanOrEqual(18);
     for (const route of routes) {
       expect(route.path).toMatch(
-        /^app\/api\/(connection|session|pairing|tasks|runtime)\/(.+\/)?route\.ts$/,
+        /^app\/api\/(connection|session|pairing|tasks|runtime|team)\/(.+\/)?route\.ts$/,
       );
       expect(route.source, route.path).toMatch(
         /await requireConnection\(request\)|handleClientRequest\(request, /,
@@ -162,6 +162,7 @@ describe("client/server boundary", () => {
         "/api/tasks",
         "/api/tasks/(.*)",
         "/api/runtime/(.*)",
+        "/api/team/(.*)",
       ].sort(),
     );
   });
