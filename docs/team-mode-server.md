@@ -142,3 +142,59 @@ Writes to a job in a deleted room are refused.
 The dashboard read functions (`lib/rooms/queries.ts` `listRoomsFor` and `lib/team/queries.ts`
 `listRoomJobsFor`/`getJobDetailFor`) return names, labels ("Round 2 of 3", "Needs your decision",
 `TL-00042`) and counts. They use RLS and re-check the owner on every row.
+
+## Collaboration chat (migration `20260926000100_collaboration_chat.sql`)
+
+Contract: `docs/design/collaboration-chat.md`. Shared types: `lib/chat/types.ts`.
+
+### The timeline: `public.chat_events`
+
+No client role can insert, update or delete a row. Rows come only from `SECURITY DEFINER`
+triggers on `tasks`, `messages`, `team_jobs`, `team_nodes`, `team_messages`, `team_findings`,
+`team_decisions` and `model_usage_events`, and from `post_chat_message` and `read_owner_notes`.
+The author fields come from the parent row. Table constraints also enforce provenance, even for
+a privileged writer:
+
+- `author_provider` is set exactly on `agent` rows.
+- The label `You` is used only by `owner` rows, and `ThreadLink` only by `threadlink` rows.
+- Each author kind writes only its own event types.
+- A body is 1 to 8192 bytes, and newline and tab are the only control characters allowed.
+
+Every body passes through `threadlink_private.redact_text` before it is stored. It redacts
+provider keys, bearer tokens, JWTs, `password=`/`token=`/`secret=`/`api_key=` assignments,
+cookie headers, PEM private keys and `scheme://user:pass@` URLs.
+
+A trigger never raises into its parent write. If a chat row cannot be written, the trigger emits
+a warning with no content and skips the row.
+
+### Owner RPC: `post_chat_message(p_room_id, p_body, p_mode?, p_builder?, p_idempotency_key?)`
+
+- Callable by `authenticated` only.
+- Returns `{routed, job_id, event_id, replayed?, mode?, builder?}`.
+- Every failure carries a stable reason code in the error's `HINT`. `lib/chat/model.ts` maps the
+  code to a sentence; database text is never shown.
+
+### Owner route: `/api/dashboard/chat`
+
+This route requires a Clerk session. It is not a connection route, and `proxy.ts` does not bypass
+it.
+
+- `GET ?room=&after=&technical=` returns a `ChatPage`.
+- `POST {roomId, body, mode?, builder?, idempotencyKey?}` returns a `PostChatMessageResult`.
+
+### Runtime additions
+
+- **Start RPC:** `start_team_job` gains a 12-argument overload with `p_mode` and `p_builder` and no
+  defaults. The original 10-argument signature is a wrapper that always starts Team Mode. Both
+  overloads share `threadlink_private.team_start_job`, which the owner path also uses.
+- **Carrier content:** the carrier gains `mode`, `builder`, `reviewer` and `origin`, and
+  `version` stays `1`. `agents` lists only the job's participants.
+- **Runtime versions:** solo and pair jobs need Runtime 0.8 or later. Team Mode needs 0.7 or
+  later.
+- **`team_job_write`:**
+  - `add_message` accepts `model_observed`.
+  - The new `read_owner_notes {limit?≤20}` op returns `result.notes`.
+  - Every response includes `mode`, `builder`, `origin` and `stop_requested_at`.
+- **`PATCH /api/team/providers {provider, declaredPlan}`:** calls `set_runtime_provider_plan`.
+  This changes the declared plan only; the owner still controls policy and paid usage. Detection
+  never changes `declared_plan`.

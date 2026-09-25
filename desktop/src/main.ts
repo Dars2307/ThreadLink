@@ -36,6 +36,7 @@ import {
 import { applyAutoStart, autoStartEnabled } from "./autostart.js";
 import { NotificationRouter, type NotificationChannel } from "./notifications.js";
 import { messageFor, statusLine, trayIconPixels, trayMenu, type AppState } from "./model.js";
+import { loadPlans, planBackend, savePlan, type PlanProfile } from "./plans.js";
 import { loadSettings, saveSettings } from "./settings.js";
 
 /**
@@ -86,6 +87,10 @@ let api: ThreadLinkApi | null = null;
 let tray: Tray | null = null;
 let win: BrowserWindow | null = null;
 let signInAbort: AbortController | null = null;
+/**
+ * The last provider profiles the server returned. Memory only: the server is
+ * the source of truth for the declared plan, so nothing is written to disk.
+ */
 
 // ---------------------------------------------------------------------------
 // UI plumbing
@@ -295,8 +300,17 @@ const asString = (v: unknown, max = 1024) => (typeof v === "string" && v.length 
  * The renderer is sandboxed but still untrusted input: only the two real
  * execution modes are accepted, and background is the default.
  */
-const executionMode = (v: unknown): "worker" | "resume" =>
-  v === "resume" ? "resume" : "worker";
+const executionMode = (v: unknown): "worker" | "resume" => (v === "resume" ? "resume" : "worker");
+
+/**
+ * The last provider profiles the server returned. Memory only: the server is
+ * the source of truth for the declared plan, so nothing is written to disk.
+ */
+const planCache: { profiles: PlanProfile[] | null } = { profiles: null };
+
+/** Provider profiles from the server, merged with what this computer detected. */
+const readPlans = () =>
+  loadPlans(planBackend(engine, api), state.snapshot?.teamProviders ?? [], planCache);
 
 function handlers() {
   ipcMain.handle("state:get", () => state);
@@ -355,10 +369,22 @@ function handlers() {
     abort?.abort();
     await signOut(ctx);
     api = null;
+    planCache.profiles = null;
     state.signedIn = false;
     state.snapshot = null;
     broadcast();
   });
+
+  ipcMain.handle("plans:get", () => readPlans());
+
+  /**
+   * Sets the declared plan for one provider. Only a known provider and a plan
+   * from that provider's list get as far as the Runtime; the answer is always
+   * re-read from the server, so what the renderer shows is what is stored.
+   */
+  ipcMain.handle("plans:set", (_e, rawProvider: unknown, rawPlan: unknown) =>
+    savePlan(planBackend(engine, api), rawProvider, rawPlan, readPlans),
+  );
 
   ipcMain.handle("workspaces:detected", async () => {
     const found = (await engine?.discoverWorkspaces()) ?? [];

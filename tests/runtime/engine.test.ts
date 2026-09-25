@@ -1060,3 +1060,70 @@ describe("telling ThreadLink which Team Mode agents this computer has", () => {
     await expect(e.refreshTeamProviders()).resolves.toHaveLength(1);
   });
 });
+
+describe("provider plans and capabilities for the desktop app", () => {
+  const claude = {
+    provider: "claude-code" as const,
+    installed: true,
+    executable: "C:\bin\claude.exe",
+    version: "2.1.266",
+    authenticated: true,
+    authMethod: "claude.ai",
+    detectedPlan: "max",
+    models: [],
+    currentModel: null,
+    capabilities: {} as never,
+    usage: { remaining: "unknown" as const },
+  };
+  const profiles = [
+    {
+      provider: "claude-code" as const,
+      declaredPlan: "max_5x",
+      usagePolicy: "balanced",
+      paidUsageEnabled: false,
+      detected: {},
+      detectedAt: null,
+    },
+  ];
+
+  it("joins the owner's profiles with what this computer found, Cursor included as detect-only", async () => {
+    const { api } = fakeApi();
+    const withPlans = { ...api, providerProfiles: vi.fn(async () => profiles) };
+    const e = engine(withPlans as never, fakeAdapter().adapter, {
+      discoverTeam: async () => [claude],
+      detectCursor: () => ({ found: true, command: "agent" as const }),
+    });
+    await e.refreshTeamProviders();
+    const view = await e.getProviderProfiles();
+    expect(view.profiles[0]).toMatchObject({
+      provider: "claude-code",
+      declaredPlan: "max_5x",
+      detected: { detectedPlan: "max" },
+      capability: { status: "available" },
+    });
+    expect(view.profiles[1]).toMatchObject({ provider: "codex", declaredPlan: null });
+    expect(view.capabilities.find((c) => c.id === "cursor")).toMatchObject({
+      status: "not_supported_yet",
+      routable: false,
+    });
+    expect(e.snapshot().providerCapabilities.map((c) => c.id)).toEqual([
+      "claude-code",
+      "codex",
+      "cursor",
+    ]);
+  });
+
+  it("sets only a known plan for a known provider, and returns what the server stored", async () => {
+    const { api } = fakeApi();
+    const setDeclaredPlan = vi.fn(async () => ({
+      profiles: [{ ...profiles[0]!, declaredPlan: "max_20x" }],
+    }));
+    const e = engine({ ...api, setDeclaredPlan } as never, fakeAdapter().adapter);
+    await expect(e.setProviderPlan("codex", "team")).rejects.toThrow(/plan/);
+    await expect(e.setProviderPlan("cursor" as never, "pro")).rejects.toThrow(/provider/);
+    expect(setDeclaredPlan).not.toHaveBeenCalled();
+    const view = await e.setProviderPlan("claude-code", "max_20x");
+    expect(setDeclaredPlan).toHaveBeenCalledWith("claude-code", "max_20x");
+    expect(view.profiles[0]!.declaredPlan).toBe("max_20x");
+  });
+});

@@ -23,8 +23,7 @@ import {
 } from "./orchestrator.ts";
 import { graphPort, routePort } from "./ports.ts";
 import type { RouteOverride } from "./router.ts";
-import { ClaudeTeamRunner } from "./runners/claude.ts";
-import { CodexTeamRunner } from "./runners/codex.ts";
+import { createRunners } from "./providers.ts";
 import type { AgentProvider } from "./types.ts";
 import { UsageGovernor } from "./usage.ts";
 import { runVerify } from "./verify.ts";
@@ -60,37 +59,9 @@ export type TeamExecutorOptions = {
 
 const NAME: Record<AgentProvider, string> = { "claude-code": "Claude Code", codex: "Codex" };
 
-/**
- * How each provider must be signed in for Team Mode to use it: with the
- * owner's subscription. An API-key sign-in bills that key per token, which is
- * paid usage the owner never switched on, so it is refused rather than used.
- */
-export const SUBSCRIPTION_AUTH: Record<AgentProvider, readonly string[]> = {
-  "claude-code": ["claude.ai"],
-  codex: ["chatgpt"],
-};
-
-export function usableForTeam(p: ProviderDiscovery): boolean {
-  return (
-    p.installed &&
-    p.authenticated &&
-    p.authMethod !== null &&
-    SUBSCRIPTION_AUTH[p.provider].includes(p.authMethod)
-  );
-}
-
-/** Real runners, only for providers installed and signed in with a subscription. */
-function defaultRunners(found: ProviderDiscovery[]): Partial<Record<AgentProvider, AgentRunner>> {
-  const runners: Partial<Record<AgentProvider, AgentRunner>> = {};
-  for (const p of found) {
-    if (!usableForTeam(p)) continue;
-    if (p.provider === "claude-code") runners["claude-code"] = new ClaudeTeamRunner();
-    if (p.provider === "codex" && p.executable) {
-      runners.codex = new CodexTeamRunner({ executable: p.executable });
-    }
-  }
-  return runners;
-}
+// Subscription-only sign-in and runner creation live with the provider
+// adapters (providers.ts); re-exported here for existing callers.
+export { SUBSCRIPTION_AUTH, usableForTeam } from "./providers.ts";
 
 export class TeamExecutor implements Executor {
   readonly name = "team";
@@ -128,7 +99,7 @@ export class TeamExecutor implements Executor {
     );
 
     const orchestrator = new TeamOrchestrator(job, {
-      runners: (this.#o.runners ?? defaultRunners)(found),
+      runners: (this.#o.runners ?? createRunners)(found),
       route: routePort({
         available,
         policy: job.policy.usagePolicy,

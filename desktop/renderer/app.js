@@ -17,6 +17,18 @@ let changing = null;
  * opened two folder pickers.
  */
 let pass = 0;
+/**
+ * Declared plans as ThreadLink last returned them. The server is the source
+ * of truth: this is only what the last answer said, and it is re-read every
+ * time Settings is opened and after every save.
+ */
+const plans = { views: null, stale: true, loading: false, failed: false, fromCache: false };
+/** A plan chosen in the select but not saved yet, per provider. */
+const planDraft = {};
+/** "Saved" / "Couldn't save…", per provider, until Settings is left. */
+const planNote = {};
+/** Providers whose save is in flight, so a re-render cannot send it twice. */
+const planSaving = new Set();
 
 const el = (id) => document.getElementById(id);
 const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(true);
@@ -30,20 +42,36 @@ const SECTIONS = [
   { id: "settings", label: "Settings", title: "Settings" },
 ];
 
+/**
+ * The three ways a request can run, in words that are true. None of them opens
+ * a window: ThreadLink never shows or drives a visible Claude Code session.
+ */
 const MODES = {
   worker: {
     name: "Background worker",
-    why: "Works while Claude Code is open. Uses a separate ThreadLink worker in the same project.",
+    why:
+      "Default. Works while Claude Code is open: ThreadLink runs its own worker in this " +
+      "project, so your open conversation is left alone.",
   },
   resume: {
     name: "Exact conversation",
-    why: "Resumes this exact Claude conversation. It must not already be open.",
+    why:
+      "Uses one of your existing Claude conversations. Only works when that conversation " +
+      "isn't open in Claude Code.",
   },
   fresh: {
-    name: "New conversation each time",
-    why: "Starts a fresh Claude conversation for every request.",
+    name: "New headless session",
+    why: "Doesn't open a window; each request starts a fresh session.",
   },
 };
+
+/** Why exact mode cannot be chosen in the attach flow, or null when it can. */
+function exactUnavailable(conversations) {
+  if (!conversations.length) return "No Claude Code conversations found in this folder yet.";
+  if (!conversations.some((c) => !c.attached))
+    return "Every Claude Code conversation in this folder is already attached.";
+  return null;
+}
 
 const modeName = (mode) => MODES[mode]?.name ?? "Claude conversation";
 
@@ -169,16 +197,18 @@ function renderNav() {
     }
     const here = s.id === section || (section === "attach" && s.id === "conversations");
     button.setAttribute("aria-current", here ? "true" : "false");
-    button.addEventListener("click", () => {
-      section = s.id;
-      changing = null;
-      render();
-    });
+    button.addEventListener("click", () => go(s.id));
     nav.append(button);
   }
 }
 
 function go(next) {
+  // Settings always re-reads the plan from ThreadLink when it is opened.
+  if (next === "settings" && section !== "settings") {
+    plans.stale = true;
+    for (const k of Object.keys(planNote)) delete planNote[k];
+    for (const k of Object.keys(planDraft)) delete planDraft[k];
+  }
   section = next;
   changing = null;
   render();
@@ -559,13 +589,19 @@ function conversationCard(workspace, c, withActions) {
   return group;
 }
 
-/** The two real execution modes, as a radio group. Background is the default. */
-function modePicker(current, onChange) {
+/**
+ * The two execution modes bound to a conversation, as a radio group.
+ * Background is the default. `unavailable` gives a reason a mode cannot be
+ * chosen here (for example, no conversations to use exactly).
+ */
+function modePicker(current, onChange, unavailable = {}) {
   const claude = (state.snapshot?.providers ?? []).find((p) => p.id === "claude-code");
-  const available = {
-    worker: claude?.supportsBackgroundWorker !== false,
-    resume: claude?.supportsExactResume !== false,
+  const cannot = `${claude?.name ?? "This app"} cannot do this on this computer.`;
+  const reasons = {
+    worker: claude?.supportsBackgroundWorker === false ? cannot : (unavailable.worker ?? null),
+    resume: claude?.supportsExactResume === false ? cannot : (unavailable.resume ?? null),
   };
+  const available = { worker: !reasons.worker, resume: !reasons.resume };
   const group = document.createElement("div");
   group.className = "modes";
   const inputs = [];
@@ -585,9 +621,7 @@ function modePicker(current, onChange) {
     name.textContent = MODES[id].name;
     const why = document.createElement("span");
     why.className = "mode-why";
-    why.textContent = available[id]
-      ? MODES[id].why
-      : `${claude?.name ?? "This app"} cannot do this on this computer.`;
+    why.textContent = available[id] ? MODES[id].why : reasons[id];
     option.append(input, name, why);
     input.addEventListener("change", () => {
       for (const [other, node] of inputs) node.classList.toggle("chosen", other === id);
@@ -642,25 +676,40 @@ async function renderAttach(mine) {
   });
 
   if (!selectedWorkspace) return;
+  const conversations = await api.listConversations(selectedWorkspace);
+  if (superseded()) return;
+
+  // Exact mode needs a conversation to use. With none, say why and do not
+  // offer it, rather than let it be chosen and fail later.
+  const noExact = exactUnavailable(conversations);
+  if (noExact && attachMode === "resume") attachMode = "worker";
   el("conversation-card").hidden = false;
   // Re-render on change: which conversations are worth warning about depends
   // on the mode, and a stale warning is what this whole change is about.
   el("attach-mode").replaceChildren(
-    modePicker(attachMode, (next) => {
-      attachMode = next;
-      render();
-    }),
+    modePicker(
+      attachMode,
+      (next) => {
+        attachMode = next;
+        render();
+      },
+      { resume: noExact },
+    ),
   );
 
   el("conversation-pick").hidden = false;
+  el("attach-fresh-why").textContent = MODES.fresh.why;
   const problem = el("attach-problem");
   problem.hidden = true;
-  const conversations = await api.listConversations(selectedWorkspace);
-  if (superseded()) return;
   const cl = el("conversation-list");
   cl.replaceChildren();
   if (!conversations.length) {
-    cl.append(empty("No Claude conversations in this folder yet. Start one in Claude Code."));
+    cl.append(
+      empty(
+        "No Claude Code conversations found in this folder yet. Start one in Claude Code, " +
+          "or use a new headless session below.",
+      ),
+    );
   }
   for (const c of conversations) {
     const item = row(
@@ -772,16 +821,147 @@ function renderSettings() {
 const PROVIDER_NAMES = { "claude-code": "Claude Code", codex: "Codex" };
 const providerName = (id) => PROVIDER_NAMES[id] ?? "Another agent";
 
-/** How each provider's own account family is named, for the plan it reports. */
-const PLAN_FAMILY = { "claude-code": "Claude", codex: "ChatGPT" };
+const PLAN_SAVE_FAILED = "Couldn't save your plan — nothing changed";
 
-/** The plan exactly as the provider reported it. Null stays unknown. */
-function planName(provider, plan) {
-  if (!plan) return "Plan not reported";
-  const word = String(plan)
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  return `${PLAN_FAMILY[provider] ?? ""} ${word}`.trim();
+/** Asks the main process (and so the server) for the declared plans. */
+async function loadPlans() {
+  plans.loading = true;
+  plans.stale = false;
+  let result = null;
+  try {
+    result = await api.getPlans();
+  } catch {
+    result = null;
+  }
+  plans.loading = false;
+  if (result?.ok && Array.isArray(result.providers)) {
+    plans.views = result.providers;
+    plans.fromCache = result.stale === true;
+    plans.failed = false;
+  } else {
+    plans.failed = true;
+  }
+  if (section === "settings") render();
+}
+
+/** Where usage policy and paid usage are changed: the web dashboard only. */
+function openProviderSettings() {
+  if (state.baseUrl) api.openExternal(`${state.baseUrl}/dashboard/settings/providers`);
+  else api.openDashboard();
+}
+
+/**
+ * "Your plan" (declared, from ThreadLink) beside "Provider reported" (what
+ * this computer's CLI said), and the one thing the desktop may change: the
+ * declared plan. Usage policy and paid usage are shown, not edited.
+ */
+function planBlock(provider) {
+  const box = document.createElement("div");
+  box.className = "plan";
+  const view = (plans.views ?? []).find((v) => v.provider === provider);
+  if (!view) {
+    const p = document.createElement("p");
+    p.className = `small ${plans.failed ? "danger-text" : "muted"}`;
+    p.textContent = plans.failed
+      ? "Couldn't load your plan from ThreadLink. Try again later, or change it in the browser."
+      : "Loading your plan…";
+    box.append(p);
+    return box;
+  }
+
+  const facts = document.createElement("div");
+  facts.className = "kv";
+  kvAppend(facts, "Your plan", view.yourPlan);
+  kvAppend(facts, "Provider reported", view.reported);
+  kvAppend(facts, "Usage policy", view.usagePolicy);
+  kvAppend(facts, "Paid usage", view.paidUsage);
+  if (view.notSet) facts.querySelector(".v")?.classList.add("warn-text");
+
+  const edit = document.createElement("div");
+  edit.className = "plan-edit";
+  const label = document.createElement("label");
+  label.className = "field plan-field";
+  const caption = document.createElement("span");
+  caption.textContent = "Choose your plan";
+  const select = document.createElement("select");
+  select.name = `plan-${provider}`;
+  for (const o of view.options) {
+    const option = document.createElement("option");
+    option.value = o.value;
+    option.textContent = o.label;
+    select.append(option);
+  }
+  select.value = planDraft[provider] ?? view.declared;
+  label.append(caption, select);
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "primary small-btn plan-save";
+  const saving = planSaving.has(provider);
+  save.textContent = saving ? "Saving…" : "Save";
+  save.disabled = saving || select.value === view.declared;
+
+  const note = document.createElement("p");
+  note.className = "small plan-note";
+  note.setAttribute("role", "status");
+  const said = planNote[provider];
+  note.hidden = !said;
+  if (said) {
+    note.textContent = said.text;
+    note.classList.add(said.tone === "ok" ? "ok-text" : "danger-text");
+  }
+
+  select.addEventListener("change", () => {
+    planDraft[provider] = select.value;
+    delete planNote[provider];
+    note.hidden = true;
+    save.disabled = planSaving.has(provider) || select.value === view.declared;
+  });
+
+  save.addEventListener("click", async () => {
+    if (planSaving.has(provider)) return;
+    const chosen = select.value;
+    planSaving.add(provider);
+    save.disabled = true;
+    save.textContent = "Saving…";
+    note.hidden = true;
+    let result = null;
+    try {
+      result = await api.setPlan(provider, chosen);
+    } catch {
+      result = null;
+    }
+    planSaving.delete(provider);
+    delete planDraft[provider];
+    // Whatever happened, show what the server now holds, never the request.
+    if (Array.isArray(result?.providers)) {
+      plans.views = result.providers;
+      plans.fromCache = false;
+    } else {
+      plans.stale = true;
+    }
+    planNote[provider] = result?.ok
+      ? { text: "Saved", tone: "ok" }
+      : { text: PLAN_SAVE_FAILED, tone: "fail" };
+    render();
+  });
+
+  edit.append(label, save);
+
+  const web = document.createElement("div");
+  web.className = "plan-web";
+  const why = document.createElement("span");
+  why.className = "muted small";
+  why.textContent = "Usage policy and paid usage are changed in the browser.";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "ghost small-btn";
+  open.textContent = "Change in browser";
+  open.addEventListener("click", () => openProviderSettings());
+  web.append(why, open);
+
+  box.append(facts, edit, note, web);
+  return box;
 }
 
 /** One card per Team Mode agent this computer knows about. */
@@ -797,6 +977,13 @@ function renderProviders(node) {
     );
     return;
   }
+  if (plans.fromCache && plans.views) {
+    const stale = document.createElement("p");
+    stale.className = "muted small";
+    stale.textContent = "Showing the plan ThreadLink last sent. It couldn't be refreshed just now.";
+    node.append(stale);
+  }
+  if (plans.stale && !plans.loading) void loadPlans();
   for (const p of list) {
     const card = document.createElement("div");
     card.className = "provider";
@@ -816,7 +1003,6 @@ function renderProviders(node) {
 
     const facts = document.createElement("div");
     facts.className = "kv";
-    kvAppend(facts, "Plan", planName(p.provider, p.detectedPlan));
     kvAppend(facts, "Version", p.version ?? "Not reported");
     kvAppend(facts, "Remaining usage", `not reported by ${providerName(p.provider)}`);
 
@@ -834,7 +1020,7 @@ function renderProviders(node) {
     }
     for (const m of p.models ?? []) models.append(badge(m.displayName, "model"));
 
-    card.append(head, facts, models);
+    card.append(head, planBlock(p.provider), facts, models);
     const tech = techDetails([
       ["Version", p.version],
       ["Detail", p.detail],
@@ -916,7 +1102,9 @@ function renderTeam() {
       "reviews the other's work, and ThreadLink keeps only what passed review.";
     const how = document.createElement("p");
     how.className = "muted small";
-    how.textContent = "Ask ChatGPT to start a team job in a room. Its progress shows up here.";
+    how.textContent =
+      "Ask your controller (for example ChatGPT) to start a team job in a room. " +
+      "Its progress shows up here.";
     box.append(h, what, how);
     list.append(box);
     return;
@@ -956,7 +1144,7 @@ function teamJob(job) {
     const doing = new Map((job.agents ?? []).map((a) => [a.provider, a.doing]));
     const involved = new Set([
       ...doing.keys(),
-      ...(job.units ?? []).flatMap((u) => [u.owner, u.reviewer]),
+      ...(job.units ?? []).flatMap((u) => [u.owner, u.reviewer].filter(Boolean)),
     ]);
     for (const provider of involved) {
       const line = document.createElement("div");
@@ -1026,16 +1214,19 @@ function teamSteps(job) {
   for (const u of units) {
     const state = UNIT_STEP[u.status] ?? "waiting";
     const owner = providerName(u.owner);
-    const reviewer = providerName(u.reviewer);
+    // A solo unit has no reviewer: never claim one reviewed it.
+    const reviewer = u.reviewer ? providerName(u.reviewer) : null;
     const who = {
-      done: `${owner}, reviewed by ${reviewer}`,
+      done: reviewer
+        ? `${owner}, reviewed by ${reviewer}`
+        : `${owner}, built it (no review in solo mode)`,
       failed: `${owner}, did not finish`,
       skipped: `${owner}, skipped`,
       waiting: `${owner}, waiting`,
       active:
-        u.status === "in_review"
+        reviewer && u.status === "in_review"
           ? `${owner}, being reviewed by ${reviewer}`
-          : u.status === "changes_requested"
+          : reviewer && u.status === "changes_requested"
             ? `${owner}, fixing review notes from ${reviewer}`
             : owner,
     }[state];
@@ -1110,7 +1301,7 @@ const BLOCKED = {
 const RUNNING_IN = {
   worker: "Running in background worker",
   resume: "Running in your linked Claude conversation",
-  fresh: "Running in a new Claude conversation",
+  fresh: "Running in a new headless session",
 };
 
 /** How many lines one conversation shows before the dashboard takes over. */
@@ -1203,7 +1394,9 @@ function conversationActivity(c) {
   panel.append(
     head,
     activityList(mine, {
-      emptyText: "Nothing has run here yet. Send a task from ChatGPT and it will show up here.",
+      emptyText:
+        "Nothing has run here yet. Send a task from your controller (for example ChatGPT) " +
+        "and it will show up here.",
     }),
   );
   return panel;

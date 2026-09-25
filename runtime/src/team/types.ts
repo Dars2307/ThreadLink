@@ -10,6 +10,14 @@
 export const AGENT_PROVIDERS = ["claude-code", "codex"] as const;
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
 
+/**
+ * How a job is run (docs/design/collaboration-chat.md §6). `team` is full Team
+ * Mode; `pair` is one builder and one reviewer of the other provider; `solo` is
+ * one builder with ThreadLink's own verification and no reviewer.
+ */
+export const JOB_MODES = ["solo", "pair", "team"] as const;
+export type JobMode = (typeof JOB_MODES)[number];
+
 export const TEAM_ROLES = [
   "coordinator",
   "planner",

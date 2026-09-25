@@ -9,7 +9,8 @@ import { Badge, Card, CardTitle, EmptyState } from "@/components/ui";
 import { getIdentity } from "@/lib/auth/identity";
 import { loadAccount, loadTeam } from "@/lib/dashboard/data";
 import { deriveHome, EMPTY_TEAM } from "@/lib/dashboard/pages";
-import { deriveDashboard } from "@/lib/dashboard/view-model";
+import { projectHref } from "@/lib/dashboard/project";
+import { controllerName, deriveDashboard } from "@/lib/dashboard/view-model";
 import { requestOrigin } from "@/lib/oauth/authorize";
 
 export const metadata: Metadata = { title: "Home · ThreadLink" };
@@ -33,7 +34,7 @@ export default async function HomePage() {
     );
   }
 
-  const { view } = deriveHome(account, team ?? EMPTY_TEAM);
+  const { view, handles } = deriveHome(account, team ?? EMPTY_TEAM);
   const firstName = clerkUser.firstName ?? clerkUser.username ?? null;
   // The setup steps need the session choices; they only render until setup is done.
   const setup = view.setupComplete ? null : deriveDashboard(account);
@@ -78,7 +79,8 @@ export default async function HomePage() {
           <p className="text-muted text-sm">Projects could not be loaded right now.</p>
         ) : view.active.length === 0 ? (
           <EmptyState title="No projects yet">
-            Ask ChatGPT to “create a ThreadLink project” for a folder on your computer.
+            Ask {controllerName(account.connections)} to “create a ThreadLink project” for a folder
+            on your computer.
           </EmptyState>
         ) : (
           <ul className="divide-border flex flex-col divide-y">
@@ -89,7 +91,10 @@ export default async function HomePage() {
               >
                 <div className="min-w-0">
                   <p className="text-sm font-medium">
-                    {p.name} <span className="text-subtle font-normal">· {p.team}</span>
+                    <Link href={projectHref(handles[p.key]!.roomId!)} className="hover:underline">
+                      {p.name}
+                    </Link>{" "}
+                    <span className="text-subtle font-normal">· {p.team}</span>
                   </p>
                   <p className="text-muted truncate text-xs">{p.summary}</p>
                 </div>

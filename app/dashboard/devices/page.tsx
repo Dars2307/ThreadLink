@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { updateRuntimeAction } from "@/app/dashboard/actions";
 import { disconnectDeviceAction, renameDeviceAction } from "@/app/dashboard/team-actions";
+import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { ConfirmAction } from "@/components/dashboard/confirm-action";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { Badge, buttonStyles, Card, EmptyState } from "@/components/ui";
@@ -106,18 +107,24 @@ export default async function DevicesPage({
                 <summary className="text-muted hover:text-foreground cursor-pointer text-sm">
                   Device settings
                 </summary>
-                <form
+                <ActionForm
                   action={updateRuntimeAction}
                   className="bg-surface-muted mt-2 flex flex-col gap-2 rounded-xl p-4"
                 >
                   <input type="hidden" name="runtimeId" value={runtimeId} />
                   <input type="hidden" name="intent" value="settings" />
                   <label className="text-muted flex items-center gap-2 text-sm">
-                    <input type="checkbox" name="autoStart" defaultChecked={d.settings.autoStart} />
+                    <input
+                      key={String(d.settings.autoStart)}
+                      type="checkbox"
+                      name="autoStart"
+                      defaultChecked={d.settings.autoStart}
+                    />
                     Start when I log in
                   </label>
                   <label className="text-muted flex items-center gap-2 text-sm">
                     <input
+                      key={String(d.settings.autoReconnect)}
                       type="checkbox"
                       name="autoReconnect"
                       defaultChecked={d.settings.autoReconnect}
@@ -126,29 +133,32 @@ export default async function DevicesPage({
                   </label>
                   <label className="text-muted flex items-center gap-2 text-sm">
                     <input
+                      key={String(d.settings.notifications)}
                       type="checkbox"
                       name="notifications"
                       defaultChecked={d.settings.notifications}
                     />
                     Show notifications
                   </label>
-                  <button type="submit" className={`${buttonStyles.secondary} w-fit`}>
+                  <SubmitButton className={`${buttonStyles.secondary} w-fit`}>
                     Save settings
-                  </button>
-                </form>
+                  </SubmitButton>
+                </ActionForm>
               </details>
 
               <div className="border-border flex flex-wrap items-center gap-2 border-t pt-3">
                 <details>
                   <summary className={`${buttonStyles.ghost} cursor-pointer`}>Rename</summary>
-                  <form
+                  <ActionForm
                     action={renameDeviceAction}
                     className="bg-surface-muted mt-2 flex flex-wrap items-end gap-2 rounded-xl p-3"
+                    statusClassName="w-full"
                   >
                     <input type="hidden" name="runtimeId" value={runtimeId} />
                     <label className="flex flex-col gap-1 text-sm">
                       <span className="text-subtle text-xs">Name</span>
                       <input
+                        key={d.name}
                         name="label"
                         defaultValue={d.name}
                         required
@@ -156,25 +166,23 @@ export default async function DevicesPage({
                         className={field}
                       />
                     </label>
-                    <button type="submit" className={buttonStyles.secondary}>
-                      Save
-                    </button>
-                  </form>
+                    <SubmitButton>Save</SubmitButton>
+                  </ActionForm>
                 </details>
-                <form action={updateRuntimeAction}>
+                <ActionForm action={updateRuntimeAction} className="flex flex-col gap-1">
                   <input type="hidden" name="runtimeId" value={runtimeId} />
                   <input type="hidden" name="intent" value={d.paused ? "resume" : "pause"} />
-                  <button type="submit" className={buttonStyles.ghost}>
+                  <SubmitButton className={buttonStyles.ghost} pendingLabel="Working…">
                     {d.paused ? "Resume" : "Pause"}
-                  </button>
-                </form>
-                <form action={updateRuntimeAction}>
+                  </SubmitButton>
+                </ActionForm>
+                <ActionForm action={updateRuntimeAction} className="flex flex-col gap-1">
                   <input type="hidden" name="runtimeId" value={runtimeId} />
                   <input type="hidden" name="intent" value="restart" />
-                  <button type="submit" className={buttonStyles.ghost}>
+                  <SubmitButton className={buttonStyles.ghost} pendingLabel="Requesting…">
                     Restart
-                  </button>
-                </form>
+                  </SubmitButton>
+                </ActionForm>
                 <ConfirmAction
                   action={disconnectDeviceAction}
                   fields={{ runtimeId }}

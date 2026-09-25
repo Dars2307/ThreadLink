@@ -25,6 +25,9 @@ const files = SOURCE_DIRS.flatMap((dir) => sourceFiles(join(ROOT, dir))).map((pa
   source: readFileSync(path, "utf8"),
 }));
 
+/** Owner (Clerk-session) API routes: the only API routes that are not connection routes. */
+const isOwnerRoute = (path: string) => /^app\/api\/dashboard\/(.+\/)?route\.ts$/.test(path);
+
 const clientFiles = files.filter(({ source }) => /^\s*["']use client["']/.test(source));
 
 const SERVER_ONLY_MODULES = [
@@ -45,6 +48,7 @@ const SERVER_ONLY_MODULES = [
   "@/lib/runtimes/queries",
   "@/lib/runtimes/repository",
   "@/lib/dashboard/data",
+  "@/lib/chat/owner",
 ];
 
 /** Pure modules that must still never be bundled for the browser (node:crypto, token logic). */
@@ -134,7 +138,9 @@ describe("client/server boundary", () => {
   it("every API route is a connection-authenticated client route", () => {
     // proxy.ts skips the Clerk gate for exactly these prefixes; each handler
     // must authenticate the connection itself.
-    const routes = files.filter(({ path }) => /^app\/api\/.+\/route\.ts$/.test(path));
+    const routes = files.filter(
+      ({ path }) => /^app\/api\/.+\/route\.ts$/.test(path) && !isOwnerRoute(path),
+    );
     expect(routes.length).toBeGreaterThanOrEqual(18);
     for (const route of routes) {
       expect(route.path).toMatch(
@@ -147,6 +153,22 @@ describe("client/server boundary", () => {
         /createPrivilegedSupabaseClient|supabase\/admin/,
       );
     }
+  });
+
+  it("every owner API route (/api/dashboard) stays behind Clerk and resolves the user first", () => {
+    // Not in any proxy bypass list, so Clerk's auth.protect() runs; the handler
+    // then resolves the ThreadLink user itself and uses only the user-scoped
+    // client (RLS), never the privileged one.
+    const routes = files.filter(({ path }) => isOwnerRoute(path));
+    expect(routes.map((r) => r.path)).toContain("app/api/dashboard/chat/route.ts");
+    for (const route of routes) {
+      expect(route.source, route.path).toMatch(/await requireThreadLinkUser\(\)/);
+      expect(route.source, route.path).not.toMatch(
+        /createPrivilegedSupabaseClient|supabase\/admin|createAnonymousSupabaseClient/,
+      );
+    }
+    const proxy = readFileSync(join(ROOT, "proxy.ts"), "utf8");
+    expect(proxy).not.toMatch(/\/api\/dashboard/);
   });
 
   it("proxy.ts bypasses the Clerk gate only for the client route prefixes", () => {

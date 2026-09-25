@@ -15,10 +15,12 @@
 import type { TeamSpec } from "./prompts.ts";
 import {
   AGENT_PROVIDERS,
+  JOB_MODES,
   TEAM_LIMITS,
   TEAM_ROLES,
   USAGE_POLICIES,
   type AgentProvider,
+  type JobMode,
   type TeamRole,
   type UsagePolicy,
 } from "./types.ts";
@@ -40,6 +42,13 @@ export type TeamJobDefinition = {
   };
   agents: { provider: AgentProvider; displayName: string; roles: TeamRole[] }[];
   verifyCommands: string[];
+  /**
+   * How the job is run. Absent in older job documents, which were all Team
+   * Mode; `parseTeamJob` always sets it.
+   */
+  mode?: JobMode;
+  /** For solo and pair: the provider that builds. Resolved and checked by `parseTeamJob`. */
+  builder?: AgentProvider | null;
 };
 
 export class TeamJobError extends Error {
@@ -162,6 +171,8 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     };
   });
 
+  const { mode, builder } = parseMode(raw.mode, raw.builder, agents);
+
   const verifyIn = raw.verifyCommands ?? [];
   if (!Array.isArray(verifyIn) || verifyIn.length > 10) {
     throw new TeamJobError("verifyCommands must be a list of at most 10 commands.");
@@ -196,5 +207,51 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     },
     agents,
     verifyCommands: verifyIn.map(command),
+    mode,
+    builder,
   };
+}
+
+/**
+ * The job's mode and, for solo and pair, who builds. Both are optional on the
+ * wire (absent means Team Mode, as every job was before modes existed), but a
+ * value that is present must be exactly right: an unknown mode or a builder
+ * that is not in the room fails the job rather than being guessed at.
+ */
+function parseMode(
+  rawMode: unknown,
+  rawBuilder: unknown,
+  agents: { provider: AgentProvider }[],
+): { mode: JobMode; builder: AgentProvider | null } {
+  if (rawMode !== undefined && rawMode !== null && !JOB_MODES.includes(rawMode as JobMode)) {
+    throw new TeamJobError("mode is not solo, pair or team.");
+  }
+  const mode = (rawMode ?? "team") as JobMode;
+  if (
+    rawBuilder !== undefined &&
+    rawBuilder !== null &&
+    !AGENT_PROVIDERS.includes(rawBuilder as AgentProvider)
+  ) {
+    throw new TeamJobError("builder is not a supported provider.");
+  }
+  const present = [...new Set(agents.map((a) => a.provider))];
+  let builder = (rawBuilder ?? null) as AgentProvider | null;
+
+  if (mode === "team") return { mode, builder: null };
+  if (builder && !present.includes(builder)) {
+    throw new TeamJobError("the builder is not one of the room's agents.");
+  }
+  if (!builder) {
+    if (mode === "solo") {
+      // Solo with no builder named is only unambiguous in a one-agent room.
+      if (present.length !== 1) {
+        throw new TeamJobError("a solo job in a room with two agents must name its builder.");
+      }
+      builder = present[0]!;
+    } else {
+      // Builder + Reviewer defaults to Claude Code building (design §5).
+      builder = present.includes("claude-code") ? "claude-code" : present[0]!;
+    }
+  }
+  return { mode, builder };
 }

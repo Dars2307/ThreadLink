@@ -60,7 +60,8 @@ export default async function TasksPage() {
         <CardTitle id="recent-tasks">Recent tasks</CardTitle>
         {view.tasks.length === 0 ? (
           <EmptyState title="Nothing sent yet">
-            Say “send this to Claude” in a linked ChatGPT conversation.
+            Say “send this to Claude” in a linked conversation in your controller (for example
+            ChatGPT), or open a project and type <strong>@Claude</strong> and a task.
           </EmptyState>
         ) : (
           <ul className="divide-border flex flex-col divide-y">

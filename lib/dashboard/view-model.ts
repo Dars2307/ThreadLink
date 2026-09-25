@@ -50,6 +50,29 @@ export function relativeTime(iso: string | null, now: number): string {
 
 export type ExecutionMode = "worker" | "resume" | "fresh";
 
+/**
+ * How empty states refer to the app that sends work, without assuming it is
+ * ChatGPT: any MCP client (ChatGPT, Claude, …) can be the controller.
+ */
+export const CONTROLLER_HINT = "your controller (for example ChatGPT)";
+
+/**
+ * The connected controller's name when there is exactly one kind connected
+ * ("ChatGPT", "Claude"), otherwise the generic hint.
+ */
+export function controllerName(
+  connections: Pick<Connection, "platform" | "role" | "status">[],
+): string {
+  const platforms = new Set(
+    connections
+      .filter((c) => c.role === "controller" && (c.status === "active" || c.status === "idle"))
+      .map((c) => c.platform),
+  );
+  if (platforms.size !== 1) return CONTROLLER_HINT;
+  const [only] = platforms;
+  return only === "generic-mcp" ? "your controller" : PLATFORM_LABELS[only!];
+}
+
 export function executionMode(session: OwnerSession | undefined): ExecutionMode {
   if (session?.nativeSessionMode === "worker") return "worker";
   if (session?.nativeSessionMode === "resume") return "resume";
@@ -61,7 +84,7 @@ export function executionModeLabel(session: OwnerSession | undefined): string {
   const mode = executionMode(session);
   if (mode === "worker") return "Background worker";
   if (mode === "resume") return "Exact conversation";
-  return "New conversation each time";
+  return "New headless session (doesn't open a window)";
 }
 
 /** One line explaining what that mode actually does. */
@@ -69,7 +92,7 @@ export function conversationMode(session: OwnerSession | undefined): string {
   const mode = executionMode(session);
   if (mode === "worker") return "Works while Claude Code is open";
   if (mode === "resume") return "Resumes this exact conversation, which must not be open";
-  return "Starts a new Claude conversation for each request";
+  return "Starts a new Claude Code session in the background for each request; no window opens";
 }
 
 export function conversationName(
@@ -145,7 +168,7 @@ function attributionLine(card: LinkCard): string {
   const where = card.workspace ? `${card.conversation} · ${card.workspace}` : card.conversation;
   if (card.mode === "worker") return `Background worker for ${where}`;
   if (card.mode === "resume") return `Runs in ${where}`;
-  return `New conversation each time, alongside ${where}`;
+  return `New headless session each time, alongside ${where}`;
 }
 
 export function deriveDashboard(data: DashboardData) {

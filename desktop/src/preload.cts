@@ -35,6 +35,8 @@ const api = {
   restart: () => ipcRenderer.invoke("runtime:restart"),
   openDashboard: () => ipcRenderer.invoke("open:dashboard"),
   openExternal: (url: string) => ipcRenderer.invoke("open:external", url),
+  getPlans: () => ipcRenderer.invoke("plans:get"),
+  setPlan: (provider: string, plan: string) => ipcRenderer.invoke("plans:set", provider, plan),
   setSettings: (patch: { autoStart?: boolean; notifications?: boolean }) =>
     ipcRenderer.invoke("settings:set", patch),
 };

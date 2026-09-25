@@ -7,11 +7,14 @@ import {
   renameProjectAction,
   updateProjectPolicyAction,
 } from "@/app/dashboard/team-actions";
+import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { ConfirmAction } from "@/components/dashboard/confirm-action";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { Badge, buttonStyles, Card, EmptyState } from "@/components/ui";
 import { loadTeam } from "@/lib/dashboard/data";
 import { deriveProjects } from "@/lib/dashboard/pages";
+import { projectHref } from "@/lib/dashboard/project";
+import { CONTROLLER_HINT } from "@/lib/dashboard/view-model";
 
 export const metadata: Metadata = { title: "Projects · ThreadLink" };
 
@@ -36,7 +39,7 @@ export default async function ProjectsPage({
     <Shell>
       <PageHeader
         title="Projects"
-        description="A project is a folder on your computer that Claude and Codex work on together. Ask ChatGPT to “create a ThreadLink project” to add one."
+        description={`A project is a folder on your computer that Claude and Codex work on together. Ask ${CONTROLLER_HINT} to “create a ThreadLink project” to add one.`}
         actions={
           view.archivedCount ? (
             <Link
@@ -52,8 +55,8 @@ export default async function ProjectsPage({
       {view.projects.length === 0 ? (
         <Card>
           <EmptyState title="No projects yet">
-            In ChatGPT, say “Create a ThreadLink project for my app”. It appears here with its team,
-            and you can rename, archive or remove it.
+            Ask {CONTROLLER_HINT} to “create a ThreadLink project for my app”. It appears here with
+            its team, and you can open its chat, rename, archive or remove it.
           </EmptyState>
         </Card>
       ) : null}
@@ -66,7 +69,9 @@ export default async function ProjectsPage({
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h2 id={`${p.key}-title`} className="text-base font-semibold tracking-tight">
-                    {p.name}
+                    <Link href={projectHref(roomId)} className="hover:underline">
+                      {p.name}
+                    </Link>
                   </h2>
                   <p className="text-muted text-sm">
                     {p.team} · {p.folder}
@@ -92,7 +97,7 @@ export default async function ProjectsPage({
                       className="flex flex-col gap-1 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                     >
                       <Link
-                        href={`/dashboard/team/${handles[j.key]!.jobId}`}
+                        href={projectHref(roomId, { tab: "chat", job: handles[j.key]!.jobId })}
                         className="min-w-0 truncate text-sm hover:underline"
                       >
                         {j.goal}
@@ -110,14 +115,16 @@ export default async function ProjectsPage({
                 <summary className="text-muted hover:text-foreground cursor-pointer text-sm">
                   Team settings <span className="text-subtle">· {p.policy.text}</span>
                 </summary>
-                <form
+                <ActionForm
                   action={updateProjectPolicyAction}
                   className="bg-surface-muted mt-3 grid gap-3 rounded-xl p-4 sm:grid-cols-2"
+                  statusClassName="sm:col-span-2"
                 >
                   <input type="hidden" name="roomId" value={roomId} />
                   <label className="flex flex-col gap-1 text-sm">
                     <span className="text-subtle text-xs">Agents working at once</span>
                     <select
+                      key={String(p.policy.parallelAgents)}
                       name="parallelAgents"
                       defaultValue={p.policy.parallelAgents}
                       className={field}
@@ -132,6 +139,7 @@ export default async function ProjectsPage({
                   <label className="flex flex-col gap-1 text-sm">
                     <span className="text-subtle text-xs">Usage policy</span>
                     <select
+                      key={String(p.policy.usagePolicy)}
                       name="usagePolicy"
                       defaultValue={p.policy.usagePolicy}
                       className={field}
@@ -146,6 +154,7 @@ export default async function ProjectsPage({
                   <label className="flex flex-col gap-1 text-sm">
                     <span className="text-subtle text-xs">Planning rounds (at most)</span>
                     <select
+                      key={String(p.policy.maxPlanningRounds)}
                       name="maxPlanningRounds"
                       defaultValue={p.policy.maxPlanningRounds}
                       className={field}
@@ -160,6 +169,7 @@ export default async function ProjectsPage({
                   <label className="flex flex-col gap-1 text-sm">
                     <span className="text-subtle text-xs">Review rounds (at most)</span>
                     <select
+                      key={String(p.policy.maxReviewRounds)}
                       name="maxReviewRounds"
                       defaultValue={p.policy.maxReviewRounds}
                       className={field}
@@ -175,23 +185,25 @@ export default async function ProjectsPage({
                     Applies to new team work in this project. When the rounds run out, the team
                     stops and asks you rather than passing work that is not ready.
                   </p>
-                  <button type="submit" className={`${buttonStyles.secondary} w-fit`}>
+                  <SubmitButton className={`${buttonStyles.secondary} w-fit`}>
                     Save team settings
-                  </button>
-                </form>
+                  </SubmitButton>
+                </ActionForm>
               </details>
 
               <div className="border-border flex flex-wrap items-center gap-2 border-t pt-3">
                 <details className="group">
                   <summary className={`${buttonStyles.ghost} cursor-pointer`}>Rename</summary>
-                  <form
+                  <ActionForm
                     action={renameProjectAction}
                     className="bg-surface-muted mt-2 flex flex-wrap items-end gap-2 rounded-xl p-3"
+                    statusClassName="w-full"
                   >
                     <input type="hidden" name="roomId" value={roomId} />
                     <label className="flex flex-col gap-1 text-sm">
                       <span className="text-subtle text-xs">New name</span>
                       <input
+                        key={p.name}
                         name="name"
                         defaultValue={p.name}
                         required
@@ -199,19 +211,21 @@ export default async function ProjectsPage({
                         className={field}
                       />
                     </label>
-                    <button type="submit" className={buttonStyles.secondary}>
-                      Save
-                    </button>
-                  </form>
+                    <SubmitButton>Save</SubmitButton>
+                  </ActionForm>
                 </details>
 
-                <form action={archiveProjectAction}>
+                <ActionForm action={archiveProjectAction} className="flex flex-col gap-1">
                   <input type="hidden" name="roomId" value={roomId} />
                   <input type="hidden" name="archived" value={p.archived ? "false" : "true"} />
-                  <button type="submit" className={buttonStyles.ghost}>
+                  <SubmitButton className={buttonStyles.ghost} pendingLabel="Working…">
                     {p.archived ? "Restore" : "Archive"}
-                  </button>
-                </form>
+                  </SubmitButton>
+                </ActionForm>
+
+                <Link href={projectHref(roomId)} className={buttonStyles.ghost}>
+                  Open chat
+                </Link>
 
                 <ConfirmAction
                   action={deleteProjectAction}

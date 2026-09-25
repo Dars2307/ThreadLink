@@ -26,6 +26,7 @@ import {
   deleteProjectAction,
   removeConversationAction,
   setPaidUsageAction,
+  setProviderPlanAction,
 } from "@/app/dashboard/team-actions";
 
 const form = (fields: Record<string, string>) => {
@@ -66,8 +67,49 @@ describe("dashboard owner actions", () => {
     expect(deleteMyRoom).toHaveBeenCalledWith("tlrom_x");
   });
 
-  it("swallows owner-operation failures instead of leaking them", async () => {
-    removeMyConversation.mockRejectedValueOnce(new Error("Conversation not found"));
-    await expect(removeConversationAction(form({ sessionId: "bad" }))).resolves.toBeUndefined();
+  it("reports owner-operation failures in plain words without leaking database text", async () => {
+    removeMyConversation.mockRejectedValueOnce(
+      new Error('duplicate key value violates unique constraint "session_bindings_pkey"'),
+    );
+    const result = await removeConversationAction(form({ sessionId: "bad" }));
+    expect(result).toEqual({ ok: false, message: "Could not remove the conversation." });
+    expect(JSON.stringify(result)).not.toMatch(/constraint|duplicate|session_bindings|pkey/);
+  });
+
+  it("says what was done on success", async () => {
+    await expect(removeConversationAction(form({ sessionId: "tlses_x" }))).resolves.toEqual({
+      ok: true,
+      message: "Conversation removed from ThreadLink.",
+    });
+  });
+
+  it("reports a failed plan save and says the previous plan is unchanged", async () => {
+    setMyProviderProfile.mockRejectedValueOnce(new Error("new row violates check constraint"));
+    const result = await setProviderPlanAction(
+      form({ provider: "codex", declaredPlan: "business_premium" }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      message: "Could not save your plan. Your previous plan is unchanged.",
+    });
+  });
+
+  it("saves Business Premium exactly as chosen", async () => {
+    const result = await setProviderPlanAction(
+      form({ provider: "codex", declaredPlan: "business_premium" }),
+    );
+    expect(result).toEqual({ ok: true, message: "Plan saved." });
+    expect(setMyProviderProfile).toHaveBeenCalledWith({
+      provider: "codex",
+      declaredPlan: "business_premium",
+    });
+  });
+
+  it("refuses paid usage without confirmation with a reason, not silently", async () => {
+    const result = await setPaidUsageAction(form({ provider: "codex", paidUsage: "on" }));
+    expect(result).toEqual({
+      ok: false,
+      message: "Paid usage was not changed: it needs your confirmation.",
+    });
   });
 });

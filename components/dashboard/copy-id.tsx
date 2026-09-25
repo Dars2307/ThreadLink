@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { cx } from "@/components/ui";
 
-/** A technical identifier with a Copy button. Used only on Settings → Advanced. */
+/** A technical identifier with a Copy button. Used only on Settings → Advanced and a project's Details tab. */
 export function CopyId({ value, label }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   return (

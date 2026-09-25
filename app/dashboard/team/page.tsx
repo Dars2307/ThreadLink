@@ -5,6 +5,8 @@ import { TeamJob } from "@/components/dashboard/team";
 import { Card, CardTitle, EmptyState } from "@/components/ui";
 import { loadTeam } from "@/lib/dashboard/data";
 import { deriveTeam } from "@/lib/dashboard/pages";
+import { projectHref } from "@/lib/dashboard/project";
+import { CONTROLLER_HINT } from "@/lib/dashboard/view-model";
 
 export const metadata: Metadata = { title: "Team · ThreadLink" };
 
@@ -12,7 +14,10 @@ export default async function TeamPage() {
   const team = await loadTeam();
   if (!team) return <LoadError what="your team" />;
   const { view, handles } = deriveTeam(team, team.now);
-  const logHref = (key: string) => `/dashboard/team/${handles[key]!.jobId}`;
+  const logHref = (key: string) => {
+    const h = handles[key]!;
+    return h.roomId ? projectHref(h.roomId, { tab: "chat", job: h.jobId }) : null;
+  };
 
   return (
     <Shell>
@@ -24,7 +29,8 @@ export default async function TeamPage() {
       {view.empty ? (
         <Card>
           <EmptyState title="No team work yet">
-            In ChatGPT, ask ThreadLink to “start team work” on a project. Progress shows up here.
+            Open a project and type <strong>@team</strong> and what you want built, or ask{" "}
+            {CONTROLLER_HINT} to “start team work” on a project. Progress shows up here.
           </EmptyState>
         </Card>
       ) : null}

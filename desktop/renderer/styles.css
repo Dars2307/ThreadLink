@@ -1009,3 +1009,52 @@ details.advanced > .copy-rows {
 .copy-row .copy {
   grid-area: copy;
 }
+
+/* ------------------------------------------------------------ declared plan */
+
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.plan-edit {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.plan-field select {
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  min-width: 200px;
+}
+
+.plan-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.plan-web {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ok-text {
+  color: var(--ready);
+}
+
+.warn-text {
+  color: var(--warn);
+}

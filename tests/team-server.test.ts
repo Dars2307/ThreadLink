@@ -13,7 +13,12 @@ import {
   toolInputs,
   type McpContext,
 } from "@/lib/mcp/tools";
-import { providerDetectionSchema, writeTeamState } from "@/lib/team/client-api";
+import {
+  providerDetectionSchema,
+  runtimeProviderPlanSchema,
+  setRuntimeProviderPlan,
+  writeTeamState,
+} from "@/lib/team/client-api";
 import * as model from "@/lib/team/model";
 import {
   decisionLabel,
@@ -593,6 +598,7 @@ describe("Team Mode MCP tools", () => {
         "finished",
         "jobId",
         "line",
+        "mode",
         "moreNodes",
         "nodes",
         "openFindings",
@@ -604,5 +610,136 @@ describe("Team Mode MCP tools", () => {
         "verdict",
       ].sort(),
     );
+  });
+});
+
+describe("collaboration chat: modes, observed models, owner notes, device plans", () => {
+  it("start_team_job passes mode and builder (always, so the mode-aware overload is used)", async () => {
+    const { ctx, rpc } = ctxWith({
+      start_team_job: { ...statusRow(), mode: "pair", builder: "codex", created: true },
+    });
+    const out = await startTeamJobTool(ctx, {
+      sessionId: S,
+      roomId: ROOM,
+      goal: "Add rate limiting",
+      mode: "pair",
+      builder: "codex",
+    });
+    expect(out.mode).toBe("pair");
+    expect(out.builder).toBe("codex");
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_mode: "pair", p_builder: "codex" });
+
+    const { ctx: ctx2, rpc: rpc2 } = ctxWith({ start_team_job: { ...statusRow(), created: true } });
+    await startTeamJobTool(ctx2, { sessionId: S, roomId: ROOM, goal: "g" });
+    expect(rpc2.mock.calls[0][1]).toMatchObject({ p_mode: null, p_builder: null });
+  });
+
+  it("the tool refuses an unknown mode or builder", () => {
+    const start = z.object(toolInputs.start_team_job);
+    expect(start.safeParse({ sessionId: S, roomId: ROOM, goal: "g", mode: "swarm" }).success).toBe(
+      false,
+    );
+    expect(
+      start.safeParse({ sessionId: S, roomId: ROOM, goal: "g", builder: "gemini" }).success,
+    ).toBe(false);
+  });
+
+  it("a status row from before modes still parses, as Team Mode", () => {
+    const s = toTeamStatus(statusRow());
+    expect(s.mode).toBe("team");
+    expect(s.builder).toBeNull();
+    expect(s.origin).toBe("controller");
+    expect(s.stopRequestedAt).toBeNull();
+  });
+
+  it("add_message carries the observed model; a malformed one is refused", () => {
+    const ok = teamWriteOpSchema.parse({
+      op: "add_message",
+      payload: { sender: "codex", type: "proposal", body: "hi", modelObserved: "gpt-5.1-codex" },
+    });
+    expect(toSqlPayload(ok)).toMatchObject({ model_observed: "gpt-5.1-codex" });
+    expect(
+      teamWriteOpSchema.safeParse({
+        op: "add_message",
+        payload: { sender: "codex", type: "proposal", body: "hi", modelObserved: "gpt 5; drop" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("read_owner_notes returns the notes and the stop request", async () => {
+    const { db, rpc } = dbWith({
+      team_job_write: {
+        ...statusRow(),
+        stop_requested_at: "2026-09-25T01:00:00Z",
+        op: "read_owner_notes",
+        result: {
+          notes: [
+            {
+              id: "tlcev_1",
+              seq: 7,
+              audience: "claude-code",
+              body: "@claude add tests",
+              created_at: "2026-09-25T00:59:00Z",
+            },
+          ],
+        },
+      },
+    });
+    const out = await writeTeamState(db, HASH, JOB, {
+      sessionId: S,
+      claimRef: "claim-1",
+      op: "read_owner_notes",
+      payload: {},
+    });
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_op: "read_owner_notes", p_payload: {} });
+    expect(out.stopRequestedAt).toBe("2026-09-25T01:00:00Z");
+    expect(out.ownerNotes).toEqual([
+      {
+        id: "tlcev_1",
+        seq: 7,
+        audience: "claude-code",
+        body: "@claude add tests",
+        createdAt: "2026-09-25T00:59:00Z",
+      },
+    ]);
+    expect(
+      teamWriteOpSchema.safeParse({ op: "read_owner_notes", payload: { limit: 21 } }).success,
+    ).toBe(false);
+  });
+
+  it("the Runtime can set a declared plan, and only a valid one for its provider", async () => {
+    expect(
+      runtimeProviderPlanSchema.safeParse({ provider: "codex", declaredPlan: "business_premium" })
+        .success,
+    ).toBe(true);
+    for (const bad of [
+      { provider: "codex", declaredPlan: "business" },
+      { provider: "codex", declaredPlan: "team" },
+      { provider: "claude-code", declaredPlan: "plus" },
+      { provider: "codex", declaredPlan: "pro", paidUsageEnabled: true },
+      { provider: "codex", declaredPlan: "pro", usagePolicy: "manual" },
+    ]) {
+      expect(runtimeProviderPlanSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    const { db, rpc } = dbWith({
+      set_runtime_provider_plan: {
+        provider: "codex",
+        declared_plan: "business_standard",
+        usage_policy: "balanced",
+        paid_usage_enabled: false,
+        detected: {},
+        detected_at: null,
+        updated_at: null,
+      },
+    });
+    const out = await setRuntimeProviderPlan(db, HASH, {
+      provider: "codex",
+      declaredPlan: "business_standard",
+    });
+    expect(out.declaredPlan).toBe("business_standard");
+    expect(rpc.mock.calls[0]).toEqual([
+      "set_runtime_provider_plan",
+      { p_token_hash: HASH, p_provider: "codex", p_declared_plan: "business_standard" },
+    ]);
   });
 });

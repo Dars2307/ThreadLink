@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { JOB_MODES, type JobMode } from "@/lib/chat/types";
+
 /**
  * Team Mode vocabulary and wire schemas for the server.
  *
@@ -149,6 +151,29 @@ export const USAGE_OUTCOMES = [
   "provider_error",
 ] as const;
 
+/** Why a job ended as it did (mirrors runtime/src/team/verdict-reasons.ts and the SQL check). */
+export const VERDICT_REASONS = [
+  "tests_failed",
+  "review_not_passed",
+  "agents_disagree",
+  "dependency_not_finished",
+  "plan_blocked",
+  "agent_unavailable",
+  "agent_not_in_project",
+  "usage_exhausted",
+  "model_mismatch",
+  "access_mismatch",
+  "agent_timed_out",
+  "agent_failed",
+  "changed_during_review",
+  "inspection_found_issues",
+  "no_review_or_tests",
+  "stopped_by_owner",
+  "unexpected_error",
+  "merge_conflict",
+  "no_suitable_model",
+] as const;
+
 /** Statuses only set_final may reach (plus "failed", which the carrier task sets). */
 export const TERMINAL_JOB_STATUSES = [
   "completed",
@@ -205,6 +230,12 @@ const boundedJson = (maxBytes: number) =>
 export const NODE_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 export const nodeKeySchema = z.string().regex(NODE_KEY_PATTERN);
 export const MODEL_ID_PATTERN = /^[A-Za-z0-9._:/@[\]-]{1,200}$/;
+/** The model the Runtime OBSERVED on an agent message (chat_events pattern). */
+export const OBSERVED_MODEL_PATTERN = /^[A-Za-z0-9._:[\]/-]{1,100}$/;
+
+export { JOB_MODES, type JobMode };
+export const JOB_ORIGINS = ["controller", "owner"] as const;
+export type JobOrigin = (typeof JOB_ORIGINS)[number];
 
 /** Test commands ThreadLink itself runs. Max 10, one line each, <= 300 chars. */
 export const verifyCommandsSchema = z.array(oneLine(300)).max(10);
@@ -338,6 +369,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         type: z.enum(MESSAGE_TYPES),
         round: round.optional(),
         body: boundedText(TEAM_SIZE_LIMITS.bodyBytes),
+        /** What the Runtime observed the model to be for this turn (never the requested one). */
+        modelObserved: z.string().regex(OBSERVED_MODEL_PATTERN).nullish(),
       })
       .strict(),
   }),
@@ -460,9 +493,18 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
       .object({
         verdict: z.enum(JOB_VERDICTS),
         summary: boundedText(4000).optional(),
+        reason: z.enum(VERDICT_REASONS).optional(),
         evidence: boundedJson(TEAM_SIZE_LIMITS.evidenceBytes),
       })
       .strict(),
+  }),
+  z.object({
+    // The owner's undelivered notes to this job (claim-gated, delivered once).
+    op: z.literal("read_owner_notes"),
+    payload: z
+      .object({ limit: z.number().int().min(1).max(20).optional() })
+      .strict()
+      .default({}),
   }),
 ]);
 export type TeamWriteOp = z.infer<typeof teamWriteOpSchema>;
@@ -528,6 +570,7 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         type: input.payload.type,
         round: input.payload.round,
         body: input.payload.body,
+        model_observed: input.payload.modelObserved ?? undefined,
       });
     case "add_finding": {
       const p = input.payload;
@@ -592,8 +635,11 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
       return compact({
         verdict: input.payload.verdict,
         summary: input.payload.summary,
+        reason: input.payload.reason,
         evidence: input.payload.evidence,
       });
+    case "read_owner_notes":
+      return compact({ limit: input.payload.limit });
   }
 }
 
@@ -635,6 +681,10 @@ export const startTeamJobInputSchema = z
       .min(TEAM_LIMITS.parallelAgents.min)
       .max(TEAM_LIMITS.parallelAgents.max)
       .optional(),
+    /** solo: one builder; pair: builder + the other provider reviewing; team: Team Mode. */
+    mode: z.enum(JOB_MODES).optional(),
+    /** Who builds, for solo/pair. Ignored for team. */
+    builder: z.enum(AGENT_PROVIDERS).optional(),
     // No verifyCommands here: ThreadLink runs them itself, outside any agent
     // sandbox, so only the project's owner sets them (in the room policy).
     idempotencyKey: z
@@ -756,6 +806,11 @@ export const teamStatusRowSchema = z.object({
   line: z.string().nullable(),
   summary: z.string().nullable(),
   goal: z.string(),
+  // Optional so a row from before collaboration chat still parses (as Team Mode).
+  mode: z.enum(JOB_MODES).optional(),
+  builder: z.enum(AGENT_PROVIDERS).nullable().optional(),
+  origin: z.enum(JOB_ORIGINS).optional(),
+  stop_requested_at: z.string().nullable().optional(),
   rounds: z.object({
     planning: z.object({ n: z.number(), max: z.number() }),
     review: z.object({ n: z.number(), max: z.number() }),
@@ -796,6 +851,12 @@ export type TeamStatus = {
   line: string | null;
   summary: string | null;
   goal: string;
+  mode: JobMode;
+  /** Solo/pair builder; null for Team Mode. */
+  builder: AgentProvider | null;
+  origin: JobOrigin;
+  /** Set when the owner said "@team stop": finish the current round, then stop. */
+  stopRequestedAt: string | null;
   rounds: { planning: { n: number; max: number }; review: { n: number; max: number } };
   parallelAgents: number;
   planHash: string | null;
@@ -826,6 +887,10 @@ export function toTeamStatus(r: TeamStatusRow): TeamStatus {
     line: r.line,
     summary: r.summary,
     goal: r.goal,
+    mode: r.mode ?? "team",
+    builder: r.builder ?? null,
+    origin: r.origin ?? "controller",
+    stopRequestedAt: r.stop_requested_at ?? null,
     rounds: r.rounds,
     parallelAgents: r.parallel_agents,
     planHash: r.plan_hash,
@@ -860,6 +925,17 @@ export const teamWriteResultSchema = teamStatusRowSchema.extend({
     plan_hash: z.string().optional(),
     round: z.number().optional(),
     opened: z.boolean().optional(),
+    notes: z
+      .array(
+        z.object({
+          id: z.string(),
+          seq: z.number(),
+          audience: z.enum(["claude-code", "codex", "team"]),
+          body: z.string(),
+          created_at: z.string(),
+        }),
+      )
+      .optional(),
   }),
 });
 

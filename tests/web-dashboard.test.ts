@@ -642,6 +642,29 @@ describe("Tasks and Conversations", () => {
     expect(view.teamJobs[0]).toMatchObject({ project: "Prism", status: "Building" });
   });
 
+  it("names the three ways to run and does not offer Exact when none is available", () => {
+    const { view } = deriveConversations(account, team);
+    expect(view.modes.map((m) => m.label)).toEqual([
+      "Background worker",
+      "Exact conversation",
+      "New headless session (doesn't open a window)",
+    ]);
+    const none = deriveConversations({ ...account, sessions: [] }, team).view.modes;
+    const exact = none.find((m) => m.key === "resume")!;
+    expect(exact.available).toBe(false);
+    expect(exact.description).toMatch(/No exact conversation is available/);
+    const withExact = deriveConversations(
+      {
+        ...account,
+        sessions: account.sessions.map((s) =>
+          s.role === "agent" ? { ...s, nativeSessionMode: "resume" as const } : s,
+        ),
+      },
+      team,
+    ).view.modes;
+    expect(withExact.find((m) => m.key === "resume")!.available).toBe(true);
+  });
+
   it("shows linked conversations with mode, project and status", () => {
     const { view } = deriveConversations(account, team);
     expect(view.conversations[0]).toMatchObject({
@@ -716,7 +739,8 @@ describe("Providers & plans", () => {
       "Reported plan": "Max",
       "Current model": "Claude Sonnet 5",
     });
-    expect(c!.note).toMatch(/detects is what counts/);
+    expect(c!.note).toMatch(/plan you choose here/);
+    expect(c!.note).toMatch(/never changes your choice/);
     expect(x!.title).toBe("ChatGPT / Codex");
     expect(x!.declared.label).toBe("Business Standard");
   });
@@ -735,7 +759,90 @@ describe("Providers & plans", () => {
       "Business Premium",
       "Enterprise",
       "Edu",
-      "Other / Unknown",
+      "Not set / Other",
+    ]);
+    // Business is always explicit: no generic "Business" option to choose.
+    expect(x.declared.options.map((o) => o.label)).not.toContain("Business");
+    expect(x.declared.options.map((o) => o.value)).not.toContain("business");
+  });
+
+  it.each(["business_standard", "business_premium"])(
+    "keeps the saved ChatGPT plan %s as the selected value (regression: it reverted to Unknown)",
+    (plan) => {
+      const saved = { ...codex, declaredPlan: plan };
+      const x = deriveProviders([saved], NOW).view.providers[1]!;
+      expect(x.declared.value).toBe(plan);
+      expect(x.declared.isSet).toBe(true);
+      expect(x.declared.label).toBe(
+        plan === "business_premium" ? "Business Premium" : "Business Standard",
+      );
+      expect(x.declared.options.map((o) => o.value)).toContain(plan);
+    },
+  );
+
+  it("never lets what the device detected replace the plan you chose", () => {
+    const reportsPlus = profile({
+      provider: "codex",
+      declaredPlan: "business_premium",
+      detected: { ...codex.detected, plan: "plus" },
+      detectedAt: codex.detectedAt,
+    });
+    const x = deriveProviders([reportsPlus], NOW).view.providers[1]!;
+    expect(x.declared).toMatchObject({ value: "business_premium", label: "Business Premium" });
+    expect(
+      Object.fromEntries(x.detected.rows.map((r) => [r.label, r.value]))["Reported plan"],
+    ).toBe("Plus");
+    expect(x.detected.planDiffers).toMatch(
+      /Codex reports Plus\. ThreadLink still uses the plan you chose/,
+    );
+
+    // A matching family ("Business" vs "Business Premium") is not called a difference.
+    const x2 = deriveProviders([{ ...codex, declaredPlan: "business_premium" }], NOW).view
+      .providers[1]!;
+    expect(x2.detected.planDiffers).toBeNull();
+  });
+
+  it("says plainly when Codex doesn't report a plan, instead of looking like the choice vanished", () => {
+    const silent = profile({
+      provider: "codex",
+      declaredPlan: "business_standard",
+      detected: { ...codex.detected, plan: null },
+      detectedAt: codex.detectedAt,
+    });
+    const x = deriveProviders([silent], NOW).view.providers[1]!;
+    expect(x.declared.label).toBe("Business Standard");
+    expect(x.detected.planNote).toBe(
+      "Codex doesn't report your plan — ThreadLink uses the plan you chose.",
+    );
+    expect(JSON.stringify(x.declared)).not.toMatch(/Unknown|Not reported/);
+  });
+
+  it("says 'Not set — choose your plan' when no plan was chosen", () => {
+    const [c, x] = deriveProviders([], NOW).view.providers;
+    expect(c!.declared).toMatchObject({ value: "unknown", isSet: false });
+    expect(c!.declared.label).toBe("Not set — choose your plan");
+    expect(x!.declared.label).toBe("Not set — choose your plan");
+    // A legacy ChatGPT "business"/"team" value asks for the explicit tier.
+    const legacy = profile({ provider: "codex", declaredPlan: "business" });
+    expect(deriveProviders([legacy], NOW).view.providers[1]!.declared).toMatchObject({
+      value: "unknown",
+      label: "Not set — choose Business Standard or Business Premium",
+    });
+  });
+
+  it("keeps Claude plans working, including Max 20x", () => {
+    const max20 = { ...claude, declaredPlan: "max_20x" };
+    const c = deriveProviders([max20], NOW).view.providers[0]!;
+    expect(c.declared).toMatchObject({ value: "max_20x", label: "Max 20x", isSet: true });
+    expect(c.detected.planDiffers).toBeNull(); // reported "Max" matches "Max 20x"
+    expect(c.declared.options.map((o) => o.value)).toEqual([
+      "free",
+      "pro",
+      "max_5x",
+      "max_20x",
+      "team",
+      "enterprise",
+      "unknown",
     ]);
   });
 

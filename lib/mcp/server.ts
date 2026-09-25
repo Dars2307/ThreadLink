@@ -200,9 +200,11 @@ export function buildThreadLinkMcpServer(ctx: McpContext): McpServer {
     {
       title: "Start a team job",
       description:
-        "Give a room's team (Claude Code and Codex, on the user's computer) a goal. They plan, " +
-        "build, cross-review and test it within bounded rounds. Returns a jobId immediately; the " +
-        "work is asynchronous, so check get_team_status.",
+        "Give a room's agents (Claude Code and Codex, on the user's computer) a goal. By default " +
+        "(mode 'team') they plan, build, cross-review and test it within bounded rounds; mode " +
+        "'pair' has one build and the other review; mode 'solo' has one agent build alone with " +
+        "no reviewer. Returns a jobId immediately; the work is asynchronous, so check " +
+        "get_team_status. The user can follow and add notes in the project chat on the dashboard.",
       inputSchema: toolInputs.start_team_job,
       annotations: { openWorldHint: false, destructiveHint: false },
     },

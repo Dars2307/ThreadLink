@@ -11,7 +11,6 @@ const NAV = [
   { href: "/dashboard/projects", label: "Projects" },
   { href: "/dashboard/conversations", label: "Conversations" },
   { href: "/dashboard/team", label: "Team" },
-  { href: "/dashboard/tasks", label: "Tasks" },
   { href: "/dashboard/devices", label: "Devices" },
   { href: "/dashboard/notifications", label: "Notifications" },
   { href: "/dashboard/settings", label: "Settings" },

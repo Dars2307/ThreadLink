@@ -157,13 +157,18 @@
         <div class="card stack" id="conversation-card" hidden>
           <h2>Run tasks using</h2>
           <div id="attach-mode"></div>
+          <p class="muted small">
+            ThreadLink never opens a Claude Code window. Requests run out of sight, and what
+            happened shows up in your chat and in this app.
+          </p>
         </div>
         <div class="card stack" id="conversation-pick" hidden>
           <h2>Choose a Claude conversation</h2>
           <div id="conversation-list" class="list"></div>
           <button id="attach-fresh" class="ghost small-btn" type="button">
-            Start a new Claude conversation for each request instead
+            Use a new headless session for each request instead
           </button>
+          <p id="attach-fresh-why" class="muted small"></p>
           <p id="attach-problem" class="small danger-text" hidden></p>
         </div>
         <div class="row">
@@ -222,7 +227,8 @@
         <div class="card stack">
           <h2>Providers &amp; plans</h2>
           <p class="muted small">
-            ThreadLink only uses your included subscription usage. Paid usage is off.
+            Your plan is the one you chose in ThreadLink; it decides which models ThreadLink may
+            use. What each app reports about itself is shown beside it.
           </p>
           <div id="providers" class="list"></div>
           <div class="card-head">

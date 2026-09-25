@@ -30,7 +30,9 @@ import {
   startTeamJob,
 } from "@/lib/team/client-api";
 import {
+  AGENT_PROVIDERS,
   controllerSpecSchema,
+  JOB_MODES,
   TEAM_LIMITS,
   TEAM_SIZE_LIMITS,
   type RoomView,
@@ -173,6 +175,18 @@ export const toolInputs = {
       .min(TEAM_LIMITS.parallelAgents.min)
       .max(TEAM_LIMITS.parallelAgents.max)
       .optional(),
+    mode: z
+      .enum(JOB_MODES)
+      .optional()
+      .describe(
+        "How to run it. 'team' (default): Claude Code and Codex plan, build and cross-review. " +
+          "'pair': one builds, the other reviews. 'solo': one agent builds alone, no reviewer. " +
+          "Solo and pair need the ThreadLink app 0.8 or later on the user's computer.",
+      ),
+    builder: z
+      .enum(AGENT_PROVIDERS)
+      .optional()
+      .describe("For solo or pair: who builds ('claude-code' or 'codex'). Ignored for team."),
     idempotencyKey: z
       .string()
       .regex(/^[A-Za-z0-9._:-]{1,128}$/)
@@ -477,6 +491,7 @@ export function conciseTeamStatus(s: TeamStatus) {
   return {
     jobId: s.jobId,
     room: s.roomName,
+    mode: s.mode,
     status: s.status,
     verdict: s.verdict,
     line: s.line,
@@ -546,6 +561,8 @@ export async function startTeamJobTool(ctx: McpContext, input: Input<"start_team
     maxPlanningRounds: input.maxPlanningRounds,
     maxReviewRounds: input.maxReviewRounds,
     parallelAgents: input.parallelAgents,
+    mode: input.mode,
+    builder: input.builder,
     idempotencyKey: input.idempotencyKey,
   });
   return {
@@ -553,6 +570,8 @@ export async function startTeamJobTool(ctx: McpContext, input: Input<"start_team
     taskId: job.taskId,
     created,
     status: job.status,
+    mode: job.mode,
+    builder: job.builder,
     budgets: {
       planningRounds: job.rounds.planning.max,
       reviewRounds: job.rounds.review.max,

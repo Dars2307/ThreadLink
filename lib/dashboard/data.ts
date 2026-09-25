@@ -6,14 +6,17 @@ import { listMyConnections } from "@/lib/connections/repository";
 import type { ThreadLinkView } from "@/lib/pairing/model";
 import type { OwnerProviderProfile } from "@/lib/providers/queries";
 import { listMyProviderProfiles } from "@/lib/providers/repository";
+import type { OwnerRoom } from "@/lib/rooms/queries";
 import { listMyRooms } from "@/lib/rooms/repository";
 import { listMyRuntimes, type OwnerRuntime, type OwnerWorkspace } from "@/lib/runtimes/queries";
 import type { OwnerSession } from "@/lib/sessions/queries";
 import { listMyRecentTasks, listMySessions, listMyThreadLinks } from "@/lib/sessions/repository";
 import type { RecentTask } from "@/lib/tasks/queries";
 import { getMyJobDetail, listMyRoomJobs } from "@/lib/team/owner";
+import type { OwnerJobSummary } from "@/lib/team/queries";
 
 import type { JobDetail, TeamData } from "./pages";
+import { controllerName } from "./view-model";
 
 /** Everything the dashboard pages read, loaded once per request. */
 export type DashboardAccount = {
@@ -93,10 +96,10 @@ export async function loadTeam(
   }
 }
 
-/** One job's full detail plus its project name, or null (not found / not yours / failure). */
+/** One job's full detail plus its project, or null (not found / not yours / failure). */
 export async function loadJob(
   jobId: string,
-): Promise<{ detail: JobDetail; project: string; now: number } | null> {
+): Promise<{ detail: JobDetail; project: string; roomId: string | null; now: number } | null> {
   try {
     const detail = await getMyJobDetail(jobId);
     if (!detail) return null;
@@ -109,6 +112,7 @@ export async function loadJob(
     return {
       detail,
       project: index >= 0 ? candidates[index]!.name : "Project",
+      roomId: index >= 0 ? candidates[index]!.roomId : null,
       now: Date.now(),
     };
   } catch {
@@ -123,6 +127,40 @@ export async function loadProviders(): Promise<{
 } | null> {
   try {
     return { profiles: await listMyProviderProfiles(), now: Date.now() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One project (room) for its page: the room, its jobs (newest first), the
+ * detail of the selected job and the connected controller's name.
+ *
+ * The room is found among the owner's own rooms (RLS + owner re-check), so an
+ * id that is not yours reads exactly like one that does not exist: null. The
+ * selected job must be one of this room's jobs; any other id is ignored.
+ */
+export async function loadProject(
+  roomId: string,
+  jobId: string | null,
+): Promise<{
+  room: OwnerRoom;
+  jobs: OwnerJobSummary[];
+  detail: JobDetail | null;
+  controller: string;
+  now: number;
+} | null> {
+  try {
+    const rooms = await listMyRooms();
+    const room = rooms.find((r) => r.roomId === roomId && r.status !== "deleted");
+    if (!room) return null;
+    const [jobs, connections] = await Promise.all([
+      room.jobs.total > 0 ? listMyRoomJobs(room.roomId) : Promise.resolve([]),
+      listMyConnections().catch(() => []),
+    ]);
+    const selected = (jobId ? jobs.find((j) => j.jobId === jobId) : undefined) ?? jobs[0];
+    const detail = selected ? await getMyJobDetail(selected.jobId) : null;
+    return { room, jobs, detail, controller: controllerName(connections), now: Date.now() };
   } catch {
     return null;
   }

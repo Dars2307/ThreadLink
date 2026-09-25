@@ -239,7 +239,8 @@ describe("attaching a conversation", () => {
     expect(worker?.querySelector("input")?.checked).toBe(true);
     expect(exact?.querySelector("input")?.checked).toBe(false);
     expect(worker?.textContent).toContain("Works while Claude Code is open");
-    expect(exact?.textContent).toContain("must not already be open");
+    expect(exact?.textContent).toContain("Uses one of your existing Claude conversations");
+    expect(exact?.textContent).toContain("isn't open");
   });
 
   it("attaches in background mode by default", async () => {
@@ -413,7 +414,7 @@ describe("the attach screen under overlapping renders", () => {
     buttonWith("Choose")!.dispatchEvent(new Event("click"));
     await settle();
 
-    buttonWith("Start a new Claude conversation")!.dispatchEvent(new Event("click"));
+    buttonWith("Use a new headless session")!.dispatchEvent(new Event("click"));
     await settle();
 
     expect(calls.attach).toHaveLength(1);
@@ -443,5 +444,119 @@ describe("the attach screen under overlapping renders", () => {
     exact.dispatchEvent(new Event("change"));
     await settle();
     expect(document.getElementById("view")?.textContent).toContain("Claude is currently open");
+  });
+});
+
+describe("mode wording is truthful", () => {
+  const openAttach = async (conversations?: unknown[]) => {
+    mount(appState([]));
+    await settle();
+    if (conversations) {
+      const bridge = (window as unknown as { threadlink: Record<string, unknown> }).threadlink;
+      bridge.listConversations = vi.fn(async () => conversations);
+    }
+    await navTo("Conversations");
+    buttonWith("Attach another")!.dispatchEvent(new Event("click"));
+    await settle();
+  };
+
+  it("describes each mode in the agreed words", async () => {
+    await openAttach();
+    expect(modeOption("Background worker")?.textContent).toContain(
+      "Works while Claude Code is open",
+    );
+    expect(modeOption("Background worker")?.textContent).toContain("Default");
+    const text = document.getElementById("view")?.textContent ?? "";
+    expect(text).toContain("Use a new headless session for each request instead");
+    expect(document.getElementById("attach-fresh-why")?.textContent).toBe(
+      "Doesn't open a window; each request starts a fresh session.",
+    );
+  });
+
+  it("never implies that a visible window opens", async () => {
+    await openAttach();
+    const text = document.getElementById("view")?.textContent ?? "";
+    expect(text).toContain("never opens a Claude Code window");
+    // Everything the app can say about modes, in the source and on screen.
+    for (const source of [APP_JS, HTML, text]) {
+      // Only ever said in the negative ("never opens", "Doesn't open").
+      const claims = source.match(/[^.;]*opens? (a|the|in a) [^.;]*window[^.;]*/gi) ?? [];
+      for (const claim of claims) expect(claim).toMatch(/never|n't|not/i);
+      expect(source).not.toMatch(/visible (Claude )?(Code )?window|you can watch/i);
+      expect(source).not.toMatch(/remote[- ]control/i);
+      expect(source).not.toMatch(/visible conversation/i);
+    }
+  });
+
+  it("names a new-session binding as a headless session", async () => {
+    mount(
+      appState([
+        conversation({
+          mode: "fresh",
+          nativeSessionId: null,
+          localBindingRef: "cc:fresh",
+          title: "Each request",
+        }),
+      ]),
+    );
+    await settle();
+    const text = document.getElementById("view")?.textContent ?? "";
+    expect(text).toContain("New headless session");
+    expect(text).not.toContain("New conversation each time");
+  });
+});
+
+describe("exact mode with nothing to use exactly", () => {
+  const openAttachWith = async (conversations: unknown[]) => {
+    mount(appState([]));
+    await settle();
+    const bridge = (window as unknown as { threadlink: Record<string, unknown> }).threadlink;
+    bridge.listConversations = vi.fn(async () => conversations);
+    await navTo("Conversations");
+    buttonWith("Attach another")!.dispatchEvent(new Event("click"));
+    await settle();
+  };
+
+  it("explains why and does not let exact be chosen", async () => {
+    await openAttachWith([]);
+    const exact = modeOption("Exact conversation")!;
+    expect(exact.querySelector("input")?.disabled).toBe(true);
+    expect(exact.textContent).toContain("No Claude Code conversations found in this folder yet");
+    expect(modeOption("Background worker")!.querySelector("input")?.checked).toBe(true);
+    expect(document.getElementById("conversation-list")?.textContent).toContain(
+      "No Claude Code conversations found in this folder yet",
+    );
+    // The headless option is still there, so the folder is not a dead end.
+    expect(buttonWith("Use a new headless session")).toBeTruthy();
+  });
+
+  it("does not offer exact when every conversation is already attached", async () => {
+    await openAttachWith([
+      {
+        nativeSessionId: NATIVE,
+        title: "Already here",
+        lastUsedAt: new Date().toISOString(),
+        busy: false,
+        attached: true,
+        runtime: "claude-code",
+      },
+    ]);
+    const exact = modeOption("Exact conversation")!;
+    expect(exact.querySelector("input")?.disabled).toBe(true);
+    expect(exact.textContent).toContain("already attached");
+  });
+
+  it("offers exact again once there is a conversation to use", async () => {
+    await openAttachWith([
+      {
+        nativeSessionId: NATIVE,
+        title: "Usable",
+        lastUsedAt: new Date().toISOString(),
+        busy: false,
+        attached: false,
+        runtime: "claude-code",
+      },
+    ]);
+    expect(modeOption("Exact conversation")!.querySelector("input")?.disabled).toBe(false);
   });
 });

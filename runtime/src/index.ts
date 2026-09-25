@@ -26,11 +26,17 @@ import { canonicalizeBaseUrl } from "./endpoints.ts";
 import { defaultConfigDir, loadConfig, saveConfig } from "./state.ts";
 
 export { ApiError, ThreadLinkApi, validateBaseUrl } from "./api.ts";
-export type { DeviceStart, LinkView, RuntimeView } from "./api.ts";
+export type { DeviceStart, LinkView, ProviderProfile, RuntimeView } from "./api.ts";
 export { ClaudeCodeAdapter, UnavailableAdapter, defaultAdapters } from "./adapters/index.ts";
 export type * from "./adapters/types.ts";
-export { RuntimeEngine } from "./engine.ts";
+export { DECLARABLE_PLANS, RuntimeEngine } from "./engine.ts";
 export type * from "./engine.ts";
+export type {
+  CursorDetection,
+  ProviderCapability,
+  ProviderId,
+  ProviderStatus,
+} from "./team/providers.ts";
 export { detectIdentity, remoteEnvironment, runtimePlatform } from "./platform.ts";
 export type * from "./platform.ts";
 export { defaultConfigDir, loadConfig, migrateBaseUrl, saveConfig } from "./state.ts";
@@ -44,7 +50,7 @@ export {
 export type { CanonicalizeResult, ThreadLinkChannel } from "./endpoints.ts";
 export { maskSessionId } from "./claude-sessions.ts";
 
-export const RUNTIME_VERSION = "0.7.0";
+export const RUNTIME_VERSION = "0.8.0";
 
 export type RuntimeContext = {
   configDir: string;

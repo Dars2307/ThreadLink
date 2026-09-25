@@ -114,12 +114,12 @@ function allJobs(team: TeamData): Job[] {
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 }
 
-function detailsById(team: TeamData): Map<string, JobDetail> {
+export function detailsById(team: TeamData): Map<string, JobDetail> {
   return new Map(team.details.map((d) => [d.jobId, d]));
 }
 
 /** Which providers took part in a room, from its jobs; a new room has the default team. */
-function roomTeam(roomId: string, team: TeamData, details: Map<string, JobDetail>): string {
+export function roomTeam(roomId: string, team: TeamData, details: Map<string, JobDetail>): string {
   const providers = new Set<string>();
   for (const job of team.jobsByRoom[roomId] ?? []) {
     const d = details.get(job.jobId);
@@ -145,7 +145,7 @@ function decisionsNeedingYou(detail: JobDetail | undefined): JobDetail["decision
   return detail ? detail.decisions.filter((d) => d.needsYou) : [];
 }
 
-function trim(text: string, max = 90): string {
+export function trim(text: string, max = 90): string {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
@@ -198,7 +198,7 @@ export type HomeView = {
   needsYou: AttentionItem[];
 };
 
-function projectActivity(
+export function projectActivity(
   room: OwnerRoom,
   team: TeamData,
   details: Map<string, JobDetail>,
@@ -736,7 +736,7 @@ function jobCard(j: Job, d: JobDetail | undefined, now: number, bag: HandleBag):
   const s = jobState(j.status, j.verdict);
   const f = findingsText(d);
   return {
-    key: bag.add("j", { jobId: j.jobId }),
+    key: bag.add("j", { jobId: j.jobId, roomId: j.roomId }),
     project: j.roomName,
     goal: trim(j.goal, 200),
     status: s.label,
@@ -850,7 +850,7 @@ export function deriveTeamLog(
       agents: agentLines(detail),
       messages: {
         available: false,
-        note: "Agent-to-agent messages are kept with the job. ChatGPT can show them with “show the full team log”.",
+        note: "Agent-to-agent messages appear in the project’s Chat tab.",
       },
       findings: paginate(
         detail.findings.recent.map((x, i) => ({
@@ -953,7 +953,7 @@ export function deriveTasks(account: AccountData, team: TeamData): PageModel<Tas
     .map((j) => {
       const s = jobState(j.status, j.verdict);
       return {
-        key: bag.add("j", { jobId: j.jobId }),
+        key: bag.add("j", { jobId: j.jobId, roomId: j.roomId }),
         project: j.roomName,
         goal: trim(j.goal),
         status: s.label,
@@ -1020,7 +1020,48 @@ export type ConversationsView = {
   chats: { key: string; name: string; app: string; lastUsed: string }[];
   /** Choices for "Change Claude conversation" (keys resolve to sessions in handles). */
   choices: { key: string; name: string }[];
+  /** The ways work can run, and whether each is available right now. */
+  modes: { key: string; label: string; description: string; available: boolean }[];
 };
+
+/**
+ * The three ways work reaches Claude Code. "Exact conversation" is only
+ * available once one has been chosen in the ThreadLink app; until then it is
+ * explained, not offered.
+ */
+export function conversationModes(
+  sessions: Pick<OwnerSession, "role" | "status" | "nativeSessionMode">[],
+): ConversationsView["modes"] {
+  const exact = sessions.some(
+    (s) =>
+      s.role === "agent" &&
+      (s.status === "active" || s.status === "idle") &&
+      s.nativeSessionMode === "resume",
+  );
+  return [
+    {
+      key: "worker",
+      label: "Background worker",
+      description:
+        "The ThreadLink app picks up work in the background while it runs on your computer.",
+      available: true,
+    },
+    {
+      key: "resume",
+      label: "Exact conversation",
+      description: exact
+        ? "Continues one Claude Code conversation you chose. It must not be open in Claude Code at the same time."
+        : "No exact conversation is available yet. Choose one in the ThreadLink app on your computer; until then this can't be used.",
+      available: exact,
+    },
+    {
+      key: "fresh",
+      label: "New headless session (doesn't open a window)",
+      description: "Starts a new Claude Code session in the background for each request.",
+      available: true,
+    },
+  ];
+}
 
 const LINK_TONE: Record<string, Tone> = {
   ready: "success",
@@ -1108,7 +1149,10 @@ export function deriveConversations(
     name: conversationName(s, null),
   }));
 
-  return { view: { conversations, pending, chats, choices }, handles: bag.handles };
+  return {
+    view: { conversations, pending, chats, choices, modes: conversationModes(account.sessions) },
+    handles: bag.handles,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,11 +1280,25 @@ export function deriveDevices(
 export type ProviderCard = {
   provider: AgentProvider;
   title: string;
-  declared: { value: string; label: string; options: { value: string; label: string }[] };
+  /**
+   * What the owner chose. This is ThreadLink's plan of record: detection never
+   * replaces it. `value` is always the saved value (the select is keyed on it).
+   */
+  declared: {
+    value: string;
+    label: string;
+    isSet: boolean;
+    options: { value: string; label: string }[];
+  };
+  /** What the device reported. Shown beside the choice, never instead of it. */
   detected: {
     seen: boolean;
     when: string;
     rows: { label: string; value: string }[];
+    /** Plain words when the provider does not report a plan at all. */
+    planNote: string | null;
+    /** Set when the provider reports a different plan than the one chosen. */
+    planDiffers: string | null;
   };
   note: string;
   planWarning: string | null;
@@ -1263,8 +1321,45 @@ const PROVIDER_VENDOR: Record<AgentProvider, string> = {
   codex: "ChatGPT",
 };
 
+const PROVIDER_SHORT: Record<AgentProvider, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+};
+
 const yesNo = (v: boolean | null, yes: string, no: string) =>
   v === null ? "Not reported" : v ? yes : no;
+
+/** Legacy ChatGPT values the database no longer accepts (migrated to unknown). */
+const LEGACY_CHATGPT_BUSINESS = new Set(["team", "business"]);
+
+/**
+ * The owner's chosen plan exactly as saved. "unknown" (or any value no longer
+ * offered) reads as "not set" so it never looks like a choice that vanished.
+ */
+export function declaredPlanView(provider: AgentProvider, saved: string): ProviderCard["declared"] {
+  const labels = provider === "claude-code" ? CLAUDE_PLAN_LABELS : CHATGPT_PLAN_LABELS;
+  const known = saved !== "unknown" && Object.hasOwn(labels, saved);
+  return {
+    value: known ? saved : "unknown",
+    label: known
+      ? labels[saved]!
+      : provider === "codex" && LEGACY_CHATGPT_BUSINESS.has(saved)
+        ? "Not set — choose Business Standard or Business Premium"
+        : "Not set — choose your plan",
+    isSet: known,
+    options: Object.entries(labels).map(([value, label]) => ({
+      value,
+      label: value === "unknown" ? "Not set / Other" : label,
+    })),
+  };
+}
+
+/** "Max" matches "Max 5x"; "Business" matches "Business Premium". */
+function reportedMatchesDeclared(reported: string, declared: string): boolean {
+  const r = reported.toLowerCase();
+  const d = declared.toLowerCase();
+  return d === r || d.startsWith(`${r} `);
+}
 
 export function deriveProviders(
   profiles: OwnerProviderProfile[],
@@ -1288,19 +1383,16 @@ export function deriveProviders(
         },
         detectedAt: null,
       } satisfies OwnerProviderProfile);
-    const labels = provider === "claude-code" ? CLAUDE_PLAN_LABELS : CHATGPT_PLAN_LABELS;
     const d = p.detected;
     const seen = p.detectedAt !== null;
     const working = d.installed === true && d.authenticated === true;
     const product = providerProductName(provider);
+    const declared = declaredPlanView(provider, p.declaredPlan);
+    const reported = detectedPlanLabel(provider, d.plan);
     return {
       provider,
       title: PROVIDER_TITLES[provider],
-      declared: {
-        value: p.declaredPlan in labels ? p.declaredPlan : "unknown",
-        label: labels[p.declaredPlan] ?? labels.unknown!,
-        options: Object.entries(labels).map(([value, label]) => ({ value, label })),
-      },
+      declared,
       detected: {
         seen,
         when: seen
@@ -1311,7 +1403,7 @@ export function deriveProviders(
           { label: "Signed in", value: yesNo(d.authenticated, "Yes", "No") },
           {
             label: "Reported plan",
-            value: detectedPlanLabel(provider, d.plan) ?? "Not reported",
+            value: reported ?? `${PROVIDER_SHORT[provider]} doesn't report it`,
           },
           {
             label: "Current model",
@@ -1319,8 +1411,15 @@ export function deriveProviders(
           },
           ...(d.version ? [{ label: "Version", value: d.version }] : []),
         ],
+        planNote: reported
+          ? null
+          : `${PROVIDER_SHORT[provider]} doesn't report your plan — ThreadLink uses the plan you chose.`,
+        planDiffers:
+          reported && declared.isSet && !reportedMatchesDeclared(reported, declared.label)
+            ? `${PROVIDER_SHORT[provider]} reports ${reported}. ThreadLink still uses the plan you chose; change it above if it's wrong.`
+            : null,
       },
-      note: "What your device detects is what counts. The plan you choose here is only a hint for how ThreadLink plans work.",
+      note: "ThreadLink plans work with the plan you choose here. What your device reports is shown alongside and never changes your choice.",
       planWarning:
         provider === "claude-code" && p.declaredPlan === "free" && !working
           ? "Claude Code is not included on the Free plan."

@@ -1,5 +1,6 @@
 import { requestPairingAction } from "@/app/dashboard/actions";
 import { CopyField } from "@/components/copy-button";
+import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { Badge, buttonStyles, Card, cx } from "@/components/ui";
 import type { SetupStep } from "@/lib/dashboard/view-model";
 import type { OwnerSession } from "@/lib/sessions/queries";
@@ -153,9 +154,10 @@ function StepBody({
         . Then confirm on your computer.
       </p>
       {controllerSessions.length && agentSessions.length ? (
-        <form
+        <ActionForm
           action={requestPairingAction}
-          className="bg-surface-muted flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-end"
+          className="bg-surface-muted flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:flex-wrap sm:items-end"
+          statusClassName="w-full"
         >
           <label className="flex flex-1 flex-col gap-1">
             <span className="text-subtle text-xs">Or link from here: conversation</span>
@@ -184,10 +186,10 @@ function StepBody({
               ))}
             </select>
           </label>
-          <button type="submit" className={buttonStyles.primary}>
+          <SubmitButton className={buttonStyles.primary} pendingLabel="Linking…">
             Link
-          </button>
-        </form>
+          </SubmitButton>
+        </ActionForm>
       ) : null}
     </div>
   );

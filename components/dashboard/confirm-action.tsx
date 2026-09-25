@@ -1,9 +1,11 @@
 "use client";
 
-import { useId, useRef, type ReactNode } from "react";
+import { useActionState, useId, useRef, type ReactNode } from "react";
 import { useFormStatus } from "react-dom";
 
+import { ActionStatus } from "@/components/dashboard/action-form";
 import { buttonStyles, cx } from "@/components/ui";
+import { runAction, type ActionResult } from "@/lib/dashboard/action-result";
 
 function Submit({ label, tone }: { label: string; tone: "danger" | "primary" }) {
   const { pending } = useFormStatus();
@@ -26,6 +28,9 @@ function Submit({ label, tone }: { label: string; tone: "danger" | "primary" }) 
  * A button that opens a confirmation dialog; the action runs only from the
  * dialog's confirm button. `fields` become hidden inputs (identifiers stay out
  * of the visible page).
+ *
+ * On failure the dialog stays open and says why in plain words; on success it
+ * closes and the outcome is announced next to the button. Nothing is silent.
  */
 export function ConfirmAction({
   action,
@@ -37,7 +42,7 @@ export function ConfirmAction({
   tone = "danger",
   triggerClassName,
 }: {
-  action: (formData: FormData) => Promise<void>;
+  action: (formData: FormData) => Promise<ActionResult | void>;
   fields: Record<string, string>;
   label: string;
   title: string;
@@ -48,8 +53,19 @@ export function ConfirmAction({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const id = useId();
+  const [state, formAction] = useActionState<ActionResult | null, FormData>(
+    async (_previous, formData) => {
+      const result = await runAction(action, formData, "Done.");
+      if (result.ok) dialog.current?.close();
+      return result;
+    },
+    null,
+  );
+  const inDialog = state && !state.ok ? state : null;
+  const outside = state && state.ok ? state : null;
+
   return (
-    <>
+    <span className="inline-flex flex-col items-start gap-1">
       <button
         type="button"
         className={
@@ -59,19 +75,14 @@ export function ConfirmAction({
       >
         {label}
       </button>
+      <ActionStatus state={outside} />
       <dialog
         ref={dialog}
         aria-labelledby={`${id}-title`}
         aria-describedby={`${id}-body`}
         className="border-border bg-surface text-foreground shadow-card m-auto w-[min(30rem,calc(100vw-2rem))] rounded-2xl border p-0 backdrop:bg-black/50"
       >
-        <form
-          action={async (formData) => {
-            await action(formData);
-            dialog.current?.close();
-          }}
-          className="flex flex-col gap-4 p-5 sm:p-6"
-        >
+        <form action={formAction} className="flex flex-col gap-4 p-5 sm:p-6">
           {Object.entries(fields).map(([name, value]) => (
             <input key={name} type="hidden" name={name} value={value} />
           ))}
@@ -81,6 +92,7 @@ export function ConfirmAction({
           <div id={`${id}-body`} className="text-muted flex flex-col gap-2 text-sm">
             {children}
           </div>
+          <ActionStatus state={inDialog} className="text-sm" />
           <div className="flex flex-wrap justify-end gap-2 pt-1">
             <button
               type="button"
@@ -93,6 +105,6 @@ export function ConfirmAction({
           </div>
         </form>
       </dialog>
-    </>
+    </span>
   );
 }

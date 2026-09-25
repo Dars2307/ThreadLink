@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { updateRuntimeAction } from "@/app/dashboard/actions";
+import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { SettingsNav } from "@/components/dashboard/settings-nav";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { ThemeChoice } from "@/components/dashboard/theme-choice";
@@ -22,7 +23,7 @@ const MORE = [
   {
     href: "/dashboard/settings/apps",
     title: "Connected apps",
-    text: "Connect ChatGPT and manage the apps that can send work.",
+    text: "Connect ChatGPT, Claude or another MCP client, and manage the apps that can send work.",
   },
   {
     href: "/dashboard/settings/cleanup",
@@ -60,15 +61,21 @@ export default async function SettingsPage() {
           ThreadLink app
         </CardTitle>
         {primary ? (
-          <form action={updateRuntimeAction} className="flex flex-col gap-2">
+          <ActionForm action={updateRuntimeAction} className="flex flex-col gap-2">
             <input type="hidden" name="runtimeId" value={handles[primary.key]!.runtimeId} />
             <input type="hidden" name="intent" value="settings" />
             <label className="text-muted flex items-center gap-2 text-sm">
-              <input type="checkbox" name="autoStart" defaultChecked={primary.settings.autoStart} />
+              <input
+                key={String(primary.settings.autoStart)}
+                type="checkbox"
+                name="autoStart"
+                defaultChecked={primary.settings.autoStart}
+              />
               Start ThreadLink when I log in
             </label>
             <label className="text-muted flex items-center gap-2 text-sm">
               <input
+                key={String(primary.settings.autoReconnect)}
                 type="checkbox"
                 name="autoReconnect"
                 defaultChecked={primary.settings.autoReconnect}
@@ -77,6 +84,7 @@ export default async function SettingsPage() {
             </label>
             <label className="text-muted flex items-center gap-2 text-sm">
               <input
+                key={String(primary.settings.notifications)}
                 type="checkbox"
                 name="notifications"
                 defaultChecked={primary.settings.notifications}
@@ -84,14 +92,12 @@ export default async function SettingsPage() {
               Show desktop notifications
             </label>
             <div className="flex flex-wrap gap-2 pt-1">
-              <button type="submit" className={buttonStyles.secondary}>
-                Save
-              </button>
+              <SubmitButton>Save</SubmitButton>
               <Link href="/dashboard/devices" className={buttonStyles.ghost}>
                 All devices
               </Link>
             </div>
-          </form>
+          </ActionForm>
         ) : (
           <EmptyState title="No device yet">
             Install the ThreadLink app to see these options.

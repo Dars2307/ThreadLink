@@ -3,7 +3,13 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { ConversationBinding, ProviderAdapter } from "./adapters/types.ts";
-import { ApiError, type LinkView, type RuntimeView, type ThreadLinkApi } from "./api.ts";
+import {
+  ApiError,
+  type LinkView,
+  type ProviderProfile,
+  type RuntimeView,
+  type ThreadLinkApi,
+} from "./api.ts";
 import { DEFAULT_BACKOFF, nextDelay, type BackoffOptions } from "./backoff.ts";
 import {
   acquireSessionLock,
@@ -28,6 +34,13 @@ import {
 import type { ProviderDiscovery } from "./team/discovery.ts";
 import { TEAM_TASK_TYPE, TeamExecutor } from "./team/executor.ts";
 import type { TeamProgress } from "./team/orchestrator.ts";
+import {
+  detectCursor,
+  providerCapabilities,
+  type CursorDetection,
+  type ProviderCapability,
+} from "./team/providers.ts";
+import { CHATGPT_PLANS, CLAUDE_PLANS } from "./team/types.ts";
 import { UsageGovernor } from "./team/usage.ts";
 import { processNextTask } from "./worker.ts";
 
@@ -135,6 +148,12 @@ export type EngineSnapshot = {
    */
   teamProviders: TeamProviderView[];
   /**
+   * Every coding agent ThreadLink knows, with what it can do and whether it is
+   * usable here: Claude Code, Codex, and Cursor (detect-only, always
+   * "not_supported_yet"). Empty until discovery has run.
+   */
+  providerCapabilities: ProviderCapability[];
+  /**
    * True once the trouble has lasted long enough that the user should be
    * offered a way out (sign in again / check the address) instead of watching
    * "Reconnecting..." forever. The engine keeps retrying regardless.
@@ -204,6 +223,30 @@ export type TeamProviderView = {
   detail: string | null;
 };
 
+/** One provider as the desktop app's settings show it: the owner's plan and what was found here. */
+export type ProviderProfileView = {
+  provider: "claude-code" | "codex";
+  /** The owner's declared plan (server-side truth). Null when the server did not say. */
+  declaredPlan: string | null;
+  usagePolicy: string | null;
+  paidUsageEnabled: boolean | null;
+  /** What discovery found on this computer. Null before discovery has run. */
+  detected: TeamProviderView | null;
+  capability: ProviderCapability | null;
+};
+
+export type ProviderProfilesView = {
+  profiles: ProviderProfileView[];
+  /** Every provider, including detect-only ones (Cursor). */
+  capabilities: ProviderCapability[];
+};
+
+/** The plans an owner can declare, per provider. The server checks them again. */
+export const DECLARABLE_PLANS: Record<"claude-code" | "codex", readonly string[]> = {
+  "claude-code": CLAUDE_PLANS,
+  codex: CHATGPT_PLANS,
+};
+
 export type EngineEvent =
   | { type: "snapshot"; snapshot: EngineSnapshot }
   | { type: "activity"; activity: ActivityEntry }
@@ -240,7 +283,9 @@ type Api = Pick<
   | "blocked"
   | "teamWrite"
   | "reportProviderDetection"
->;
+> &
+  // Optional so embedded engines and older test doubles need not provide them.
+  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan">>;
 
 export type EngineOptions = {
   api: Api;
@@ -266,6 +311,8 @@ export type EngineOptions = {
   teamExecutor?: (workspace: string, sessionId: string) => Executor;
   /** How to find Team Mode agents on this computer. Omitted = no discovery. */
   discoverTeam?: (() => Promise<ProviderDiscovery[]>) | null;
+  /** How to look for a Cursor CLI (detect-only, never run). Defaults to a PATH lookup. */
+  detectCursor?: () => CursorDetection;
 };
 
 const defaultSleep = (ms: number, signal: AbortSignal) =>
@@ -360,8 +407,10 @@ const isNetworkError = (e: unknown) =>
   e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429);
 
 export class RuntimeEngine {
-  readonly #o: Required<Omit<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam">> &
-    Pick<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam">;
+  readonly #o: Required<
+    Omit<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam" | "detectCursor">
+  > &
+    Pick<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam" | "detectCursor">;
   readonly #listeners = new Set<(e: EngineEvent) => void>();
   readonly #claimRef = `runtime-${randomUUID()}`;
   /**
@@ -380,6 +429,7 @@ export class RuntimeEngine {
   /** Newest first, capped at ACTIVITY_LIMIT. */
   #activity: ActivityEntry[] = [];
   #teamProviders: TeamProviderView[] = [];
+  #providerCapabilities: ProviderCapability[] = [];
   /** Team job progress by job id, in insertion order; capped. */
   #team = new Map<string, TeamProgress>();
   /** `${taskId}:${event}` already mirrored, so a retry cannot post it twice. */
@@ -474,6 +524,7 @@ export class RuntimeEngine {
       activity: [...this.#activity],
       team: [...this.#team.values()].reverse(),
       teamProviders: this.#teamProviders,
+      providerCapabilities: this.#providerCapabilities,
       needsAttention: this.#needsAttention,
     };
   }
@@ -568,6 +619,9 @@ export class RuntimeEngine {
         remaining: "unknown" as const,
         detail: p.detail ?? null,
       }));
+      // Cursor is looked for on PATH only; nothing is run.
+      const cursor = (this.#o.detectCursor ?? detectCursor)();
+      this.#providerCapabilities = providerCapabilities(found, cursor);
       this.#changed();
       // Report to ThreadLink with exactly the keys it accepts. The local
       // executable path and any free-text detail stay on this computer.
@@ -593,6 +647,53 @@ export class RuntimeEngine {
       /* discovery is advisory; a failure leaves the last known state */
     }
     return this.#teamProviders;
+  }
+
+  /**
+   * The owner's provider profiles from ThreadLink, joined with what discovery
+   * found on this computer and what each provider can do. For the desktop
+   * app's settings.
+   */
+  async getProviderProfiles(): Promise<ProviderProfilesView> {
+    if (!this.#o.api.providerProfiles) throw new Error("Provider profiles are not available.");
+    return this.#profilesView(await this.#o.api.providerProfiles());
+  }
+
+  /**
+   * Sets the owner's declared plan for one provider. Only the plan: usage
+   * policy and paid usage stay the owner's to change on the website. The value
+   * is checked here and again by the server.
+   */
+  async setProviderPlan(
+    provider: "claude-code" | "codex",
+    declaredPlan: string,
+  ): Promise<ProviderProfilesView> {
+    if (provider !== "claude-code" && provider !== "codex") {
+      throw new Error("That is not a provider ThreadLink supports.");
+    }
+    if (!DECLARABLE_PLANS[provider].includes(declaredPlan)) {
+      throw new Error("That plan is not one ThreadLink knows for this provider.");
+    }
+    if (!this.#o.api.setDeclaredPlan) throw new Error("Provider plans cannot be changed here.");
+    const { profiles } = await this.#o.api.setDeclaredPlan(provider, declaredPlan);
+    return this.#profilesView(profiles);
+  }
+
+  #profilesView(profiles: ProviderProfile[]): ProviderProfilesView {
+    return {
+      profiles: (["claude-code", "codex"] as const).map((provider) => {
+        const p = profiles.find((x) => x.provider === provider);
+        return {
+          provider,
+          declaredPlan: p?.declaredPlan ?? null,
+          usagePolicy: p?.usagePolicy ?? null,
+          paidUsageEnabled: p ? p.paidUsageEnabled : null,
+          detected: this.#teamProviders.find((t) => t.provider === provider) ?? null,
+          capability: this.#providerCapabilities.find((c) => c.id === provider) ?? null,
+        };
+      }),
+      capabilities: this.#providerCapabilities,
+    };
   }
 
   async loadWorkspaces() {

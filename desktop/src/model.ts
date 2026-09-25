@@ -89,6 +89,8 @@ export function statusLine(state: AppState): { title: string; detail: string; to
  */
 function conversationSuffix(c: { mode: string; busy: boolean }): string {
   if (c.mode === "worker") return " · background";
+  // A headless session is fresh per request and never has a window to be open in.
+  if (c.mode === "fresh") return " · new headless session";
   return c.busy ? " · in use" : "";
 }
 

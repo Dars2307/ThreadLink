@@ -3,11 +3,13 @@ import type { Metadata } from "next";
 import { changeLinkConversationAction, setLinkPausedAction } from "@/app/dashboard/actions";
 import { removeConversationAction } from "@/app/dashboard/team-actions";
 import { RevokeLinkButton } from "@/components/connections/revoke-link-button";
+import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { ConfirmAction } from "@/components/dashboard/confirm-action";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { Badge, buttonStyles, Card, CardTitle, EmptyState } from "@/components/ui";
 import { loadAccount, loadTeam } from "@/lib/dashboard/data";
 import { deriveConversations, EMPTY_TEAM } from "@/lib/dashboard/pages";
+import { CONTROLLER_HINT } from "@/lib/dashboard/view-model";
 
 export const metadata: Metadata = { title: "Conversations · ThreadLink" };
 
@@ -94,25 +96,26 @@ export default async function ConversationsPage() {
                           <Badge tone={chat.tone}>{chat.status}</Badge>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <form action={setLinkPausedAction}>
+                          <ActionForm action={setLinkPausedAction} className="flex flex-col gap-1">
                             <input type="hidden" name="linkId" value={h.linkId} />
                             <input
                               type="hidden"
                               name="paused"
                               value={chat.paused ? "false" : "true"}
                             />
-                            <button type="submit" className={buttonStyles.ghost}>
+                            <SubmitButton className={buttonStyles.ghost} pendingLabel="Working…">
                               {chat.paused ? "Resume" : "Pause"}
-                            </button>
-                          </form>
+                            </SubmitButton>
+                          </ActionForm>
                           {view.choices.length > 1 ? (
                             <details className="group">
                               <summary className={`${buttonStyles.ghost} cursor-pointer`}>
                                 Use a different conversation
                               </summary>
-                              <form
+                              <ActionForm
                                 action={changeLinkConversationAction}
                                 className="bg-surface mt-2 flex flex-wrap items-end gap-2 rounded-xl p-3"
+                                statusClassName="w-full"
                               >
                                 <input type="hidden" name="linkId" value={h.linkId} />
                                 <input
@@ -123,6 +126,7 @@ export default async function ConversationsPage() {
                                 <label className="flex flex-col gap-1 text-sm">
                                   <span className="text-subtle text-xs">Claude conversation</span>
                                   <select
+                                    key={sessionId}
                                     name="agentSessionId"
                                     defaultValue={sessionId}
                                     className="border-border-strong bg-surface rounded-lg border px-3 py-2"
@@ -134,14 +138,17 @@ export default async function ConversationsPage() {
                                     ))}
                                   </select>
                                 </label>
-                                <button type="submit" className={buttonStyles.primary}>
+                                <SubmitButton
+                                  className={buttonStyles.primary}
+                                  pendingLabel="Requesting…"
+                                >
                                   Request change
-                                </button>
+                                </SubmitButton>
                                 <p className="text-subtle w-full text-xs">
                                   The current link ends now; approve the new one in the ThreadLink
                                   app.
                                 </p>
-                              </form>
+                              </ActionForm>
                             </details>
                           ) : null}
                           <RevokeLinkButton linkId={h.linkId!} label="Unlink" />
@@ -174,13 +181,32 @@ export default async function ConversationsPage() {
         );
       })}
 
+      <Card labelledBy="modes-title">
+        <CardTitle id="modes-title" description="How work reaches Claude Code on your computer.">
+          Ways to run
+        </CardTitle>
+        <ul className="flex flex-col gap-2 text-sm">
+          {view.modes.map((m) => (
+            <li key={m.key} className="flex flex-col gap-0.5">
+              <span className={m.available ? "font-medium" : "text-muted font-medium"}>
+                {m.label}
+                {m.available ? null : (
+                  <span className="text-subtle font-normal"> · not available</span>
+                )}
+              </span>
+              <span className="text-muted text-xs">{m.description}</span>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
       <Card labelledBy="chats-title">
         <CardTitle id="chats-title" description="Chats that can send work to your conversations.">
           Your chats
         </CardTitle>
         {view.chats.length === 0 ? (
           <EmptyState title="No chats yet">
-            Connect ChatGPT, then start a conversation with ThreadLink enabled.
+            Connect {CONTROLLER_HINT}, then start a conversation with ThreadLink enabled.
           </EmptyState>
         ) : (
           <ul className="divide-border flex flex-col divide-y">

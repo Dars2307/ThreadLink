@@ -75,6 +75,45 @@ export type RuntimeView = {
   status: string;
 };
 
+/** One provider profile as the server returns it (GET/PATCH /api/team/providers). */
+export type ProviderProfile = {
+  provider: "claude-code" | "codex";
+  declaredPlan: string;
+  usagePolicy: string | null;
+  paidUsageEnabled: boolean;
+  detected: Record<string, unknown>;
+  detectedAt: string | null;
+};
+
+const PLAN_VALUE = /^[a-z0-9_]{1,40}$/;
+
+/** `{ profiles: [...] }` to typed profiles; anything malformed is dropped. */
+export function parseProviderProfiles(res: unknown): ProviderProfile[] {
+  if (!res || typeof res !== "object") return [];
+  const list = (res as Record<string, unknown>).profiles;
+  if (!Array.isArray(list)) return [];
+  const out: ProviderProfile[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const p = item as Record<string, unknown>;
+    if (p.provider !== "claude-code" && p.provider !== "codex") continue;
+    if (typeof p.declaredPlan !== "string" || !PLAN_VALUE.test(p.declaredPlan)) continue;
+    if (out.some((o) => o.provider === p.provider)) continue;
+    out.push({
+      provider: p.provider,
+      declaredPlan: p.declaredPlan,
+      usagePolicy: typeof p.usagePolicy === "string" ? p.usagePolicy.slice(0, 40) : null,
+      paidUsageEnabled: p.paidUsageEnabled === true,
+      detected:
+        p.detected && typeof p.detected === "object" && !Array.isArray(p.detected)
+          ? (p.detected as Record<string, unknown>)
+          : {},
+      detectedAt: typeof p.detectedAt === "string" ? p.detectedAt.slice(0, 40) : null,
+    });
+  }
+  return out;
+}
+
 export type ApiOptions = {
   baseUrl: string;
   token: string;
@@ -104,7 +143,7 @@ export class ThreadLinkApi {
     this.#timeoutMs = options.timeoutMs ?? 30_000;
   }
 
-  async #request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  async #request<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
     let response: Response;
     try {
       response = await this.#fetch(`${this.#baseUrl}${path}`, {
@@ -186,6 +225,37 @@ export class ThreadLinkApi {
       provider,
       detected,
     });
+  }
+
+  /**
+   * The owner's provider profiles (declared plan, usage policy, paid usage) and
+   * the last detection this account reported. Parsed tolerantly: an entry that
+   * is not a well-formed profile is dropped, never guessed at.
+   */
+  async providerProfiles(): Promise<ProviderProfile[]> {
+    const res = await this.#request<unknown>("GET", "/api/team/providers");
+    return parseProviderProfiles(res);
+  }
+
+  /**
+   * Sets the owner's declared plan for one provider -- and nothing else: a
+   * Runtime cannot change usage policy or paid usage. The server validates the
+   * plan against the provider's list and audits the change. Returns the updated
+   * profiles.
+   */
+  async setDeclaredPlan(
+    provider: "claude-code" | "codex",
+    declaredPlan: string,
+  ): Promise<{ profiles: ProviderProfile[] }> {
+    const res = await this.#request<unknown>("PATCH", "/api/team/providers", {
+      provider,
+      declaredPlan,
+    });
+    // The server answers with the one updated profile; the caller wants them all.
+    if (res && typeof res === "object" && Array.isArray((res as { profiles?: unknown }).profiles)) {
+      return { profiles: parseProviderProfiles(res) };
+    }
+    return { profiles: await this.providerProfiles() };
   }
 
   /**

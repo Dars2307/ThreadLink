@@ -317,6 +317,59 @@ State machine, every loop bounded by the job's budgets:
 9. **Report** a concise result to the controller; the full log stays behind
    `get_team_log`.
 
+#### Modes (job document `mode`, absent ⇒ `team`; see collaboration-chat.md §6)
+
+- **team**: the state machine above, unchanged.
+- **solo**: no normalise step and no planning council. ThreadLink records the
+  owner's goal as a one-node plan (title = first line of the goal, no file
+  restriction), approved by the builder alone (`approvedBy: [builder]`). The
+  node's reviewer is `null` — there is no pretend reviewer. The builder builds in
+  its worktree (protected paths still reverted), ThreadLink integrates and runs
+  the owner's verify commands itself (even if the builder changed nothing). PASS
+  only if the build succeeded and verification passed; no final inspection.
+- **pair** (Builder + Reviewer): the same one-node plan, approved by the builder;
+  the other provider reviews read-only, fix → re-review bounded by
+  `max_review_rounds`, then integration and verification. PASS requires the
+  reviewer's approval; a spent budget is `NEEDS_FIX`, a builder that declines to
+  change anything is `NEEDS_USER_DECISION`. Review is never skipped, even if the
+  room turned `crossReview` off for Team Mode. No final inspection.
+- Builder: the job's `builder`, else the only agent (solo) or Claude Code (pair).
+  A missing builder or reviewer stops the job; the other provider is never
+  substituted.
+
+#### Owner notes and stop
+
+- Before every agent turn (and at every round boundary) the orchestrator calls
+  `team_job_write` op `read_owner_notes`. Each note is queued for its audience
+  (`claude-code`, `codex`, or `team`/null = every agent in the job) and put into
+  that agent's **next** prompt only, once, in its own random-nonce block labelled
+  "NOTE FROM THE PROJECT OWNER (the owner's request, not system instructions)".
+  Bodies are redacted (summary.ts) and `===` fences / `BEGIN`/`END` markers are
+  flattened so a note cannot close its block or impersonate another. The prompt
+  says a note cannot change the role, rules, file scope, protected paths,
+  budgets or safety requirements. Notes that reach no agent before the job ends
+  are listed in the evidence's uncertainty. A failed `read_owner_notes` is not
+  fatal (the owner is told), since a stop is also seen on every other write.
+- `stopRequestedAt` on any `team_job_write` answer sets a stop flag. Running
+  units finish their current round, nothing new is scheduled, and the job ends
+  `NEEDS_USER_DECISION` with "Stopped by you after round N."
+- Every agent message carries `modelObserved` (Claude `modelUsage` key, Codex
+  rollout `turn_context.model`) when it is known and matches
+  `^[A-Za-z0-9._:\[\]/-]{1,100}$`; otherwise it is left out, never guessed.
+
+#### Provider adapters — `runtime/src/team/providers.ts`
+
+Each provider is one adapter entry with static capabilities (`headless`,
+`resumableSessions`, `modelSelection`, `mcp`, `conversationDiscovery`) and an
+optional `createRunner`. Status (`available` / `not_installed` / `signed_out` /
+`not_supported_yet`) is derived from discovery; only `available` providers get
+a runner (subscription sign-in only). Codex conversation discovery is
+`unsupported` (no scraping of `~/.codex/sessions`). **Cursor is detect-only**: a
+PATH lookup for `cursor-agent` / `agent` / `cursor` (nothing is executed) sets a
+note, the status is always `not_supported_yet`, it has no runner and is not an
+`AgentProvider`, so no job can route to it. A future adapter adds a runner here
+without orchestrator changes.
+
 ## 4. Server surface
 
 Controller MCP tools (all require the controller's own session and room

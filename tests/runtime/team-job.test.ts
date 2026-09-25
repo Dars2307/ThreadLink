@@ -98,3 +98,37 @@ describe("a team job definition", () => {
     expect(job.spec).toEqual({});
   });
 });
+
+describe("a job's mode and builder", () => {
+  it("defaults to Team Mode when the document does not say", () => {
+    expect(parseTeamJob(JSON.stringify(valid()))).toMatchObject({ mode: "team", builder: null });
+  });
+
+  it("parses solo and pair with a named builder", () => {
+    expect(parse({ mode: "solo", builder: "codex" })).toMatchObject({
+      mode: "solo",
+      builder: "codex",
+    });
+    expect(parse({ mode: "pair", builder: "claude-code" })).toMatchObject({
+      mode: "pair",
+      builder: "claude-code",
+    });
+  });
+
+  it("uses the only agent for a solo job that names none, and Claude Code for a pair", () => {
+    const one = [{ provider: "codex", displayName: "Codex", roles: ["builder"] }];
+    expect(parse({ mode: "solo", agents: one })).toMatchObject({ builder: "codex" });
+    expect(parse({ mode: "pair" })).toMatchObject({ builder: "claude-code" });
+  });
+
+  it("refuses an unknown mode, an unknown builder, or a builder not in the room", () => {
+    expect(() => parse({ mode: "swarm" })).toThrow(/mode/);
+    expect(() => parse({ mode: "solo", builder: "cursor" })).toThrow(/builder/);
+    const one = [{ provider: "codex", displayName: "Codex", roles: ["builder"] }];
+    expect(() => parse({ mode: "solo", builder: "claude-code", agents: one })).toThrow(/room/);
+  });
+
+  it("refuses a solo job in a two-agent room that does not name its builder", () => {
+    expect(() => parse({ mode: "solo" })).toThrow(/name its builder/);
+  });
+});

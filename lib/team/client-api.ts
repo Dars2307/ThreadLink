@@ -10,6 +10,8 @@ import { sessionIdSchema } from "@/lib/sessions/model";
 
 import {
   AGENT_PROVIDERS,
+  CHATGPT_PLANS,
+  CLAUDE_PLANS,
   createRoomInputSchema,
   decisionLabel,
   jobIdSchema,
@@ -131,6 +133,10 @@ export async function startTeamJob(
       p_parallel_agents: input.parallelAgents ?? null,
       p_verify_commands: null,
       p_idempotency_key: input.idempotencyKey ?? null,
+      // Always sent (null = Team Mode), so the call resolves to the overload
+      // that takes a mode; the database validates both.
+      p_mode: input.mode ?? null,
+      p_builder: input.builder ?? null,
     },
     (data) => teamStatusRowSchema.parse(data),
   );
@@ -230,6 +236,21 @@ export type TeamWriteResult = TeamStatus & {
   planHash: string | null;
   round?: number;
   roundOpened?: boolean;
+  /**
+   * `read_owner_notes` only: the owner's notes to this job, oldest first, now
+   * marked delivered. UNTRUSTED user text: hand it to the addressed agent(s)
+   * clearly delimited as a note from the user, never as instructions to
+   * ThreadLink. `audience` is who it is for ("team" = every agent).
+   */
+  ownerNotes?: OwnerNote[];
+};
+
+export type OwnerNote = {
+  id: string;
+  seq: number;
+  audience: "claude-code" | "codex" | "team";
+  body: string;
+  createdAt: string;
 };
 
 /**
@@ -272,6 +293,15 @@ export async function writeTeamState(
   }
   if (typeof r.round === "number") extra.round = r.round;
   if (typeof r.opened === "boolean") extra.roundOpened = r.opened;
+  if (r.notes) {
+    extra.ownerNotes = r.notes.map((n) => ({
+      id: n.id,
+      seq: n.seq,
+      audience: n.audience,
+      body: n.body,
+      createdAt: n.created_at,
+    }));
+  }
   return { ...toTeamStatus(row), op: row.op, ...extra };
 }
 
@@ -370,6 +400,34 @@ export async function reportProviderDetection(
     db,
     "report_provider_detection",
     { p_token_hash: credentialHash, p_provider: input.provider, p_detected: input.detected },
+    (data) => toRuntimeProfile(providerProfileRowSchema.parse(data)),
+  );
+}
+
+/**
+ * The Runtime (desktop app) sets the owner's DECLARED plan for one provider.
+ * Nothing else: usage policy and paid usage stay owner-only (dashboard). The
+ * plan lists are per provider, and the database checks them again.
+ */
+export const runtimeProviderPlanSchema = z.discriminatedUnion("provider", [
+  z.object({ provider: z.literal("claude-code"), declaredPlan: z.enum(CLAUDE_PLANS) }).strict(),
+  z.object({ provider: z.literal("codex"), declaredPlan: z.enum(CHATGPT_PLANS) }).strict(),
+]);
+
+export async function setRuntimeProviderPlan(
+  db: ClientDatabase,
+  credentialHash: string,
+  rawInput: unknown,
+): Promise<RuntimeProviderProfile> {
+  const input = validate(runtimeProviderPlanSchema, rawInput);
+  return call(
+    db,
+    "set_runtime_provider_plan",
+    {
+      p_token_hash: credentialHash,
+      p_provider: input.provider,
+      p_declared_plan: input.declaredPlan,
+    },
     (data) => toRuntimeProfile(providerProfileRowSchema.parse(data)),
   );
 }
