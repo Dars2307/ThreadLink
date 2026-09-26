@@ -4,9 +4,12 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { PageHeader, Shell, StatGrid, StatTile } from "@/components/dashboard/shell";
+import { ModeBadge } from "@/components/dashboard/chats";
 import { SetupWizard } from "@/components/dashboard/setup-wizard";
-import { Badge, Card, CardTitle, EmptyState } from "@/components/ui";
+import { Badge, buttonStyles, Card, CardTitle, EmptyState } from "@/components/ui";
 import { getIdentity } from "@/lib/auth/identity";
+import { chatHref, homeChats, type ChatRow } from "@/lib/dashboard/chats";
+import { loadChats } from "@/lib/dashboard/chats-data";
 import { loadAccount, loadTeam } from "@/lib/dashboard/data";
 import { deriveHome, EMPTY_TEAM } from "@/lib/dashboard/pages";
 import { projectHref } from "@/lib/dashboard/project";
@@ -22,7 +25,7 @@ export default async function HomePage() {
   const clerkUser = await currentUser();
   if (!clerkUser || clerkUser.id !== identity.clerkUserId) redirect("/sign-in");
 
-  const [account, team] = await Promise.all([loadAccount(), loadTeam()]);
+  const [account, team, chats] = await Promise.all([loadAccount(), loadTeam(), loadChats()]);
   if (!account) {
     return (
       <Shell>
@@ -35,6 +38,8 @@ export default async function HomePage() {
   }
 
   const { view, handles } = deriveHome(account, team ?? EMPTY_TEAM);
+  const home = chats ? homeChats(chats, account.now) : null;
+  const chatLink = (row: ChatRow) => chatHref(home!.handles[row.key]!.chatId!);
   const firstName = clerkUser.firstName ?? clerkUser.username ?? null;
   // The setup steps need the session choices; they only render until setup is done.
   const setup = view.setupComplete ? null : deriveDashboard(account);
@@ -47,7 +52,86 @@ export default async function HomePage() {
         title={view.headline.text}
         tone={view.headline.tone}
         badge={view.setupComplete ? "Account active" : "Setup in progress"}
+        actions={
+          <Link href="/dashboard/chats#new-chat" className={buttonStyles.primary}>
+            New chat
+          </Link>
+        }
       />
+
+      {home && home.view.attention.length ? (
+        <Card labelledBy="attention-title">
+          <CardTitle id="attention-title" description="These chats are waiting for you.">
+            Needs attention
+          </CardTitle>
+          <ul className="flex flex-col gap-2">
+            {home.view.attention.map((row) => (
+              <li key={row.key}>
+                <Link
+                  href={chatLink(row)}
+                  className="border-warning/40 hover:bg-surface-muted flex flex-col gap-1 rounded-xl border px-4 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">{row.name}</span>
+                    <span className="text-muted block truncate text-xs">{row.preview}</span>
+                  </span>
+                  <span className="text-subtle text-xs">{row.when}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
+      <Card labelledBy="chats-title">
+        <CardTitle
+          id="chats-title"
+          action={
+            <Link href="/dashboard/chats" className="text-accent text-sm">
+              All chats
+            </Link>
+          }
+        >
+          Chats
+        </CardTitle>
+        {home === null ? (
+          <p className="text-muted text-sm">Chats could not be loaded right now.</p>
+        ) : home.view.recent.length === 0 ? (
+          <EmptyState title="No chats yet">
+            Start one with New chat: talk to one agent, two, or the whole team. Pick a project so
+            the agents know which folder to work in.
+          </EmptyState>
+        ) : (
+          <ul className="divide-border flex flex-col divide-y">
+            {home.view.recent.map((row) => (
+              <li key={row.key} className="py-3 first:pt-0 last:pb-0">
+                <Link href={chatLink(row)} className="group flex flex-col gap-0.5">
+                  <span className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span
+                      className={
+                        row.unread
+                          ? "truncate text-sm font-semibold group-hover:underline"
+                          : "truncate text-sm font-medium group-hover:underline"
+                      }
+                    >
+                      {row.name}
+                    </span>
+                    <ModeBadge badge={row.modeBadge} mode={row.mode} />
+                    {row.pinned ? <span className="text-subtle text-xs">Pinned</span> : null}
+                    {row.working ? <Badge tone="accent">Working</Badge> : null}
+                    <span className="text-subtle ml-auto text-xs">{row.when}</span>
+                  </span>
+                  <span className="text-muted truncate text-xs">
+                    {row.participants}
+                    {row.project ? ` · ${row.project}` : ""}
+                  </span>
+                  <span className="text-subtle truncate text-sm">{row.preview}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
 
       <StatGrid>
         {view.counts.map((c) => (
@@ -73,14 +157,14 @@ export default async function HomePage() {
             </Link>
           }
         >
-          Active
+          Projects
         </CardTitle>
         {team === null ? (
           <p className="text-muted text-sm">Projects could not be loaded right now.</p>
         ) : view.active.length === 0 ? (
           <EmptyState title="No projects yet">
-            Ask {controllerName(account.connections)} to “create a ThreadLink project” for a folder
-            on your computer.
+            A project is a folder on your computer where agents work. Ask{" "}
+            {controllerName(account.connections)} to “create a ThreadLink project” for one.
           </EmptyState>
         ) : (
           <ul className="divide-border flex flex-col divide-y">

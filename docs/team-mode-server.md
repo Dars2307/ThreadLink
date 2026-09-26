@@ -198,3 +198,31 @@ it.
 - **`PATCH /api/team/providers {provider, declaredPlan}`:** calls `set_runtime_provider_plan`.
   This changes the declared plan only; the owner still controls policy and paid usage. Detection
   never changes `declared_plan`.
+
+## Chat-first (migration `20260927000100_chat_first.sql`)
+
+Contract: `docs/design/chat-first.md` (section 10 lists where the server is stricter).
+
+- **Tables.** `chats` (`tlcht_`) and `chat_groups` (`tlgrp_`): RLS select-own, no client
+  writes. `team_jobs` gains `chat_id`, `last_phase`, `role_overrides`, `verdict_provider` and
+  `retried_from_job_id`; `tasks` and `chat_events` gain `chat_id` (copied by trigger from the
+  job, else the task, else the project's default chat).
+- **Owner RPCs** (`authenticated`): `create_chat`, `update_chat`, `set_chat_pinned`,
+  `set_chat_archived`, `delete_chat`, `mark_chat_read`, `create_chat_group`,
+  `rename_chat_group`, `delete_chat_group`,
+  `post_chat_message(p_chat_id, p_body, p_idempotency_key)`, `retry_job_with_roles` and
+  `chat_list_extras` (invoker, read-only).
+- **Controller RPCs** (`anon` + credential): the 13-argument `start_team_job` overload with
+  `p_chat_id`, and `create_chat_task` (send_to_agent in a chat).
+- **Health gate.** Every job start needs each participant `ready` (a recent, authenticated,
+  subscription check) as reported by the Runtime that owns the project's agent session
+  (`public.runtime_provider_health`, per computer); refusals carry hint `provider_unhealthy`.
+- **Runtime.** `report_provider_detection` accepts `health`, `healthCheckedAt` and
+  `healthDetail`; `set_final` accepts `provider`; new verdict reasons `agent_needs_sign_in`
+  and `api_key_auth`; the status JSON adds `chat_id`, `last_phase`, `role_overrides`,
+  `verdict_reason`, `verdict_provider` and `retried_from_job_id`.
+- **Routes.** `/api/dashboard/chat?chat=` (timeline by chat) and
+  `POST {chatId, body, idempotencyKey?}`; `/api/dashboard/chats` (GET list, POST create);
+  `/api/dashboard/chats/[chatId]` (GET, PATCH, DELETE); `/api/dashboard/chats/[chatId]/read`
+  (POST); `/api/dashboard/chats/groups` (GET, POST); `/api/dashboard/chats/groups/[groupId]`
+  (PATCH, DELETE). Errors are `{ok:false, reason, message}` with fixed sentences.

@@ -1,32 +1,28 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
-import { CopyId } from "@/components/dashboard/copy-id";
-import { ProjectChat } from "@/components/dashboard/project-chat";
+import { ChatListRow, NewChatForm, type Choice } from "@/components/dashboard/chats";
 import { PageHeader, Shell } from "@/components/dashboard/shell";
-import { JobLog } from "@/components/dashboard/team";
-import { Badge, Card, CardTitle, cx, EmptyState } from "@/components/ui";
-import { listMyChat } from "@/lib/chat/owner";
-import { loadProject } from "@/lib/dashboard/data";
-import { deriveTeamLog } from "@/lib/dashboard/pages";
+import { ProjectPolicyForm } from "@/components/dashboard/project-settings";
+import { Card, CardTitle, EmptyState } from "@/components/ui";
 import {
-  deriveProject,
-  parseJobParam,
-  parseTab,
-  PROJECT_TABS,
-  projectHref,
-  TAB_LABELS,
-} from "@/lib/dashboard/project";
+  chatHref,
+  defaultChatFor,
+  deriveChatList,
+  parseChatListQuery,
+  projectTabRedirect,
+} from "@/lib/dashboard/chats";
+import { loadChatGroups, loadChats } from "@/lib/dashboard/chats-data";
+import { loadProject, loadProjectChoices } from "@/lib/dashboard/data";
+import { USAGE_POLICY_TEXT, plural } from "@/lib/dashboard/labels";
+import { usagePolicyOptions } from "@/lib/dashboard/pages";
+import { deriveProject } from "@/lib/dashboard/project";
+import { TEAM_LIMITS } from "@/lib/team/model";
 
 export const metadata: Metadata = { title: "Project · ThreadLink" };
 
 type Search = Record<string, string | string[] | undefined>;
-
-const pageOf = (v: string | string[] | undefined) => {
-  const n = Number(Array.isArray(v) ? v[0] : v);
-  return Number.isInteger(n) && n > 0 ? n : 1;
-};
 
 export default async function ProjectPage({
   params,
@@ -37,27 +33,54 @@ export default async function ProjectPage({
 }) {
   const { roomId } = await params;
   const search = await searchParams;
-  const tab = parseTab(search.tab);
-  const askedJob = parseJobParam(search.job);
 
-  // A room that is not yours reads exactly like one that does not exist.
+  // A project that is not yours reads exactly like one that does not exist.
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(roomId)) notFound();
-  const data = await loadProject(roomId, askedJob);
+  const [data, chats, groups, rooms] = await Promise.all([
+    loadProject(roomId, null),
+    loadChats(),
+    loadChatGroups(),
+    loadProjectChoices(),
+  ]);
   if (!data) notFound();
+  const room = data.room.roomId;
 
-  const { view, handles, technical, selectedJobId } = deriveProject(
-    data.room,
-    data.jobs,
-    data.detail,
-    data.now,
-    { job: askedJob },
+  // 0.8 links (?tab=chat|progress|details) open the project's default chat.
+  const moved = projectTabRedirect(
+    search,
+    chats ? defaultChatFor(room, data.room.name, chats) : null,
   );
-  const room = handles.room!.roomId!;
-  // The first page is rendered here; the chat then polls for newer events.
-  // A failure only means the browser loads it instead.
-  const initialChat = tab === "chat" ? await listMyChat({ roomId: room }).catch(() => null) : null;
-  const tabHref = (t: (typeof PROJECT_TABS)[number]) =>
-    projectHref(room, { tab: t, job: askedJob && !view.jobNotFound ? askedJob : null });
+  if (moved) redirect(moved);
+
+  const { view } = deriveProject(data.room, data.jobs, data.detail, data.now);
+  const list = chats
+    ? deriveChatList(
+        chats,
+        groups ?? [],
+        [{ roomId: room, name: data.room.name }],
+        { ...parseChatListQuery({}), project: room },
+        data.now,
+      )
+    : null;
+  const projectChoices: Choice[] = (rooms ?? [])
+    .filter((r) => !r.archived || r.roomId === room)
+    .map((r, i) => ({ key: `p${i}`, name: r.name, id: r.roomId }));
+  const groupChoices: Choice[] = (groups ?? []).map((g, i) => ({
+    key: `g${i}`,
+    name: g.name,
+    id: g.groupId,
+  }));
+  const b = data.room.budgets;
+  const policy = {
+    ...b,
+    usagePolicy: data.room.usagePolicy,
+    text: [
+      `Up to ${plural(b.parallelAgents, "agent")} at once`,
+      plural(b.maxPlanningRounds, "planning round"),
+      plural(b.maxReviewRounds, "review round"),
+      USAGE_POLICY_TEXT[data.room.usagePolicy].label,
+    ].join(" · "),
+  };
 
   return (
     <Shell>
@@ -65,167 +88,94 @@ export default async function ProjectPage({
         ← Projects
       </Link>
       <PageHeader
-        eyebrow={`${view.team} · ${view.folder}${view.conversation ? ` · ${view.conversation}` : ""}`}
+        eyebrow={`${view.team} · ${view.folder}`}
         title={view.name}
         badge={view.archived ? "Archived" : view.status}
         tone={view.archived ? "neutral" : view.tone}
         description={view.summary}
       />
 
-      <nav aria-label="Project sections" className="border-border flex gap-1 border-b">
-        {PROJECT_TABS.map((t) => (
-          <Link
-            key={t}
-            href={tabHref(t)}
-            aria-current={tab === t ? "page" : undefined}
-            scroll={false}
-            className={cx(
-              "-mb-px border-b-2 px-3 py-2 text-sm transition-colors",
-              tab === t
-                ? "border-accent text-foreground font-medium"
-                : "text-muted hover:text-foreground border-transparent",
-            )}
-          >
-            {TAB_LABELS[t]}
-          </Link>
-        ))}
-      </nav>
+      <Card labelledBy="chats-title">
+        <CardTitle
+          id="chats-title"
+          description="Every chat here runs its work in this project's folder."
+        >
+          Chats
+        </CardTitle>
+        {list === null ? (
+          <p className="text-muted text-sm">Chats could not be loaded right now.</p>
+        ) : list.view.shown === 0 ? (
+          <EmptyState title="No chats in this project yet">
+            Start one below, or move an existing chat here from the chat list.
+          </EmptyState>
+        ) : (
+          <ul className="-my-3 flex flex-col">
+            {list.view.sections
+              .flatMap((s) => s.rows)
+              .map((row) => {
+                const h = list.handles[row.key]!;
+                return (
+                  <ChatListRow
+                    key={row.key}
+                    row={row}
+                    href={chatHref(h.chatId!)}
+                    chatId={h.chatId!}
+                    groupId={h.groupId ?? null}
+                    roomId={h.roomId ?? null}
+                    projects={projectChoices}
+                    groups={groupChoices}
+                  />
+                );
+              })}
+          </ul>
+        )}
+      </Card>
 
-      {view.jobNotFound ? (
-        <p role="status" className="text-muted text-sm">
-          That job isn&apos;t in this project, so the latest one is shown instead.
-        </p>
-      ) : null}
-
-      {tab === "chat" ? (
-        <>
-          {askedJob && !view.jobNotFound && selectedJobId ? (
-            <p className="text-muted text-sm">
-              The chat shows the whole project.{" "}
-              <Link
-                href={projectHref(room, { tab: "progress", job: selectedJobId })}
-                className="text-accent"
-              >
-                See this job&apos;s progress →
-              </Link>
-            </p>
-          ) : null}
-          <ProjectChat
-            key={room}
-            roomId={room}
-            initial={initialChat}
-            controller={data.controller}
-            twoAgents={view.twoAgents}
-            archived={view.archived}
-          />
-        </>
-      ) : null}
-
-      {tab === "progress" ? (
-        <div className="flex flex-col gap-6">
-          {view.jobs.length > 1 ? (
-            <Card labelledBy="jobs-title">
-              <CardTitle id="jobs-title" description="Choose a job to see its progress.">
-                Jobs in this project
-              </CardTitle>
-              <ul className="divide-border flex flex-col divide-y">
-                {view.jobs.map((j) => (
-                  <li
-                    key={j.key}
-                    className="flex flex-col gap-1 py-2 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
-                  >
-                    <Link
-                      href={projectHref(room, { tab: "progress", job: handles[j.key]!.jobId })}
-                      aria-current={j.selected ? "true" : undefined}
-                      scroll={false}
-                      className={cx(
-                        "min-w-0 truncate text-sm hover:underline",
-                        j.selected && "font-semibold",
-                      )}
-                    >
-                      {j.goal}
-                    </Link>
-                    <span className="flex shrink-0 items-center gap-2">
-                      <span className="text-subtle text-xs">{j.when}</span>
-                      <Badge tone={j.tone}>{j.status}</Badge>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          ) : null}
-
-          {data.detail && selectedJobId ? (
-            <JobLog
-              view={
-                deriveTeamLog(data.detail, view.name, data.now, {
-                  findings: pageOf(search.f),
-                  decisions: pageOf(search.d),
-                  models: pageOf(search.m),
-                }).view
-              }
-              base={projectHref(room)}
-              search={{
-                tab: "progress",
-                job: selectedJobId,
-                f: search.f,
-                d: search.d,
-                m: search.m,
-              }}
-            />
-          ) : (
-            <Card>
-              <EmptyState title="No work yet">
-                Start something from the Chat tab (for example{" "}
-                <strong>@Claude add a health check</strong>) or ask {data.controller}. Its units,
-                reviews, findings and model choices show up here.
-              </EmptyState>
-            </Card>
-          )}
-        </div>
-      ) : null}
-
-      {tab === "details" ? (
-        <Card labelledBy="details-title">
-          <CardTitle
-            id="details-title"
-            description="Technical identifiers, for support and troubleshooting. You never need these for normal use."
-          >
-            Details
-          </CardTitle>
-          <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[auto_1fr]">
-            <dt className="text-muted">Project (room)</dt>
-            <dd className="min-w-0">
-              <CopyId value={technical.roomId} label="project ID" />
-            </dd>
-            {technical.jobs.map((j) => (
-              <div key={j.jobId} className="contents">
-                <dt className="text-muted min-w-0 truncate" title={j.goal}>
-                  Job{j.selected ? " (shown)" : ""} · {j.goal}
-                </dt>
-                <dd className="min-w-0">
-                  <CopyId value={j.jobId} label={`job ID for ${j.goal}`} />
-                </dd>
-              </div>
-            ))}
-            {technical.units.map((u) => (
-              <div key={u.key} className="contents">
-                <dt className="text-muted min-w-0 truncate">Unit · {u.title}</dt>
-                <dd className="min-w-0">
-                  <CopyId value={u.key} label={`unit key for ${u.title}`} />
-                </dd>
-              </div>
-            ))}
-          </dl>
-          <p className="text-subtle pt-4 text-xs">
-            Conversation and device IDs are on{" "}
-            <Link href="/dashboard/settings/advanced" className="text-accent">
-              Settings → Advanced
-            </Link>
-            .
-          </p>
+      {view.archived ? null : (
+        <Card labelledBy="new-chat-title">
+          <CardTitle id="new-chat-title">New chat in {view.name}</CardTitle>
+          <NewChatForm projects={projectChoices} defaultProject={room} groups={groupChoices} />
         </Card>
-      ) : null}
+      )}
+
+      <Card labelledBy="config-title">
+        <CardTitle id="config-title" description="How work from this project's chats runs.">
+          Project settings
+        </CardTitle>
+        <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[auto_1fr]">
+          <dt className="text-muted">Folder</dt>
+          <dd>{view.folder}</dd>
+          <dt className="text-muted">Claude Code conversation</dt>
+          <dd>{view.conversation ?? "A new background session for each request"}</dd>
+          <dt className="text-muted">Agents</dt>
+          <dd>{view.team}</dd>
+          <dt className="text-muted">Checks</dt>
+          <dd>The checks each request asks for run in this folder before work can pass.</dd>
+          <dt className="text-muted">Routing</dt>
+          <dd>
+            Each chat&apos;s mode decides who works on a request; a leading @mention picks someone
+            for one message. Moving a chat to another project changes only future work.
+          </dd>
+        </dl>
+        <details className="group pt-4">
+          <summary className="text-muted hover:text-foreground cursor-pointer text-sm">
+            Usage and rounds <span className="text-subtle">· {policy.text}</span>
+          </summary>
+          <ProjectPolicyForm
+            roomId={room}
+            policy={policy}
+            limits={TEAM_LIMITS}
+            usagePolicies={usagePolicyOptions()}
+          />
+        </details>
+        <p className="text-subtle pt-4 text-xs">
+          Rename, archive or delete the project on the{" "}
+          <Link href="/dashboard/projects" className="text-accent">
+            Projects
+          </Link>{" "}
+          page.
+        </p>
+      </Card>
     </Shell>
   );
 }

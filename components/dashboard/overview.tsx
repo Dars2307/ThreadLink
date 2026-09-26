@@ -120,7 +120,7 @@ export function CurrentLinks({ links }: { links: View["links"] }) {
         id="links-title"
         description="Say “send this to Claude” in a linked chat. The answer comes back there."
         action={
-          <Link href="/dashboard/conversations" className="text-accent text-sm">
+          <Link href="/dashboard/agents" className="text-accent text-sm">
             Manage
           </Link>
         }

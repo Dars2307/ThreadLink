@@ -13,7 +13,7 @@
 //
 // Behaviour is chosen by FAKE_CODEX_MODE:
 //   ok | wrong_model | wrong_sandbox | wrong_cwd | no_rollout | quota | unauth |
-//   turn_failed | hang | structured | structured_bad | exit_nonzero
+//   turn_failed | hang | structured | structured_bad | exit_nonzero | login_required
 // FAKE_CODEX_AUTH: chatgpt (default) | apikey | none      (for `login status`)
 // FAKE_PID_FILE: in hang mode, "<pid> <grandchildPid>" is written here.
 import { spawn } from "node:child_process";
@@ -194,6 +194,12 @@ process.stdin.on("end", () => {
   if (mode === "unauth") {
     emit({ type: "error", message: "unexpected status 401 Unauthorized: please log in again" });
     emit({ type: "turn.failed", error: { message: "unexpected status 401 Unauthorized" } });
+    process.exit(1);
+  }
+  if (mode === "login_required") {
+    const message = "Not logged in. Please run `codex login` to sign in again.";
+    emit({ type: "error", message });
+    emit({ type: "turn.failed", error: { message } });
     process.exit(1);
   }
   if (mode === "turn_failed") {

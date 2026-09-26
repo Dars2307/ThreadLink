@@ -43,6 +43,9 @@ export const CHAT_EVENT_TYPES = [
   "stop_requested",
   "model_used",
   "model_mismatch",
+  // 0.9 chat-first (threadlink, visible)
+  "mode_changed",
+  "provider_blocked",
 ] as const;
 export type ChatEventType = (typeof CHAT_EVENT_TYPES)[number];
 
@@ -57,7 +60,10 @@ export type ChatEvent = {
   id: string;
   createdAt: string;
   roomId: string | null;
-  agentSessionId: string;
+  /** 0.9: the chat this row belongs to (null only for rows outside any project). */
+  chatId?: string | null;
+  /** 0.9: null for rows in a chat with no project (the owner's words, ThreadLink notes). */
+  agentSessionId: string | null;
   jobId: string | null;
   taskId: string | null;
   nodeId: string | null;
@@ -100,4 +106,97 @@ export type PostChatMessageInput = {
 
 export type PostChatMessageResult =
   | { ok: true; routed: "note_to_active_job" | "stop_requested" | "new_job"; jobId: string | null }
-  | { ok: false; message: string };
+  | {
+      ok: false;
+      message: string;
+      /** 0.9: the stable reason code (e.g. "provider_unhealthy", "needs_project"). */
+      reason?: string;
+      /** 0.9, provider_unhealthy only: each participant's health. */
+      health?: ProviderHealthEntry[];
+      /**
+       * 0.9, provider_unhealthy only: the message WAS stored in the chat (with a
+       * ThreadLink row saying who is not ready), so the composer can be cleared.
+       */
+      stored?: boolean;
+    };
+
+/** 0.9: what the chat composer sends. Routing comes from the chat's mode and a leading @mention. */
+export type ChatPostInput = {
+  chatId: string;
+  body: string;
+  idempotencyKey?: string;
+};
+
+// ---------------------------------------------------------------------------
+// 0.9 — chat-first. See docs/design/chat-first.md.
+// ---------------------------------------------------------------------------
+
+/** Provider health as the Runtime last observed it (a real authenticated call, not status output). */
+export const PROVIDER_HEALTH = [
+  "ready",
+  "needs_sign_in",
+  "not_installed",
+  "api_key_auth",
+  "usage_exhausted",
+  "unknown",
+] as const;
+export type ProviderHealth = (typeof PROVIDER_HEALTH)[number];
+
+/** One provider's health as the server judged it now (fresh, authenticated, subscription). */
+export type ProviderHealthEntry = { provider: string; health: ProviderHealth };
+
+/** Display metadata for any provider; UI renders this instead of per-provider switches. */
+export type ParticipantView = {
+  kind: "owner" | "controller" | "agent";
+  /** Provider id for agents ("claude-code", "codex", future ids). */
+  provider: string | null;
+  name: string;
+  shortName: string;
+  health: ProviderHealth | null;
+};
+
+export type ChatSummary = {
+  chatId: string;
+  name: string;
+  mode: JobMode;
+  roomId: string | null;
+  projectName: string | null;
+  groupId: string | null;
+  groupName: string | null;
+  pinned: boolean;
+  archived: boolean;
+  participants: ParticipantView[];
+  lastMessage: string | null;
+  lastActivityAt: string;
+  unread: boolean;
+  needsAttention: boolean;
+  activeJob: { jobId: string; mode: JobMode; status: string } | null;
+  /** The project's default chat (where controller work lands when no chat is named). */
+  isRoomDefault?: boolean;
+};
+
+export type ChatSettings = {
+  mode: JobMode;
+  soloProvider: string | null;
+  builderProvider: string | null;
+  reviewerProvider: string | null;
+};
+
+export type ChatGroup = { groupId: string; name: string };
+
+/** "Retry with <provider> as coordinator": offered for a job blocked before it had a plan. */
+export type ChatRetryOption = {
+  jobId: string;
+  /** The job's participants, each with its health now. Only a ready one can be chosen. */
+  coordinators: { provider: string; name: string; health: ProviderHealth }[];
+};
+
+/** One chat for its page. */
+export type ChatDetail = ChatSummary & {
+  settings: ChatSettings;
+  groups: ChatGroup[];
+  /** Null unless the chat's latest job is eligible for an explicit retry. */
+  retry: ChatRetryOption | null;
+  /** The newest seq the owner has read. */
+  lastReadSeq: number;
+};

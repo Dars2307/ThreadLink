@@ -3,6 +3,7 @@
  * both build on this module, so they behave identically.
  */
 import { discoverProviders } from "./team/discovery.ts";
+import { probeProvider } from "./team/health.ts";
 import { defaultAdapters } from "./adapters/index.ts";
 import type { ProviderAdapter } from "./adapters/types.ts";
 import {
@@ -37,6 +38,11 @@ export type {
   ProviderId,
   ProviderStatus,
 } from "./team/providers.ts";
+export type { TeamProgress } from "./team/orchestrator.ts";
+export { STAGE_KEYS, STAGE_LABELS, STAGE_STATES, deriveStages } from "./team/stages.ts";
+export type { StageKey, StageState, TeamStage } from "./team/stages.ts";
+export { HEALTH_DETAIL, PROVIDER_HEALTH } from "./team/health.ts";
+export type { HealthRecord, ProviderHealth } from "./team/health.ts";
 export { detectIdentity, remoteEnvironment, runtimePlatform } from "./platform.ts";
 export type * from "./platform.ts";
 export { defaultConfigDir, loadConfig, migrateBaseUrl, saveConfig } from "./state.ts";
@@ -50,7 +56,7 @@ export {
 export type { CanonicalizeResult, ThreadLinkChannel } from "./endpoints.ts";
 export { maskSessionId } from "./claude-sessions.ts";
 
-export const RUNTIME_VERSION = "0.8.0";
+export const RUNTIME_VERSION = "0.9.0";
 
 export type RuntimeContext = {
   configDir: string;
@@ -132,6 +138,8 @@ export function createEngine(
     version: RUNTIME_VERSION,
     // The real app finds out which Team Mode agents this computer has.
     discoverTeam: discoverProviders,
+    // ...and checks each one with a real authenticated call (team/health.ts).
+    probeProvider: probeProvider(),
     ...rest,
   });
 }

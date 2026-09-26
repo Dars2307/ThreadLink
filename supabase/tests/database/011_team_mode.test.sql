@@ -91,8 +91,8 @@ select pg_temp.put('bchat', public.register_session(pg_temp.h('b-chat'), null, n
 select pg_temp.put('blink', public.request_pairing(pg_temp.h('b-chat'), pg_temp.id('bchat'), pg_temp.id('bagent')) ->> 'id');
 select public.approve_pairing(pg_temp.h('b-rt'), pg_temp.id('bagent'), pg_temp.id('blink'));
 -- Bob's Runtime is Team-capable: it has reported both agents ready.
-select public.report_provider_detection(pg_temp.h('b-rt'), 'claude-code', '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}');
-select public.report_provider_detection(pg_temp.h('b-rt'), 'codex', '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}');
+select public.report_provider_detection(pg_temp.h('b-rt'), 'claude-code', '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
+select public.report_provider_detection(pg_temp.h('b-rt'), 'codex', '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 
 -- ===========================================================================
 -- 1. Privileges and schema shape
@@ -208,7 +208,7 @@ select throws_ok($$ select public.start_team_job(pg_temp.h('a-chat'), pg_temp.id
   '55000', null, 'no team job before a Team-capable Runtime has reported both agents');
 
 select public.report_provider_detection(pg_temp.h('a-rt'), 'claude-code',
-  '{"installed":true,"authenticated":true,"authMethod":"claude.ai","version":"2.1.266"}');
+  '{"installed":true,"authenticated":true,"authMethod":"claude.ai","version":"2.1.266"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select throws_ok($$ select public.start_team_job(pg_temp.h('a-chat'), pg_temp.id('chat'), pg_temp.id('roomA'),
   'Codex missing', null, null, null, null, null, null) $$,
   '55000', null, 'no team job while one of the room''s agents has not been reported');
@@ -228,7 +228,7 @@ select throws_ok($$ select public.start_team_job(pg_temp.h('a-chat'), pg_temp.id
   '55000', null, 'no team job while an agent is signed in with an API key rather than a subscription');
 
 select public.report_provider_detection(pg_temp.h('a-rt'), 'codex',
-  '{"installed":true,"authenticated":true,"authMethod":"chatgpt","version":"0.155"}');
+  '{"installed":true,"authenticated":true,"authMethod":"chatgpt","version":"0.155"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 
 -- ThreadLink runs test commands itself, outside any agent sandbox. A chat --
 -- possibly prompt-injected -- cannot supply them; only the owner sets them.

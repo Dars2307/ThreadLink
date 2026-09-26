@@ -1,12 +1,14 @@
 import { notFound, redirect } from "next/navigation";
 
+import { defaultChatFor, jobRedirect } from "@/lib/dashboard/chats";
+import { loadChats, locateJob } from "@/lib/dashboard/chats-data";
 import { loadJob } from "@/lib/dashboard/data";
-import { parseJobParam, projectHref } from "@/lib/dashboard/project";
+import { parseJobParam } from "@/lib/dashboard/project";
 
 /**
- * Old address of the full team log. A job now lives on its project's page
- * (Progress tab); keep old links working by sending them there. A job that is
- * not yours reads exactly like one that does not exist.
+ * Old address of a job's full log. A job now lives in its chat (Progress tab);
+ * without a known chat it goes to its project's default chat, else to the
+ * project. A job that is not yours reads exactly like one that does not exist.
  */
 export default async function TeamLogRedirect({
   params,
@@ -18,12 +20,19 @@ export default async function TeamLogRedirect({
   const { jobId } = await params;
   const search = await searchParams;
   const id = parseJobParam(jobId);
-  const job = id ? await loadJob(id) : null;
-  if (!job || !job.roomId) notFound();
-  const keep: Record<string, string> = {};
-  for (const k of ["f", "d", "m"]) {
-    const v = search[k];
-    if (typeof v === "string" && /^\d{1,4}$/.test(v)) keep[k] = v;
+  if (!id) notFound();
+  const located = await locateJob(id);
+  if (!located) notFound();
+  let { chatId, roomId } = located;
+  if (!chatId) {
+    const job = await loadJob(id);
+    roomId = job?.roomId ?? roomId;
+    if (roomId) {
+      const chats = await loadChats();
+      chatId = chats ? defaultChatFor(roomId, job?.project ?? null, chats) : null;
+    }
   }
-  redirect(projectHref(job.roomId, { tab: "progress", job: job.detail.jobId, extra: keep }));
+  const to = jobRedirect(id, { chatId, roomId }, search);
+  if (!to) notFound();
+  redirect(to);
 }

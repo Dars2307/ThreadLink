@@ -32,6 +32,16 @@
 import type { VerdictReason } from "./verdict-reasons.ts";
 import { createHash } from "node:crypto";
 
+import type { ProviderHealth } from "./health.ts";
+import {
+  assignRoles,
+  PROVIDER_NAME,
+  rolesDecisionText,
+  type RoleAssignment,
+  type RoleCandidate,
+} from "./roles.ts";
+import { deriveStages, type TeamStage } from "./stages.ts";
+
 import { redactText, summarize } from "../summary.ts";
 import type { TeamJobDefinition } from "./job.ts";
 import {
@@ -57,18 +67,20 @@ import {
   type Review,
   type TeamSpec,
 } from "./prompts.ts";
-import type {
-  AgentProvider,
-  JobMode,
-  JobVerdict,
-  ModelClass,
-  NodeStatus,
-  TeamRole,
+import {
+  AGENT_PROVIDERS,
+  type AgentProvider,
+  type JobMode,
+  type JobVerdict,
+  type ModelClass,
+  type NodeStatus,
+  type TeamRole,
 } from "./types.ts";
 import {
   modelObserved,
   parseOwnerNotes,
   READ_OWNER_NOTES_OP,
+  setFinalPayload,
   stopRequested,
   type OwnerNote,
 } from "./wire.ts";
@@ -200,8 +212,28 @@ export type TeamOp =
   /** Collects the owner's undelivered notes; the server marks them delivered. */
   | typeof READ_OWNER_NOTES_OP;
 
+/**
+ * Provider health, as the Runtime last observed it with a real authenticated
+ * call (health.ts). The orchestrator asks before any agent runs and tells it
+ * about every failed run.
+ */
+export type HealthPort = {
+  /** Each provider's health, re-checked first if the cached result is stale. */
+  ensure(providers: AgentProvider[]): Promise<Partial<Record<AgentProvider, ProviderHealth>>>;
+  /** A run failed; an auth or usage failure changes the provider's health at once. */
+  noteFailure?(provider: AgentProvider, failure: NonNullable<AgentRunResult["failure"]>): void;
+  /** Probes one provider now (after a sign-in failure) and returns what it found. */
+  confirm?(provider: AgentProvider): Promise<ProviderHealth>;
+  /** Failed runs per provider recently, for role assignment. */
+  recentFailures?(): Partial<Record<AgentProvider, number>>;
+};
+
 export type OrchestratorDeps = {
   runners: Partial<Record<AgentProvider, AgentRunner>>;
+  /** Absent: a provider with a runner counts as ready, one without as not installed. */
+  health?: HealthPort;
+  /** The classes of the selectable models each provider has here, for role assignment. */
+  modelClasses?: Partial<Record<AgentProvider, ModelClass[]>>;
   route(request: RouteRequest): RouteResult;
   graph: GraphPort;
   worktrees: WorktreeManager;
@@ -236,7 +268,14 @@ export type TeamProgress = {
   openFindings: number;
   reviewRound: number;
   maxReviewRounds: number;
+  /**
+   * The honest stage list (docs/design/chat-first.md §3), derived from what
+   * really happened: Plan is done only once a plan was persisted and approved.
+   */
+  stages: TeamStage[];
 };
+
+export type { TeamStage } from "./stages.ts";
 
 export type TeamOutcome = {
   verdict: JobVerdict;
@@ -300,23 +339,63 @@ class Stop extends Error {
   readonly verdict: JobVerdict;
   /** A fixed code the chat turns into a fixed sentence (never agent text). */
   readonly reason: VerdictReason;
-  constructor(verdict: JobVerdict, message: string, reason: VerdictReason) {
+  /** The agent this verdict is about, when there is one (set_final `provider`). */
+  readonly provider: AgentProvider | null;
+  constructor(
+    verdict: JobVerdict,
+    message: string,
+    reason: VerdictReason,
+    provider: AgentProvider | null = null,
+  ) {
     super(message);
     this.name = "Stop";
     this.verdict = verdict;
     this.reason = reason;
+    this.provider = provider;
   }
 }
 
-const OTHER: Record<AgentProvider, AgentProvider> = {
-  "claude-code": "codex",
-  codex: "claude-code",
-};
-
-const PROVIDER_NAME: Record<AgentProvider, string> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-};
+/** Why a provider that is not ready stops a job before any agent runs. */
+function healthStop(provider: AgentProvider, health: ProviderHealth): Stop {
+  const name = PROVIDER_NAME[provider];
+  switch (health) {
+    case "needs_sign_in":
+      return new Stop(
+        "BLOCKED",
+        `${name} needs you to sign in again on this computer.`,
+        "agent_needs_sign_in",
+        provider,
+      );
+    case "api_key_auth":
+      return new Stop(
+        "BLOCKED",
+        `${name} is signed in with an API key, which would bill per use, so ThreadLink did not use it. Sign in with your subscription instead.`,
+        "api_key_auth",
+        provider,
+      );
+    case "usage_exhausted":
+      return new Stop(
+        "BLOCKED",
+        `${name} has reached its usage limit. ThreadLink did not switch to another agent.`,
+        "usage_exhausted",
+        provider,
+      );
+    case "not_installed":
+      return new Stop(
+        "BLOCKED",
+        `${name} is not available on this computer. ThreadLink will not substitute another agent for it.`,
+        "agent_unavailable",
+        provider,
+      );
+    default:
+      return new Stop(
+        "BLOCKED",
+        `${name} could not be checked on this computer, so ThreadLink did not start the work. Try again in a moment.`,
+        "agent_unavailable",
+        provider,
+      );
+  }
+}
 
 const NO_RISK = { security: false, database: false, architecture: false, deployment: false };
 
@@ -358,9 +437,19 @@ export class TeamOrchestrator {
   #stopRequested = false;
   #planningRoundsDone = 0;
   #buildRoundsDone = 0;
-  /** Solo and pair: who builds, and who reviews (null in solo). */
-  #builder: AgentProvider = "claude-code";
+  /** Who takes which role (roles.ts), decided before any agent runs. */
+  #roles: RoleAssignment | null = null;
+  /** The agents of this job: the chat's participants, or the room's agents. */
+  #participants: AgentProvider[] = [];
+  /** Solo and pair: who builds, and who reviews (null in solo). Set from #roles. */
+  #builderHolder: AgentProvider | null = null;
   #reviewer: AgentProvider | null = null;
+  /** The last non-terminal status reached, for the stage list. */
+  #phase = "queued";
+  #specDone = false;
+  /** Set only after a plan was persisted with its approvals. */
+  #planApproved = false;
+  #finalReason: VerdictReason | null = null;
 
   constructor(job: TeamJobDefinition, deps: OrchestratorDeps) {
     this.#job = job;
@@ -376,14 +465,36 @@ export class TeamOrchestrator {
     const worktrees = this.#d.worktrees;
     let set: Awaited<ReturnType<WorktreeManager["begin"]>> | null = null;
     try {
-      if (this.#mode === "team") this.#requireTeam();
-      else this.#requireSimple();
+      const needs = this.#mode === "team" ? this.#requireTeam() : this.#requireSimple();
+      // Preflight: before any agent runs, every agent the job needs must be
+      // ready, checked with a real call if the last check is stale. A provider
+      // that is not ready ends the job here; nobody else takes its place.
+      const health = await this.#preflight(needs.required, needs.candidates);
+      this.#roles = this.#assignRoles(needs.candidates, health);
+      if (this.#mode !== "team") {
+        this.#builderHolder = this.#roles.builders[0]!;
+        this.#reviewer = this.#mode === "pair" ? (this.#roles.reviewers[0] ?? null) : null;
+      }
+      this.#notePaidUsage();
       // The first write goes before anything touches the disk: it is refused
       // unless this Runtime holds the claim for a job the server created, so a
       // forged or stale job stops here with nothing to clean up.
       await this.#setStatus(
         "normalising",
         this.#mode === "team" ? "Turning the request into a specification" : "Starting",
+      );
+      await this.#decision(
+        "Roles",
+        rolesDecisionText(this.#roles),
+        [],
+        {
+          coordinator: this.#roles.coordinator,
+          planner: this.#roles.planner,
+          integrator: this.#roles.integrator,
+          builders: this.#roles.builders,
+          reviewers: this.#roles.reviewers,
+        },
+        false,
       );
       set = await worktrees.begin(workspace, shortJob(this.#job.jobId));
       this.#evidence.base = set.base;
@@ -402,6 +513,7 @@ export class TeamOrchestrator {
       this.#noteUndelivered();
       const verdict = error instanceof Stop ? error.verdict : "BLOCKED";
       const reason: VerdictReason = error instanceof Stop ? error.reason : "unexpected_error";
+      const provider = error instanceof Stop ? error.provider : null;
       const summary =
         error instanceof Stop
           ? error.message
@@ -409,7 +521,7 @@ export class TeamOrchestrator {
               (error as Error)?.message ?? String(error),
               500,
             )}`;
-      await this.#finish(verdict, summary, reason).catch(() => undefined);
+      await this.#finish(verdict, summary, reason, provider).catch(() => undefined);
       return { verdict, summary, reason, evidence: this.#evidence, units: this.#units() };
     } finally {
       // Worktree directories go; branches stay, so the work and its history
@@ -422,85 +534,185 @@ export class TeamOrchestrator {
   // Preconditions
   // -------------------------------------------------------------------------
 
-  /**
-   * A team is two different providers. With only one, cross-review is
-   * impossible, and quietly letting one agent review itself would be exactly
-   * the thing Team Mode exists to prevent.
-   */
-  #requireTeam(): void {
-    const present = new Set(this.#job.agents.map((a) => a.provider));
-    for (const provider of ["claude-code", "codex"] as const) {
-      if (!present.has(provider)) {
+  /** The room's agents, and the job's participants (the chat's, or the room's). */
+  #members(): { room: Set<AgentProvider>; participants: AgentProvider[] } {
+    const room = new Set(this.#job.agents.map((a) => a.provider));
+    const participants = this.#job.participants?.length
+      ? [...this.#job.participants]
+      : [...new Set(this.#job.agents.map((a) => a.provider))];
+    for (const p of participants) {
+      if (!room.has(p)) {
         throw new Stop(
           "NEEDS_USER_DECISION",
-          `${PROVIDER_NAME[provider]} is not part of this room, so its work cannot be cross-reviewed. Add it to the room, or run this as a single-agent task.`,
+          `${PROVIDER_NAME[p]} is part of this chat but not of its project, so it cannot work here. Add it to the project, or remove it from the chat.`,
           "agent_not_in_project",
-        );
-      }
-      if (!this.#d.runners[provider]) {
-        throw new Stop(
-          "BLOCKED",
-          `${PROVIDER_NAME[provider]} is not available on this computer. ThreadLink will not substitute another agent for it.`,
-          "agent_unavailable",
+          p,
         );
       }
     }
-    if (this.#job.policy.paidUsage) {
-      // The owner has allowed paid usage, but Team Mode's agents run with API
-      // keys stripped from their environment, so they can only ever use the
-      // included subscription. Say so rather than imply otherwise.
-      this.#evidence.uncertainty.push(
-        "Paid usage is allowed on your profile, but Team Mode only uses your included subscription usage. No paid usage was used.",
-      );
-    }
+    this.#participants = participants;
+    return { room, participants };
   }
 
   /**
-   * Solo and Builder + Reviewer: the builder must be in the room and available
-   * here; in a pair, so must the other provider, which reviews. Neither is
-   * ever replaced by the other: a missing agent stops the job.
+   * A team is two or more different providers. With only one, cross-review is
+   * impossible, and quietly letting one agent review itself would be exactly
+   * the thing Team Mode exists to prevent. Every participant is needed.
    */
-  #requireSimple(): void {
-    const present = new Set(this.#job.agents.map((a) => a.provider));
-    const builder = this.#job.builder;
-    if (!builder || !present.has(builder)) {
+  #requireTeam(): { required: AgentProvider[]; candidates: AgentProvider[] } {
+    const { participants } = this.#members();
+    if (participants.length < 2) {
+      const missing = AGENT_PROVIDERS.filter((p) => !participants.includes(p));
+      throw new Stop(
+        "NEEDS_USER_DECISION",
+        missing.length
+          ? `${missing.map((p) => PROVIDER_NAME[p]).join(" and ")} ${missing.length > 1 ? "are" : "is"} not part of this room, so the work cannot be cross-reviewed. Add another agent, or run this as a single-agent task.`
+          : "Team needs two different agents, so that nobody reviews their own work. Add another agent, or run this as a single-agent task.",
+        "agent_not_in_project",
+      );
+    }
+    return { required: participants, candidates: participants };
+  }
+
+  /**
+   * Solo and Builder + Reviewer. A builder or reviewer the owner chose must be
+   * in the room and ready here; one they left to ThreadLink is chosen from the
+   * ready participants (roles.ts). Neither is ever replaced by another agent.
+   */
+  #requireSimple(): { required: AgentProvider[]; candidates: AgentProvider[] } {
+    const { room, participants } = this.#members();
+    const overrides = this.#job.roleOverrides ?? {};
+    const builder = this.#job.builder ?? overrides.builder ?? null;
+    if ((builder && !room.has(builder)) || participants.length === 0) {
       throw new Stop(
         "NEEDS_USER_DECISION",
         "This job does not name an agent in the room to build it. Say who should build it.",
         "agent_not_in_project",
       );
     }
-    if (!this.#d.runners[builder]) {
+    if (this.#mode === "solo") {
+      return { required: builder ? [builder] : [], candidates: builder ? [builder] : participants };
+    }
+    const reviewer = this.#job.reviewer ?? overrides.reviewer ?? null;
+    if (reviewer && (!room.has(reviewer) || reviewer === builder)) {
       throw new Stop(
-        "BLOCKED",
-        `${PROVIDER_NAME[builder]} is not available on this computer. ThreadLink will not substitute another agent for it.`,
-        "agent_unavailable",
+        "NEEDS_USER_DECISION",
+        reviewer === builder
+          ? `${PROVIDER_NAME[reviewer]} cannot review its own work. Choose another reviewer.`
+          : `${PROVIDER_NAME[reviewer]} is not part of this room, so it cannot review. Add it to the room, or run this as Solo.`,
+        "agent_not_in_project",
+        reviewer,
       );
     }
-    this.#builder = builder;
-    if (this.#mode === "pair") {
-      const reviewer = OTHER[builder];
-      if (!present.has(reviewer)) {
-        throw new Stop(
-          "NEEDS_USER_DECISION",
-          `${PROVIDER_NAME[reviewer]} is not part of this room, so it cannot review ${PROVIDER_NAME[builder]}'s work. Add it to the room, or run this as Solo.`,
-          "agent_not_in_project",
-        );
-      }
-      if (!this.#d.runners[reviewer]) {
-        throw new Stop(
-          "BLOCKED",
-          `${PROVIDER_NAME[reviewer]} is not available on this computer, so it cannot review. ThreadLink will not substitute another agent for it.`,
-          "agent_unavailable",
-        );
-      }
-      this.#reviewer = reviewer;
-    }
-    if (this.#job.policy.paidUsage) {
-      this.#evidence.uncertainty.push(
-        "Paid usage is allowed on your profile, but ThreadLink's agents only use your included subscription usage. No paid usage was used.",
+    const others = participants.filter((p) => p !== builder);
+    if (others.length === 0 || participants.length < 2) {
+      const missing = AGENT_PROVIDERS.filter((p) => !room.has(p));
+      const whose = builder ? `${PROVIDER_NAME[builder]}'s` : "the";
+      throw new Stop(
+        "NEEDS_USER_DECISION",
+        missing.length
+          ? `${missing.map((p) => PROVIDER_NAME[p]).join(" or ")} is not part of this room, so it cannot review ${whose} work. Add it to the room, or run this as Solo.`
+          : `There is no other agent in this chat to review ${whose} work. Add one, or run this as Solo.`,
+        "agent_not_in_project",
       );
     }
+    const required = [builder, reviewer].filter((p): p is AgentProvider => p !== null);
+    return { required, candidates: participants };
+  }
+
+  #notePaidUsage(): void {
+    if (!this.#job.policy.paidUsage) return;
+    // The owner has allowed paid usage, but the agents run with API keys
+    // stripped from their environment, so they can only ever use the included
+    // subscription. Say so rather than imply otherwise.
+    this.#evidence.uncertainty.push(
+      this.#mode === "team"
+        ? "Paid usage is allowed on your profile, but Team Mode only uses your included subscription usage. No paid usage was used."
+        : "Paid usage is allowed on your profile, but ThreadLink's agents only use your included subscription usage. No paid usage was used.",
+    );
+  }
+
+  /**
+   * Each candidate's health: asked of the health port (which probes if the
+   * cached result is stale) and never better than what this job can run -- a
+   * provider with no runner is not installed as far as this job is concerned.
+   * A required provider that is not ready stops the job before any agent runs.
+   */
+  async #preflight(
+    required: AgentProvider[],
+    candidates: AgentProvider[],
+  ): Promise<Map<AgentProvider, ProviderHealth>> {
+    const all = [...new Set([...required, ...candidates])];
+    let reported: Partial<Record<AgentProvider, ProviderHealth>> = {};
+    if (this.#d.health) {
+      try {
+        reported = await this.#d.health.ensure(all);
+      } catch {
+        reported = {};
+      }
+    }
+    const health = new Map<AgentProvider, ProviderHealth>();
+    for (const p of all) {
+      const runner = this.#d.runners[p];
+      let h: ProviderHealth;
+      if (!this.#d.health) h = runner ? "ready" : "not_installed";
+      else {
+        h = reported[p] ?? "unknown";
+        if (h === "ready" && !runner) h = "not_installed";
+      }
+      health.set(p, h);
+    }
+    for (const p of required) {
+      const h = health.get(p)!;
+      if (h !== "ready") throw healthStop(p, h);
+    }
+    return health;
+  }
+
+  #assignRoles(
+    candidates: AgentProvider[],
+    health: Map<AgentProvider, ProviderHealth>,
+  ): RoleAssignment {
+    const participants: RoleCandidate[] = candidates.map((provider) => ({
+      provider,
+      health: health.get(provider) ?? "unknown",
+      modelClasses: this.#d.modelClasses?.[provider] ?? [],
+    }));
+    const roomPrefs = Object.fromEntries(this.#job.agents.map((a) => [a.provider, a.roles]));
+    const overrides = { ...(this.#job.roleOverrides ?? {}) };
+    if (this.#job.builder) overrides.builder = this.#job.builder;
+    if (this.#job.reviewer) overrides.reviewer = this.#job.reviewer;
+    const result = assignRoles({
+      mode: this.#mode,
+      participants,
+      roomPrefs,
+      overrides,
+      history: { recentFailures: this.#d.health?.recentFailures?.() ?? {} },
+      seed: this.#job.jobId,
+    });
+    if (result.ok) return result;
+    if (result.provider && result.health && result.health !== "ready") {
+      throw healthStop(result.provider, result.health);
+    }
+    throw new Stop(result.verdict, result.message, "agent_not_in_project", result.provider);
+  }
+
+  /** The best-ranked reviewer that is not `author`: nobody reviews their own work. */
+  #reviewerFor(author: AgentProvider): AgentProvider {
+    const reviewer = this.#roles?.reviewers.find((p) => p !== author);
+    if (!reviewer) {
+      throw new Stop(
+        "NEEDS_USER_DECISION",
+        `There is no other agent to review ${PROVIDER_NAME[author]}'s work.`,
+        "agent_not_in_project",
+      );
+    }
+    return reviewer;
+  }
+
+  #roleOf(role: "coordinator" | "planner" | "integrator"): AgentProvider {
+    if (!this.#roles) throw new Error("Roles were used before they were assigned.");
+    return this.#roles[role];
   }
 
   // -------------------------------------------------------------------------
@@ -531,10 +743,11 @@ export class TeamOrchestrator {
    * Then ThreadLink integrates it and runs the owner's tests itself.
    */
   async #runSimple(set: Awaited<ReturnType<WorktreeManager["begin"]>>): Promise<TeamOutcome> {
-    const builder = this.#builder;
+    const builder = this.#builderHolder!;
     const reviewer = this.#reviewer;
     const spec = this.#specFromJob();
     await this.#write("set_spec", { spec: redactDeep(spec) });
+    this.#specDone = true;
     await this.#checkStop();
 
     await this.#setStatus("planning", "Recording the plan");
@@ -566,6 +779,7 @@ export class TeamOrchestrator {
     // The builder is the only agent that takes the plan on. The reviewer, in a
     // pair, approves the work itself -- and that approval is what gates a PASS.
     await this.#write("set_plan", { plan: redactDeep(plan), planHash, approvedBy: [builder] });
+    this.#planApproved = true;
     await this.#decision(
       "Plan recorded",
       reviewer === null
@@ -659,10 +873,8 @@ export class TeamOrchestrator {
     }
     const agents: AgentProvider[] =
       this.#mode === "team"
-        ? ["claude-code", "codex"]
-        : this.#reviewer
-          ? [this.#builder, this.#reviewer]
-          : [this.#builder];
+        ? this.#participants
+        : [this.#builderHolder, this.#reviewer].filter((p): p is AgentProvider => p !== null);
     for (const note of parseOwnerNotes(answer)) {
       if (this.#seenNotes.has(note.id)) continue;
       this.#seenNotes.add(note.id);
@@ -712,8 +924,9 @@ export class TeamOrchestrator {
   // -------------------------------------------------------------------------
 
   async #normalise(workspace: WorktreeRecord): Promise<TeamSpec> {
-    const planner = this.#roleHolder("planner", "claude-code");
-    const result = await this.#call(planner, "coordinator", {
+    const coordinator = this.#roleOf("coordinator");
+    this.#doing.set(coordinator, "Turning the request into a specification");
+    const result = await this.#call(coordinator, "coordinator", {
       cwd: workspace.path,
       worktree: workspace,
       prompt: normalisePrompt(this.#job.goal, this.#job.spec),
@@ -728,6 +941,8 @@ export class TeamOrchestrator {
       if (Array.isArray(value) && value.length) (spec as Record<string, unknown>)[field] = value;
     }
     await this.#write("set_spec", { spec: redactDeep(spec) });
+    this.#specDone = true;
+    this.#doing.delete(coordinator);
     return spec;
   }
 
@@ -737,8 +952,8 @@ export class TeamOrchestrator {
 
   async #plan(spec: TeamSpec, workspace: WorktreeRecord): Promise<Plan> {
     await this.#setStatus("planning", "Planning the work");
-    const planner = this.#roleHolder("planner", "claude-code");
-    const reviewer = OTHER[planner];
+    const planner = this.#roleOf("planner");
+    const reviewer = this.#reviewerFor(planner);
     let previous: { plan: Plan; review: Review } | undefined;
 
     for (let round = 1; round <= this.#job.budgets.maxPlanningRounds; round++) {
@@ -816,6 +1031,7 @@ export class TeamOrchestrator {
           approvedBy: [planner, reviewer],
           round,
         });
+        this.#planApproved = true;
         await this.#decision(
           "Plan agreed",
           `Agreed after ${round} planning round${round === 1 ? "" : "s"}.`,
@@ -845,7 +1061,7 @@ export class TeamOrchestrator {
     );
     throw new Stop(
       "NEEDS_USER_DECISION",
-      `Claude Code and Codex did not agree a plan within ${this.#job.budgets.maxPlanningRounds} rounds. The open objections are in the team log.`,
+      `${PROVIDER_NAME[planner]} and ${PROVIDER_NAME[reviewer]} did not agree a plan within ${this.#job.budgets.maxPlanningRounds} rounds. The open objections are in the team log.`,
       "agents_disagree",
     );
   }
@@ -864,18 +1080,38 @@ export class TeamOrchestrator {
   // Ownership
   // -------------------------------------------------------------------------
 
-  async #assign(
-    plan: Plan,
-    committedBy: AgentProvider[] = ["claude-code", "codex"],
-  ): Promise<void> {
+  async #assign(plan: Plan, committedBy: AgentProvider[] = this.#participants): Promise<void> {
+    const builders = this.#roles?.builders ?? [];
     for (const node of plan.nodes) {
-      const owner = node.suggestedOwner;
+      // The plan names each unit's owner. One that cannot build in this job
+      // (not a participant, or not ready) never gets the unit: it goes to the
+      // best-ranked builder that can, and that is recorded.
+      let owner = node.suggestedOwner;
+      if (!builders.includes(owner)) {
+        const given = builders[0];
+        if (!given) {
+          throw new Stop(
+            "NEEDS_USER_DECISION",
+            "No agent in this job can build.",
+            "agent_not_in_project",
+          );
+        }
+        await this.#decision(
+          `${node.title} given to ${PROVIDER_NAME[given]}`,
+          `The plan suggested ${PROVIDER_NAME[owner] ?? "an agent"}, which is not building in this job.`,
+          [],
+          { unit: node.key, suggested: owner, owner: given },
+          false,
+        );
+        node.suggestedOwner = given;
+        owner = given;
+      }
       this.#nodes.set(node.key, {
         plan: node,
         owner,
         // The one rule that is never negotiable: nobody reviews their own work.
         // A solo job has no reviewer at all rather than a pretend one.
-        reviewer: this.#mode === "solo" ? null : OTHER[owner],
+        reviewer: this.#mode === "solo" ? null : this.#reviewerFor(owner),
         status: "pending",
         worktree: null,
         threadId: null,
@@ -1224,7 +1460,7 @@ export class TeamOrchestrator {
 
   async #integrate(
     set: Awaited<ReturnType<WorktreeManager["begin"]>>,
-    integrator: AgentProvider = this.#roleHolder("integrator", "claude-code"),
+    integrator: AgentProvider = this.#roleOf("integrator"),
   ): Promise<{ record: WorktreeRecord; integrator: AgentProvider }> {
     await this.#setStatus("integrating", "Integrating");
     const record = await this.#d.worktrees.create(set, "integration");
@@ -1304,7 +1540,7 @@ export class TeamOrchestrator {
 
     await this.#setStatus("inspecting", "Final inspection");
     // Never the integrator, and always a fresh session: no memory of building it.
-    const inspector = OTHER[integration.integrator];
+    const inspector = this.#reviewerFor(integration.integrator);
     this.#doing.set(inspector, "Inspecting the whole change");
     const diff = await this.#d.worktrees.diff(integration.record, 400_000);
     const inspected = await this.#call(inspector, "security_reviewer", {
@@ -1396,6 +1632,7 @@ export class TeamOrchestrator {
         "BLOCKED",
         `${PROVIDER_NAME[provider]} is not available. It was not replaced.`,
         "agent_unavailable",
+        provider,
       );
     }
     const route = this.#d.route({
@@ -1423,19 +1660,42 @@ export class TeamOrchestrator {
     const notes = this.#takeNotes(provider);
     const prompt = withOwnerNotes(options.prompt, notes, (text) => redactText(text, 4_000));
 
-    const result = await runner.run({
-      provider,
-      role,
-      cwd: options.cwd,
-      prompt,
-      model: route.model,
-      effort: route.effort ?? undefined,
-      access: options.access,
-      outputSchema: options.outputSchema,
-      resumeThreadId: options.resumeThreadId,
-      timeoutMs: this.#d.timeoutMs,
-      signal: this.#abort.signal,
-    });
+    const run = () =>
+      runner.run({
+        provider,
+        role,
+        cwd: options.cwd,
+        prompt,
+        model: route.model,
+        effort: route.effort ?? undefined,
+        access: options.access,
+        outputSchema: options.outputSchema,
+        resumeThreadId: options.resumeThreadId,
+        timeoutMs: this.#d.timeoutMs,
+        signal: this.#abort.signal,
+      });
+    let result = await run();
+    // A sign-in failure can be a one-off token refresh failure. Probe the SAME
+    // provider now; only if it answers ready is the call repeated once. A
+    // confirmed sign-out stops the job below. No other provider is ever tried.
+    if (!result.ok && result.failure === "not_authenticated" && this.#d.health?.confirm) {
+      const now = await this.#d.health.confirm(provider).catch(() => "unknown" as const);
+      if (now === "ready") {
+        await this.#write("record_usage", {
+          provider,
+          role,
+          requestedModel: route.model,
+          observedModel: result.observedModel,
+          effort: result.observedEffort ?? route.effort,
+          modelClass: route.modelClass,
+          reason: route.reason,
+          escalatedFrom: route.escalatedFrom ?? null,
+          escalationReason: route.escalationReason ?? null,
+          outcome: "not_authenticated",
+        }).catch(() => undefined);
+        result = await run();
+      }
+    }
 
     await this.#write("record_usage", {
       provider,
@@ -1511,6 +1771,13 @@ export class TeamOrchestrator {
   /** Every provider failure stops the job. None of them is answered by switching provider. */
   #failure(provider: AgentProvider, result: AgentRunResult): Stop {
     const name = PROVIDER_NAME[provider];
+    // Health learns from every failed run at once: an auth failure marks the
+    // provider "needs sign-in" and is reported now, not at the next check.
+    try {
+      this.#d.health?.noteFailure?.(provider, result.failure ?? "provider_error");
+    } catch {
+      /* health reporting must never change how the job ends */
+    }
     switch (result.failure) {
       case "quota_exhausted":
         this.#d.onExhausted?.(provider, result.requestedModel);
@@ -1518,6 +1785,7 @@ export class TeamOrchestrator {
           "NEEDS_USER_DECISION",
           `${name} usage is exhausted. ThreadLink is waiting rather than switching agents or paying for more. You can wait for the reset, continue with the other agent only, or choose a smaller model.`,
           "usage_exhausted",
+          provider,
         );
       case "model_mismatch":
         return new Stop(
@@ -1534,14 +1802,16 @@ export class TeamOrchestrator {
       case "not_authenticated":
         return new Stop(
           "BLOCKED",
-          `${name} is not signed in on this computer.`,
-          "agent_unavailable",
+          `${name} needs you to sign in again on this computer.`,
+          "agent_needs_sign_in",
+          provider,
         );
       case "not_installed":
         return new Stop(
           "BLOCKED",
           `${name} is not installed on this computer.`,
           "agent_unavailable",
+          provider,
         );
       case "timeout":
         return new Stop("NEEDS_FIX", `${name} did not finish in time.`, "agent_timed_out");
@@ -1552,10 +1822,6 @@ export class TeamOrchestrator {
           "agent_failed",
         );
     }
-  }
-
-  #roleHolder(role: TeamRole, fallback: AgentProvider): AgentProvider {
-    return this.#job.agents.find((a) => a.roles.includes(role))?.provider ?? fallback;
   }
 
   // -------------------------------------------------------------------------
@@ -1571,6 +1837,7 @@ export class TeamOrchestrator {
 
   async #setStatus(status: string, line: string): Promise<void> {
     this.#status = status;
+    this.#phase = status;
     await this.#write("set_status", { status, line });
     this.#progress(line);
   }
@@ -1658,16 +1925,26 @@ export class TeamOrchestrator {
     });
   }
 
-  async #finish(verdict: JobVerdict, summary: string, reason?: VerdictReason): Promise<void> {
+  async #finish(
+    verdict: JobVerdict,
+    summary: string,
+    reason?: VerdictReason,
+    provider: AgentProvider | null = null,
+  ): Promise<void> {
     this.#finalVerdict = verdict;
+    this.#finalReason = reason && verdict !== "PASS" ? reason : null;
     this.#status = verdict === "PASS" ? "completed" : verdict.toLowerCase();
     this.#doing.clear();
-    await this.#write("set_final", {
-      verdict,
-      summary: redactText(summary, 2_000),
-      ...(reason && verdict !== "PASS" ? { reason } : {}),
-      evidence: this.#evidence,
-    });
+    await this.#write(
+      "set_final",
+      setFinalPayload({
+        verdict,
+        summary: redactText(summary, 2_000),
+        reason: this.#finalReason ?? undefined,
+        provider: verdict === "PASS" ? null : provider,
+        evidence: this.#evidence,
+      }),
+    );
     this.#progress(`${verdict}: ${summarize(summary) ?? verdict}`);
   }
 
@@ -1689,6 +1966,16 @@ export class TeamOrchestrator {
       openFindings: [...this.#nodes.values()].reduce((n, s) => n + s.openFindings.length, 0),
       reviewRound: this.#reviewRound,
       maxReviewRounds: this.#job.budgets.maxReviewRounds,
+      stages: deriveStages({
+        mode: this.#mode,
+        phase: this.#phase,
+        specDone: this.#specDone,
+        planApproved: this.#planApproved,
+        reviews: this.#mode === "pair" || (this.#mode === "team" && this.#job.policy.crossReview),
+        units: [...this.#nodes.values()],
+        verdict: this.#finalVerdict,
+        reason: this.#finalReason,
+      }),
     });
   }
 }

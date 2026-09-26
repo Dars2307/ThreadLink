@@ -5,6 +5,7 @@ import type { OwnerRoom } from "@/lib/rooms/queries";
 import { runtimeOnline, type OwnerRuntime, type OwnerWorkspace } from "@/lib/runtimes/queries";
 import type { OwnerSession } from "@/lib/sessions/queries";
 import type { RecentTask } from "@/lib/tasks/queries";
+import type { JobMode } from "@/lib/chat/types";
 import type { OwnerJobDetail, OwnerJobSummary } from "@/lib/team/queries";
 import {
   TEAM_LIMITS,
@@ -87,7 +88,27 @@ export type AccountData = {
 
 /** A model run as the dashboard reads it. `effort` is shown when the server provides it. */
 export type ModelRun = OwnerJobDetail["modelRuns"][number] & { effort?: string | null };
-export type JobDetail = Omit<OwnerJobDetail, "modelRuns"> & { modelRuns: ModelRun[] };
+
+/**
+ * 0.9 job facts (docs/design/chat-first.md §3, §5, §6). Optional because the
+ * server adds them; every reader treats "missing" as "not proven".
+ */
+export type JobFacts = {
+  /** `team_jobs.plan` is persisted. */
+  planPersisted?: boolean;
+  /** The persisted plan is approved (`plan_approved_hash = plan_hash`). */
+  planApproved?: boolean;
+  /** The last non-terminal status the job reached (`team_jobs.last_phase`). */
+  lastPhase?: string | null;
+  /** Why the job ended as it did (VERDICT_REASONS). */
+  verdictReason?: string | null;
+  /** The provider a verdict names (`team_jobs.verdict_provider`), set from trusted state. */
+  verdictProvider?: string | null;
+  mode?: JobMode | null;
+  chatId?: string | null;
+};
+
+export type JobDetail = Omit<OwnerJobDetail, "modelRuns"> & { modelRuns: ModelRun[] } & JobFacts;
 
 export type TeamData = {
   rooms: OwnerRoom[];
@@ -99,6 +120,9 @@ export type TeamData = {
 };
 
 export const EMPTY_TEAM: TeamData = { rooms: [], jobsByRoom: {}, details: [], profiles: [] };
+
+/** Where "needs you" items about work lead: the chats that need attention. */
+export const CHATS_NEEDING_YOU = "/dashboard/chats?show=attention";
 
 const TERMINAL_TASK = new Set(["completed", "failed", "cancelled", "expired"]);
 const DEFAULT_TEAM = "Claude + Codex";
@@ -307,7 +331,7 @@ function attentionItems(account: AccountData, team: TeamData, bag: HandleBag): A
         title: `${j.roomName} needs your decision`,
         detail: pending[0] ? `${pending[0].label} · ${trim(pending[0].title)}` : trim(j.goal),
         tone: "warning",
-        href: "/dashboard/team",
+        href: CHATS_NEEDING_YOU,
         when: relativeTime(j.finishedAt ?? j.startedAt, account.now),
         at,
       });
@@ -317,7 +341,7 @@ function attentionItems(account: AccountData, team: TeamData, bag: HandleBag): A
         title: `${j.roomName} is blocked`,
         detail: trim(j.line ?? j.goal),
         tone: "danger",
-        href: "/dashboard/team",
+        href: CHATS_NEEDING_YOU,
         when: relativeTime(j.finishedAt ?? j.startedAt, account.now),
         at,
       });
@@ -327,7 +351,7 @@ function attentionItems(account: AccountData, team: TeamData, bag: HandleBag): A
         title: `${j.roomName} needs fixes`,
         detail: trim(j.goal),
         tone: "warning",
-        href: "/dashboard/team",
+        href: CHATS_NEEDING_YOU,
         when: relativeTime(j.finishedAt ?? j.startedAt, account.now),
         at,
       });
@@ -337,7 +361,7 @@ function attentionItems(account: AccountData, team: TeamData, bag: HandleBag): A
         title: `${j.roomName} passed final review`,
         detail: trim(j.goal),
         tone: "neutral",
-        href: "/dashboard/team",
+        href: CHATS_NEEDING_YOU,
         when: relativeTime(j.finishedAt ?? j.startedAt, account.now),
         at,
       });
@@ -351,7 +375,7 @@ function attentionItems(account: AccountData, team: TeamData, bag: HandleBag): A
       title: "A link is waiting for your approval",
       detail: `${chat ?? "A chat"} → ${conversationName(sessions.get(l.agentSessionId), l.agentDisplayName)}. Approve it in the ThreadLink app.`,
       tone: "warning",
-      href: "/dashboard/conversations",
+      href: "/dashboard/agents",
       when: relativeTime(l.requestedAt, account.now),
       at: Date.parse(l.requestedAt),
     });
@@ -543,8 +567,6 @@ const NODE_SYMBOL: Record<string, { symbol: GraphSymbol; state: GraphLine["state
   skipped: { symbol: "–", state: "skipped" },
 };
 
-const PLANNING = new Set(["queued", "normalising", "planning"]);
-
 /** Dependencies first, input order as the tiebreak; a cycle can't hide a node. */
 function orderNodes(nodes: JobDetail["nodes"]): JobDetail["nodes"] {
   const byKey = new Map(nodes.map((n) => [n.key, n]));
@@ -564,48 +586,151 @@ function orderNodes(nodes: JobDetail["nodes"]): JobDetail["nodes"] {
   return out;
 }
 
+/** The stages every job shows, in order (§3). Solo jobs have no Review. */
+export const STAGES = [
+  { key: "understand", label: "Understanding request" },
+  { key: "plan", label: "Plan" },
+  { key: "build", label: "Build" },
+  { key: "review", label: "Review" },
+  { key: "integrate", label: "Integration" },
+] as const;
+type StageKey = (typeof STAGES)[number]["key"];
+
+/** Which stage a non-terminal status belongs to. */
+const PHASE_STAGE: Readonly<Record<string, StageKey>> = {
+  queued: "understand",
+  normalising: "understand",
+  planning: "plan",
+  building: "build",
+  reviewing: "review",
+  integrating: "integrate",
+  inspecting: "integrate",
+};
+
+export type StageInput = Pick<JobDetail, "status" | "verdict" | "nodes"> &
+  JobFacts & { modelRuns?: Pick<ModelRun, "role">[] };
+
 /**
- * The job's plan as a short tree, without graph words:
- *   ✓ Plan
- *   ├─ ✓ Backend — Claude Code, reviewed by Codex
- *   ├─ ● UI — Codex
- *   └─ ○ Integration → Final review
+ * Plan counts as done only when the plan is persisted AND approved. A job
+ * without those flags (older server) proves it only through units, which
+ * exist only once a plan was accepted.
  */
-export function taskGraph(job: Pick<JobDetail, "status" | "verdict" | "nodes">): GraphLine[] {
-  const lines: Omit<GraphLine, "branch" | "text" | "key">[] = [];
-  const planning = PLANNING.has(job.status);
-  lines.push({
-    symbol: planning ? (job.status === "queued" ? "○" : "●") : "✓",
-    state: planning ? (job.status === "queued" ? "waiting" : "active") : "done",
-    label: "Plan",
-    detail: null,
-  });
-  for (const n of orderNodes(job.nodes)) {
-    const s = NODE_SYMBOL[n.status] ?? NODE_SYMBOL.pending!;
-    const who = providerProductName(n.owner);
-    const detail = n.reviewer
-      ? `${who}, reviewed by ${providerProductName(n.reviewer)}`
-      : n.mixedAuthorship
-        ? `${who}, with help from the reviewer`
-        : who;
-    lines.push({ symbol: s.symbol, state: s.state, label: n.title, detail });
+export function planProven(job: StageInput): boolean {
+  if (job.planPersisted !== undefined || job.planApproved !== undefined) {
+    return job.planPersisted === true && job.planApproved === true;
   }
-  const final =
-    job.verdict === "PASS" || job.status === "completed"
-      ? { symbol: "✓" as const, state: "done" as const }
-      : job.status === "integrating" || job.status === "inspecting"
-        ? { symbol: "●" as const, state: "active" as const }
-        : job.verdict || job.status === "failed"
-          ? { symbol: "✕" as const, state: "failed" as const }
-          : job.status === "cancelled"
-            ? { symbol: "–" as const, state: "skipped" as const }
-            : { symbol: "○" as const, state: "waiting" as const };
-  lines.push({ ...final, label: "Integration → Final review", detail: null });
+  return job.nodes.length > 0;
+}
+
+/** Where a finished job stopped: from `last_phase`, else only from what is proven. */
+function stoppedAt(job: StageInput, plan: boolean): StageKey {
+  const recorded = job.lastPhase ? PHASE_STAGE[job.lastPhase] : undefined;
+  if (recorded) return recorded;
+  if (plan) {
+    const all = (s: string) => job.nodes.length > 0 && job.nodes.every((n) => n.status === s);
+    if (all("integrated") || all("approved")) return "integrate";
+    if (job.nodes.some((n) => n.status === "in_review" || n.status === "changes_requested")) {
+      return "review";
+    }
+    return "build";
+  }
+  const planned =
+    job.planPersisted === true || (job.modelRuns ?? []).some((r) => r.role === "planner");
+  return planned ? "plan" : "understand";
+}
+
+const TERMINAL_WORDS: Readonly<Record<string, string>> = {
+  cancelled: "Stopped",
+  needs_user_decision: "Needs your decision",
+};
+
+/**
+ * The job's progress as honest stages, with its units under Build:
+ *   ✓ Understanding request
+ *   ✓ Plan
+ *   ● Build
+ *   ├─ ✓ Backend — Claude Code, reviewed by Codex
+ *   └─ ● UI — Codex
+ *   ○ Review
+ *   ○ Integration
+ * ✓ done, ● active, ✕ where a finished job stopped, ○ not started, – never
+ * reached (or not part of this job, like the Plan a solo job did not make).
+ */
+export function taskGraph(job: StageInput): GraphLine[] {
+  const stages = STAGES.filter((s) => !(job.mode === "solo" && s.key === "review"));
+  const index = (k: StageKey) =>
+    Math.max(
+      0,
+      stages.findIndex((s) => s.key === k),
+    );
+  const plan = planProven(job);
+  const passed = job.verdict === "PASS" || job.status === "completed";
+  const terminal = passed || !Object.hasOwn(PHASE_STAGE, job.status);
+  const at = passed
+    ? stages.length
+    : terminal
+      ? index(stoppedAt(job, plan))
+      : index(PHASE_STAGE[job.status]!);
+
+  type Line = Omit<GraphLine, "branch" | "text" | "key"> & { unit?: boolean };
+  const lines: Line[] = [];
+  stages.forEach((stage, i) => {
+    let line: Line;
+    if (i < at) {
+      // Before where the job is (or stopped). A Plan without proof is never ✓.
+      line =
+        stage.key === "plan" && !plan
+          ? { symbol: "–", state: "skipped", label: stage.label, detail: "No plan was made" }
+          : { symbol: "✓", state: "done", label: stage.label, detail: null };
+    } else if (i === at && !terminal) {
+      line =
+        job.status === "queued"
+          ? {
+              symbol: "○",
+              state: "waiting",
+              label: stage.label,
+              detail: "Waiting for your computer",
+            }
+          : { symbol: "●", state: "active", label: stage.label, detail: null };
+    } else if (i === at) {
+      line = {
+        symbol: "✕",
+        state: "failed",
+        label: stage.label,
+        detail:
+          TERMINAL_WORDS[job.status] ?? (job.verdict ? verdictLabel(job.verdict) : "Stopped here"),
+      };
+    } else {
+      line = terminal
+        ? { symbol: "–", state: "skipped", label: stage.label, detail: null }
+        : { symbol: "○", state: "waiting", label: stage.label, detail: null };
+    }
+    lines.push(line);
+    if (stage.key !== "build") return;
+    for (const n of orderNodes(job.nodes)) {
+      const s = NODE_SYMBOL[n.status] ?? NODE_SYMBOL.pending!;
+      const who = providerProductName(n.owner);
+      const detail = n.reviewer
+        ? `${who}, reviewed by ${providerProductName(n.reviewer)}`
+        : n.mixedAuthorship
+          ? `${who}, with help from the reviewer`
+          : who;
+      lines.push({ symbol: s.symbol, state: s.state, label: n.title, detail, unit: true });
+    }
+  });
 
   return lines.map((l, i) => {
-    const branch: GraphLine["branch"] = i === 0 ? "" : i === lines.length - 1 ? "└─" : "├─";
+    const branch: GraphLine["branch"] = l.unit ? (lines[i + 1]?.unit ? "├─" : "└─") : "";
     const body = `${l.symbol} ${l.label}${l.detail ? ` — ${l.detail}` : ""}`;
-    return { ...l, key: `g${i}`, branch, text: branch ? `${branch} ${body}` : body };
+    return {
+      key: `g${i}`,
+      branch,
+      symbol: l.symbol,
+      state: l.state,
+      label: l.label,
+      detail: l.detail,
+      text: branch ? `${branch} ${body}` : body,
+    };
   });
 }
 
@@ -750,7 +875,7 @@ function jobCard(j: Job, d: JobDetail | undefined, now: number, bag: HandleBag):
     findingsRemaining: f.remaining,
     decisionsNeedingYou: decisionsNeedingYou(d).length,
     agents: d ? agentLines(d) : [],
-    graph: d ? taskGraph(d) : taskGraph({ status: j.status, verdict: j.verdict, nodes: [] }),
+    graph: d ? taskGraph(d) : [],
     started: `Started ${relativeTime(j.startedAt, now)}`,
     summary: d?.summary ?? null,
     hasDetail: Boolean(d),
@@ -850,7 +975,7 @@ export function deriveTeamLog(
       agents: agentLines(detail),
       messages: {
         available: false,
-        note: "Agent-to-agent messages appear in the project’s Chat tab.",
+        note: "Agent-to-agent messages appear in the chat.",
       },
       findings: paginate(
         detail.findings.recent.map((x, i) => ({

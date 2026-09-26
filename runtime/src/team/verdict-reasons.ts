@@ -23,5 +23,8 @@ export const VERDICT_REASONS = [
   "unexpected_error",
   "merge_conflict",
   "no_suitable_model",
+  // 0.9 (docs/design/chat-first.md §2): appended in this order in every list.
+  "agent_needs_sign_in",
+  "api_key_auth",
 ] as const;
 export type VerdictReason = (typeof VERDICT_REASONS)[number];

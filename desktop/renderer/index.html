@@ -94,6 +94,10 @@
         <div id="home-summary" class="tiles" aria-label="Summary"></div>
         <div id="links" class="stack"></div>
         <div class="card stack">
+          <h2>Agents on this computer</h2>
+          <div id="home-health" class="health-list"></div>
+        </div>
+        <div class="card stack">
           <div class="card-head">
             <h2>Linked conversations</h2>
             <button id="home-manage" class="ghost small-btn" type="button">Manage</button>
@@ -123,8 +127,15 @@
       </section>
     </template>
 
-    <template id="tpl-conversations">
+    <template id="tpl-agents">
       <section class="stack">
+        <div class="card stack">
+          <h2>Providers on this computer</h2>
+          <p class="muted small">
+            ThreadLink checks each provider with a real signed-in call, not just its status.
+          </p>
+          <div id="agents-health" class="health-list"></div>
+        </div>
         <div class="card stack">
           <div class="card-head">
             <h2>Attached conversations</h2>
@@ -135,9 +146,9 @@
       </section>
     </template>
 
-    <template id="tpl-team">
+    <template id="tpl-chats">
       <section class="stack">
-        <div id="team-jobs" class="stack"></div>
+        <div id="chat-groups" class="stack"></div>
       </section>
     </template>
 
@@ -231,6 +242,7 @@
             use. What each app reports about itself is shown beside it.
           </p>
           <div id="providers" class="list"></div>
+          <div id="providers-check"></div>
           <div class="card-head">
             <p class="muted small">The ThreadLink plan you pay for is set in the web dashboard.</p>
             <button id="plan-dashboard" class="ghost small-btn" type="button">

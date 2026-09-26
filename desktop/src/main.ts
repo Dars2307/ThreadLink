@@ -34,9 +34,11 @@ import {
 } from "threadlink";
 
 import { applyAutoStart, autoStartEnabled } from "./autostart.js";
+import { checkAgain, CheckLimiter, healthBackend, healthViews } from "./health.js";
 import { NotificationRouter, type NotificationChannel } from "./notifications.js";
 import { messageFor, statusLine, trayIconPixels, trayMenu, type AppState } from "./model.js";
 import { loadPlans, planBackend, savePlan, type PlanProfile } from "./plans.js";
+import { PhaseMemory, workView } from "./progress.js";
 import { loadSettings, saveSettings } from "./settings.js";
 
 /**
@@ -95,7 +97,22 @@ let signInAbort: AbortController | null = null;
 // ---------------------------------------------------------------------------
 // UI plumbing
 // ---------------------------------------------------------------------------
+/**
+ * The last non-terminal status seen for each job (memory only), so a job that
+ * ended BLOCKED still shows the stage it stopped at on an older Runtime.
+ */
+const phases = new PhaseMemory();
+
+/** Health and grouped work are derived here, from the snapshot, on every send. */
+function derive() {
+  phases.observe(state.snapshot?.team);
+  state.health = healthViews(state.snapshot);
+  state.work = workView(state.snapshot?.team ?? [], phases);
+  return state;
+}
+
 function broadcast() {
+  derive();
   win?.webContents.send("state", state);
   updateTray();
 }
@@ -308,12 +325,15 @@ const executionMode = (v: unknown): "worker" | "resume" => (v === "resume" ? "re
  */
 const planCache: { profiles: PlanProfile[] | null } = { profiles: null };
 
+/** One provider re-probe per 30 s, enforced here, not only by the button. */
+const healthLimiter = new CheckLimiter();
+
 /** Provider profiles from the server, merged with what this computer detected. */
 const readPlans = () =>
   loadPlans(planBackend(engine, api), state.snapshot?.teamProviders ?? [], planCache);
 
 function handlers() {
-  ipcMain.handle("state:get", () => state);
+  ipcMain.handle("state:get", () => derive());
 
   ipcMain.handle("signin:start", async (_e, rawUrl: unknown) => {
     // Whatever the box says, never store a generated deployment hostname.
@@ -376,6 +396,19 @@ function handlers() {
   });
 
   ipcMain.handle("plans:get", () => readPlans());
+
+  /**
+   * "Check again": re-probes the providers now. The renderer may name one
+   * provider (validated against the allow-list); main allows one probe per
+   * 30 s whatever the renderer does, and only fixed codes come back.
+   */
+  ipcMain.handle("providers:check", async (_e, rawProvider: unknown) => {
+    const result = await checkAgain(healthBackend(engine), rawProvider, healthLimiter, () =>
+      healthViews(state.snapshot),
+    );
+    broadcast();
+    return result;
+  });
 
   /**
    * Sets the declared plan for one provider. Only a known provider and a plan

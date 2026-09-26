@@ -104,6 +104,9 @@ async function account(sub: string, label: string): Promise<Account> {
         installed: true,
         authenticated: true,
         authMethod: provider === "claude-code" ? "claude.ai" : "chatgpt",
+        // 0.9: a recent, real authenticated check (the health gate needs it).
+        health: "ready",
+        healthCheckedAt: new Date().toISOString(),
       },
     });
   }

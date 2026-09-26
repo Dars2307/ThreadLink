@@ -37,6 +37,7 @@ const api = {
   openExternal: (url: string) => ipcRenderer.invoke("open:external", url),
   getPlans: () => ipcRenderer.invoke("plans:get"),
   setPlan: (provider: string, plan: string) => ipcRenderer.invoke("plans:set", provider, plan),
+  checkProviders: (provider?: string) => ipcRenderer.invoke("providers:check", provider ?? null),
   setSettings: (patch: { autoStart?: boolean; notifications?: boolean }) =>
     ipcRenderer.invoke("settings:set", patch),
 };

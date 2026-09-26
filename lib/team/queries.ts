@@ -11,6 +11,7 @@ import {
   FINDING_CATEGORIES,
   FINDING_SEVERITIES,
   FINDING_STATUSES,
+  JOB_MODES,
   JOB_STATUSES,
   JOB_VERDICTS,
   jobIdSchema,
@@ -19,6 +20,7 @@ import {
   roomIdSchema,
   TERMINAL_JOB_STATUSES,
   type AgentProvider,
+  type JobMode,
   type JobStatus,
   type JobVerdict,
   type NodeStatus,
@@ -78,6 +80,16 @@ const jobRow = owned.extend({
   max_review_rounds: z.number(),
   created_at: z.string(),
   finished_at: z.string().nullable(),
+  // Chat-first. Optional/nullable so an older row (or a narrower select) still parses.
+  mode: z.enum(JOB_MODES).optional(),
+  builder_provider: z.enum(AGENT_PROVIDERS).nullable().optional(),
+  chat_id: z.string().nullable().optional(),
+  last_phase: z.enum(JOB_STATUSES).nullable().optional(),
+  verdict_reason: z.string().nullable().optional(),
+  verdict_provider: z.enum(AGENT_PROVIDERS).nullable().optional(),
+  plan_hash: z.string().nullable().optional(),
+  plan_approved_hash: z.string().nullable().optional(),
+  retried_from_job_id: z.string().nullable().optional(),
 });
 const nodeRow = owned.extend({
   node_key: z.string(),
@@ -130,6 +142,22 @@ export type OwnerJobSummary = {
   review: string;
   startedAt: string;
   finishedAt: string | null;
+  // --- 0.9 chat-first (honest progress, provider-neutral retry) ---
+  mode?: JobMode;
+  roomId?: string;
+  chatId?: string | null;
+  /** Solo/pair builder; null for Team Mode. */
+  builder?: AgentProvider | null;
+  /** The last non-terminal status reached (null: unknown, e.g. a job from before 0.9). */
+  lastPhase?: JobStatus | null;
+  /** True only when a plan was persisted. */
+  planPersisted?: boolean;
+  /** True only when the persisted plan was approved as it is now. */
+  planApproved?: boolean;
+  verdictReason?: string | null;
+  /** The provider the verdict reason is about (e.g. who needs to sign in). */
+  verdictProvider?: AgentProvider | null;
+  retriedFromJobId?: string | null;
 };
 
 const roundText = (n: number, max: number) => `Round ${n} of ${max}`;
@@ -147,12 +175,29 @@ function toSummary(j: z.infer<typeof jobRow>): OwnerJobSummary {
     review: roundText(j.review_round, j.max_review_rounds),
     startedAt: j.created_at,
     finishedAt: j.finished_at,
+    // 0.9 fields only when the row carries them (a narrower or older row stays as it was).
+    ...(j.mode !== undefined
+      ? {
+          mode: j.mode,
+          roomId: j.room_id,
+          chatId: j.chat_id ?? null,
+          builder: j.builder_provider ?? null,
+          lastPhase: j.last_phase ?? null,
+          planPersisted: (j.plan_hash ?? null) !== null,
+          planApproved: (j.plan_hash ?? null) !== null && j.plan_approved_hash === j.plan_hash,
+          verdictReason: j.verdict_reason ?? null,
+          verdictProvider: j.verdict_provider ?? null,
+          retriedFromJobId: j.retried_from_job_id ?? null,
+        }
+      : {}),
   };
 }
 
 const JOB_COLUMNS =
   "id, owner_user_id, room_id, goal, status, status_line, summary, verdict, planning_round, " +
-  "max_planning_rounds, review_round, max_review_rounds, created_at, finished_at";
+  "max_planning_rounds, review_round, max_review_rounds, created_at, finished_at, mode, " +
+  "builder_provider, chat_id, last_phase, verdict_reason, verdict_provider, plan_hash, " +
+  "plan_approved_hash, retried_from_job_id";
 
 export async function listRoomJobsFor(
   db: SupabaseClient,
@@ -169,6 +214,29 @@ export async function listRoomJobsFor(
   if (error) throw new Error("Failed to load team jobs");
   const rows = z.array(jobRow).parse(data);
   assertOwned(user, rows);
+  return rows.map(toSummary);
+}
+
+/** 0.9: a chat's jobs, newest first (the chat's Progress tab). */
+export async function listChatJobsFor(
+  db: SupabaseClient,
+  user: ThreadLinkUser,
+  rawChatId: unknown,
+): Promise<OwnerJobSummary[]> {
+  const chatId = z
+    .string()
+    .regex(/^tlcht_[0-9a-f]{32}$/)
+    .parse(rawChatId);
+  const { data, error } = await db
+    .from("team_jobs")
+    .select(JOB_COLUMNS)
+    .eq("chat_id", chatId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) throw new Error("Failed to load team jobs");
+  const rows = z.array(jobRow).parse(data);
+  assertOwned(user, rows);
+  if (rows.some((r) => r.chat_id !== chatId)) throw new OwnershipViolationError();
   return rows.map(toSummary);
 }
 

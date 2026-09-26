@@ -76,3 +76,97 @@ export function stopRequested(answer: unknown): boolean {
   const value = (answer as Record<string, unknown>).stopRequestedAt;
   return typeof value === "string" && value.trim().length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// 0.9 carrier fields (docs/design/chat-first.md §2, §4, §5)
+// ---------------------------------------------------------------------------
+
+/** The roles a carrier may pin to a provider (`roleOverrides`). */
+export const OVERRIDABLE_ROLES = [
+  "coordinator",
+  "planner",
+  "builder",
+  "reviewer",
+  "integrator",
+] as const;
+export type OverridableRole = (typeof OVERRIDABLE_ROLES)[number];
+
+/**
+ * Thrown for a carrier field that is present but malformed. The job parser
+ * turns it into a refusal of the whole job: a role override or participant
+ * list that cannot be read is never guessed at.
+ */
+export class WireFieldError extends Error {}
+
+const CHAT_ID = /^tlcht_[0-9a-f]{32}$/;
+const PROVIDERS: readonly AgentProvider[] = ["claude-code", "codex"];
+const isProvider = (v: unknown): v is AgentProvider =>
+  typeof v === "string" && (PROVIDERS as readonly string[]).includes(v);
+
+/** `roleOverrides`: absent/null → none. Unknown role keys or providers fail. */
+export function parseRoleOverrides(
+  value: unknown,
+): Partial<Record<OverridableRole, AgentProvider>> {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new WireFieldError("roleOverrides must be an object.");
+  }
+  const out: Partial<Record<OverridableRole, AgentProvider>> = {};
+  for (const [key, provider] of Object.entries(value as Record<string, unknown>)) {
+    if (!(OVERRIDABLE_ROLES as readonly string[]).includes(key)) {
+      throw new WireFieldError(
+        `roleOverrides.${key.slice(0, 40)} is not a role that can be chosen.`,
+      );
+    }
+    if (provider === null || provider === undefined) continue;
+    if (!isProvider(provider)) {
+      throw new WireFieldError(`roleOverrides.${key} is not a supported provider.`);
+    }
+    out[key as OverridableRole] = provider;
+  }
+  return out;
+}
+
+/** `participants`: provider ids. Absent/null → null (use the room's agents). */
+export function parseParticipants(value: unknown): AgentProvider[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+    throw new WireFieldError("participants must be a short, non-empty list.");
+  }
+  const out: AgentProvider[] = [];
+  for (const p of value) {
+    if (!isProvider(p)) throw new WireFieldError("participants names an unsupported provider.");
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/** `chatId`: absent/null → null; otherwise a ThreadLink chat id. */
+export function parseChatId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !CHAT_ID.test(value)) {
+    throw new WireFieldError("chatId is malformed.");
+  }
+  return value;
+}
+
+/**
+ * The `set_final` payload. `provider` (0.9, optional) names the agent a
+ * verdict is about -- who needs to sign in, who is out of usage -- so the
+ * chat can name it from trusted state.
+ */
+export function setFinalPayload(input: {
+  verdict: string;
+  summary: string;
+  reason?: string;
+  provider?: AgentProvider | null;
+  evidence: unknown;
+}): Record<string, unknown> {
+  return {
+    verdict: input.verdict,
+    summary: input.summary,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    evidence: input.evidence,
+  };
+}

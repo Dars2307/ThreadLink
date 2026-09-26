@@ -427,3 +427,36 @@ describe("background delegation: working while Claude Code is open", { timeout: 
     }
   });
 });
+
+describe("a single task never bills an API key", () => {
+  it("runs Claude Code with API keys and provider URLs removed from its environment", async () => {
+    const seen: Record<string, string | undefined>[] = [];
+    const spy = ((command: string, args: string[], options: { env?: Record<string, string> }) => {
+      seen.push(options.env ?? {});
+      return spawnFake(command, args, options as never);
+    }) as unknown as typeof spawn;
+    const saved = { ...process.env };
+    process.env.ANTHROPIC_API_KEY = "sk-ant-should-not-leak";
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.example";
+    process.env.OPENAI_API_KEY = "sk-should-not-leak";
+    try {
+      await new ClaudeCodeExecutor({ cwd: dir, spawnFn: spy, native: { mode: "fresh" } }).execute(
+        task("hello"),
+        signal(),
+      );
+    } finally {
+      for (const k of ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY"]) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    for (const env of seen) {
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      // The login the CLI needs is untouched.
+      expect(env.PATH ?? env.Path).toBeTruthy();
+    }
+  });
+});

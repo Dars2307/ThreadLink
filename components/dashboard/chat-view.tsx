@@ -3,24 +3,24 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { Badge, buttonStyles, cx, EmptyState } from "@/components/ui";
-import type { ChatEvent, ChatPage, JobMode } from "@/lib/chat/types";
+import type { ChatEvent, ChatPage } from "@/lib/chat/types";
 import {
   announcement,
+  CHAT_POST_URL,
+  chatEventsUrl,
+  chatReadUrl,
   checkDraft,
   COMPOSER_MAX,
   groupChat,
   isChatPage,
   isPostResult,
-  jobRequest,
-  MENTION_HINTS,
+  mentionHints,
   mergeEvents,
-  MODE_OPTIONS,
   nextCursor,
   pollDelay,
   routeBanner,
   SEND_FAILED,
   sendOutcome,
-  type Builder,
   type ChatBubbleView,
   type ChatMilestoneView,
 } from "@/lib/dashboard/chat";
@@ -78,7 +78,7 @@ function Body({ item }: { item: ChatBubbleView }) {
   );
 }
 
-function Bubbles({ items }: { items: ChatBubbleView[] }) {
+function Bubbles({ items, technical }: { items: ChatBubbleView[]; technical: boolean }) {
   const head = items[0]!;
   const right = head.side === "right";
   return (
@@ -89,15 +89,18 @@ function Bubbles({ items }: { items: ChatBubbleView[] }) {
           right && "justify-end",
         )}
       >
-        <span className="text-foreground font-semibold">{head.label}</span>
-        {head.badge ? <Badge tone={head.badgeTone}>{head.badge}</Badge> : null}
+        <span className="text-foreground font-semibold">{head.headline}</span>
+        {head.author === "controller" ? <Badge tone="neutral">Controller</Badge> : null}
         {head.role ? <span className="text-muted">{head.role}</span> : null}
         {head.round ? <span className="text-subtle">{head.round}</span> : null}
         <Time at={head.at} />
       </div>
       {items.map((item, i) => {
         const prevModel = i > 0 ? items[i - 1]!.model : null;
-        const showModel = item.model && (i === 0 || item.model !== prevModel);
+        // The header already names the model; the line shows only when it matters.
+        const showModel =
+          item.model &&
+          (item.modelMismatch || (technical && (i === 0 || item.model !== prevModel)));
         return (
           <div
             key={item.key}
@@ -132,38 +135,65 @@ function Bubbles({ items }: { items: ChatBubbleView[] }) {
   );
 }
 
-function Milestone({ item }: { item: ChatMilestoneView }) {
+/** A ThreadLink line: compact, one symbol, plain text. */
+function Milestone({ item, calloutHint }: { item: ChatMilestoneView; calloutHint: string | null }) {
+  if (item.callout) {
+    return (
+      <li>
+        <div
+          role="note"
+          className="border-warning/40 bg-warning-soft text-warning flex flex-col gap-1 rounded-xl border px-4 py-3 text-sm"
+        >
+          <p className="break-words">{item.text}</p>
+          {calloutHint && calloutHint !== item.text ? (
+            <p className="text-foreground break-words">{calloutHint}</p>
+          ) : null}
+        </div>
+      </li>
+    );
+  }
   return (
-    <li className="flex justify-center px-2">
+    <li className="flex items-baseline gap-2 px-1 text-xs">
+      <span aria-hidden className={cx("w-3 shrink-0 text-center", MILESTONE_TEXT[item.tone])}>
+        {item.symbol}
+      </span>
       <p
         className={cx(
-          "bg-surface-muted max-w-full rounded-full px-3 py-1 text-center text-xs break-words",
-          MILESTONE_TEXT[item.tone],
+          "min-w-0 break-words",
+          item.tone === "neutral" ? "text-muted" : MILESTONE_TEXT[item.tone],
           item.technical && "opacity-80",
         )}
       >
-        <span aria-hidden>— </span>
+        <span className="sr-only">ThreadLink: </span>
         {item.text}
-        <span aria-hidden> —</span>
       </p>
     </li>
   );
 }
 
-export function ProjectChat({
-  roomId,
+export function ChatView({
+  chatId,
   initial,
   controller,
-  twoAgents,
+  agentProviders,
+  modeSummary,
   archived,
+  hasProject,
+  healthHint,
 }: {
-  roomId: string;
+  chatId: string;
   /** First page rendered by the server, or null to load it in the browser. */
   initial: ChatPage | null;
   /** The connected controller's name, e.g. "ChatGPT", or a generic phrase. */
   controller: string;
-  twoAgents: boolean;
+  /** Provider ids of the chat's agents (for @mention hints). */
+  agentProviders: string[];
+  /** The chat's mode in words, e.g. "Team · Claude Code + Codex". */
+  modeSummary: string;
   archived: boolean;
+  hasProject: boolean;
+  /** Fixed-text instruction shown beside a provider-blocked line, if any agent needs the user. */
+  healthHint: string | null;
 }) {
   const [events, setEvents] = useState<ChatEvent[]>(initial?.events ?? []);
   const [activeJob, setActiveJob] = useState<ChatPage["activeJob"]>(initial?.activeJob ?? null);
@@ -173,12 +203,11 @@ export function ProjectChat({
   const [live, setLive] = useState("");
 
   const [draft, setDraft] = useState("");
-  const [mode, setMode] = useState<JobMode>(twoAgents ? "team" : "solo");
-  const [builder, setBuilder] = useState<Builder>("claude-code");
   const [sending, setSending] = useState(false);
   const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null);
 
   const cursor = useRef(initial ? nextCursor(0, initial) : 0);
+  const readUpTo = useRef(0);
   const technicalRef = useRef(false);
   const inFlight = useRef(false);
   const idempotencyKey = useRef<string | null>(null);
@@ -187,6 +216,20 @@ export function ProjectChat({
   const pokeRef = useRef<() => void>(() => {});
   const ids = useId();
 
+  /** Tell the server the owner has seen up to the cursor. Best effort: a miss only leaves "unread". */
+  const markRead = useCallback(() => {
+    const seq = cursor.current;
+    if (seq <= readUpTo.current || document.visibilityState !== "visible") return;
+    readUpTo.current = seq;
+    void fetch(chatReadUrl(chatId), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ seq }),
+    }).catch(() => {
+      readUpTo.current = 0;
+    });
+  }, [chatId]);
+
   /** Fetch everything after the cursor and append it. `announce` is false for the first load. */
   const poll = useCallback(
     async (announce: boolean) => {
@@ -194,12 +237,7 @@ export function ProjectChat({
       inFlight.current = true;
       const tech = technicalRef.current;
       try {
-        const q = new URLSearchParams({
-          room: roomId,
-          after: String(cursor.current),
-          technical: tech ? "1" : "0",
-        });
-        const res = await fetch(`/api/dashboard/chat?${q.toString()}`, {
+        const res = await fetch(chatEventsUrl(chatId, cursor.current, tech), {
           cache: "no-store",
           headers: { accept: "application/json" },
         });
@@ -222,6 +260,7 @@ export function ProjectChat({
             return mergeEvents(prev, page.events);
           });
         }
+        markRead();
       } catch {
         setLoadError(LOAD_FAILED);
         setLoaded(true);
@@ -229,7 +268,7 @@ export function ProjectChat({
         inFlight.current = false;
       }
     },
-    [roomId],
+    [chatId, markRead],
   );
 
   // Poll: every 3 s while visible, 15 s while hidden, paused after 10 minutes
@@ -279,7 +318,10 @@ export function ProjectChat({
     };
 
     if (!loaded || cursor.current === 0) void poll(false).then(schedule);
-    else schedule();
+    else {
+      markRead();
+      schedule();
+    }
 
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", wake);
@@ -293,7 +335,7 @@ export function ProjectChat({
       window.removeEventListener("pointerdown", wake);
       window.removeEventListener("keydown", wake);
     };
-    // Re-run only when the room or the technical view changes.
+    // Re-run only when the chat or the technical view changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [poll, technical]);
 
@@ -305,9 +347,10 @@ export function ProjectChat({
   }, [events]);
 
   const groups = useMemo(() => groupChat(events, { technical }), [events, technical]);
-  const banner = routeBanner(activeJob, draft);
-  const request = jobRequest(draft, { mode, builder });
+  const hints = useMemo(() => mentionHints(agentProviders), [agentProviders]);
+  const banner = routeBanner(activeJob, draft, modeSummary);
   const remaining = COMPOSER_MAX - draft.length;
+  const closed = archived;
 
   const toggleTechnical = () => {
     const next = !technical;
@@ -339,7 +382,7 @@ export function ProjectChat({
 
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (sending || archived) return;
+    if (sending || closed) return;
     const check = checkDraft(draft);
     if (!check.ok) {
       setOutcome({ ok: false, message: check.message });
@@ -351,13 +394,14 @@ export function ProjectChat({
     setOutcome(null);
     let result: { ok: boolean; message: string };
     try {
-      const res = await fetch("/api/dashboard/chat", {
+      // Only the chat and the text: the server routes it by the chat's mode and
+      // any leading @mention. The browser never picks a builder.
+      const res = await fetch(CHAT_POST_URL, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
-          roomId,
+          chatId,
           body: check.body,
-          ...(activeJob ? {} : request),
           idempotencyKey: idempotencyKey.current,
         }),
       });
@@ -384,8 +428,8 @@ export function ProjectChat({
         <p className="text-muted text-sm">
           {activeJob ? (
             <>
-              <Badge tone="accent">Job running</Badge>{" "}
-              <span className="sr-only">A job is running in this project.</span>
+              <Badge tone="accent">Working</Badge>{" "}
+              <span className="sr-only">Work is running in this chat.</span>
             </>
           ) : null}
         </p>
@@ -411,7 +455,7 @@ export function ProjectChat({
         }}
         className="border-border bg-surface max-h-[65vh] min-h-48 overflow-y-auto rounded-2xl border p-3 sm:p-4"
         role="region"
-        aria-label="Project chat"
+        aria-label="Chat"
         tabIndex={0}
       >
         {!loaded ? (
@@ -423,24 +467,27 @@ export function ProjectChat({
             </p>
           ) : (
             <EmptyState title="No messages yet">
-              Type <strong>@Claude</strong> and a task to give it to Claude Code,{" "}
-              <strong>@Codex</strong> for Codex
-              {twoAgents ? (
+              Write what you want done and send it. It runs as {modeSummary}
+              {hints.length ? (
                 <>
-                  , or <strong>@team</strong> for both
+                  ; start with{" "}
+                  {hints
+                    .map((h) => h.label)
+                    .filter((l) => !l.includes("stop"))
+                    .join(", ")}{" "}
+                  to ask someone specific
                 </>
               ) : null}
-              . You can also ask {controller} to send work to this project; everything shows up
-              here.
+              . You can also ask {controller} to send work here; everything shows up in this chat.
             </EmptyState>
           )
         ) : (
-          <ol className="flex flex-col gap-4" aria-label="Messages">
+          <ol className="flex flex-col gap-3" aria-label="Messages">
             {groups.map((g) =>
               g.kind === "milestone" ? (
-                <Milestone key={g.key} item={g.item} />
+                <Milestone key={g.key} item={g.item} calloutHint={healthHint} />
               ) : (
-                <Bubbles key={g.key} items={g.items} />
+                <Bubbles key={g.key} items={g.items} technical={technical} />
               ),
             )}
           </ol>
@@ -467,63 +514,27 @@ export function ProjectChat({
           )}
         >
           {banner.text}
+          {!hasProject && !activeJob ? (
+            <> Choose a project for this chat so the agents know which folder to work in.</>
+          ) : null}
         </p>
 
-        {!activeJob && !archived ? (
-          <fieldset className="flex flex-col gap-2">
-            <legend className="text-subtle mb-1 text-xs font-medium">How to run it</legend>
-            <div className="flex flex-wrap gap-2">
-              {MODE_OPTIONS.filter((o) => twoAgents || o.value === "solo").map((o) => (
-                <label
-                  key={o.value}
-                  className="border-border has-[:checked]:border-accent has-[:checked]:bg-accent-soft flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm"
-                  title={o.description}
-                >
-                  <input
-                    type="radio"
-                    name={`${ids}-mode`}
-                    value={o.value}
-                    checked={mode === o.value}
-                    onChange={() => setMode(o.value)}
-                  />
-                  {o.label}
-                </label>
-              ))}
-              {mode !== "team" ? (
-                <label className="flex items-center gap-2 text-sm">
-                  <span className="text-muted">Builder</span>
-                  <select
-                    value={builder}
-                    onChange={(e) => setBuilder(e.target.value as Builder)}
-                    className="border-border-strong bg-surface rounded-lg border px-2 py-1.5"
-                  >
-                    <option value="claude-code">Claude Code</option>
-                    <option value="codex">Codex</option>
-                  </select>
-                </label>
-              ) : null}
-            </div>
-            <p className="text-subtle text-xs">
-              {MODE_OPTIONS.find((o) => o.value === request.mode)?.description}
-              {request.mode !== mode ? " (from your @mention)" : ""}
-            </p>
-          </fieldset>
+        {hints.length ? (
+          <div className="flex flex-wrap gap-1.5" aria-label="Mention hints">
+            {hints.map((h) => (
+              <button
+                key={h.label}
+                type="button"
+                onClick={() => insertMention(h.insert)}
+                disabled={closed}
+                title={h.description}
+                className="border-border text-muted hover:bg-surface-muted hover:text-foreground rounded-full border px-2.5 py-0.5 text-xs disabled:opacity-60"
+              >
+                {h.label}
+              </button>
+            ))}
+          </div>
         ) : null}
-
-        <div className="flex flex-wrap gap-1.5" aria-label="Mention hints">
-          {MENTION_HINTS.filter((h) => twoAgents || !h.label.startsWith("@team")).map((h) => (
-            <button
-              key={h.label}
-              type="button"
-              onClick={() => insertMention(h.insert)}
-              disabled={archived}
-              title={h.description}
-              className="border-border text-muted hover:bg-surface-muted hover:text-foreground rounded-full border px-2.5 py-0.5 text-xs disabled:opacity-60"
-            >
-              {h.label}
-            </button>
-          ))}
-        </div>
 
         <label className="flex flex-col gap-1">
           <span className="sr-only">Message</span>
@@ -536,15 +547,9 @@ export function ProjectChat({
             }}
             maxLength={COMPOSER_MAX}
             rows={3}
-            disabled={archived}
+            disabled={closed}
             aria-describedby={`${ids}-count ${ids}-outcome`}
-            placeholder={
-              archived
-                ? "This project is archived."
-                : twoAgents
-                  ? "@Claude fix the login bug… or @team build the settings page…"
-                  : "@Claude fix the login bug…"
-            }
+            placeholder={closed ? "This chat is archived." : "Write a message…"}
             className="border-border-strong bg-surface rounded-xl border px-3 py-2 text-sm disabled:opacity-60"
           />
         </label>
@@ -559,10 +564,10 @@ export function ProjectChat({
             <span className="text-subtle hidden text-xs sm:inline">Ctrl + Enter to send</span>
             <button
               type="submit"
-              disabled={sending || archived || draft.trim() === ""}
+              disabled={sending || closed || draft.trim() === ""}
               className={buttonStyles.primary}
             >
-              {sending ? "Sending…" : activeJob ? "Send to job" : "Send"}
+              {sending ? "Sending…" : activeJob ? "Send to running work" : "Send"}
             </button>
           </div>
         </div>
@@ -578,9 +583,9 @@ export function ProjectChat({
         >
           {outcome?.message ?? ""}
         </p>
-        {archived ? (
+        {closed ? (
           <p className="text-muted text-xs">
-            This project is archived. Restore it on the Projects page to send messages.
+            This chat is archived. Restore it from the chat list to send messages.
           </p>
         ) : null}
       </form>

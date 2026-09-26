@@ -172,6 +172,9 @@ export const VERDICT_REASONS = [
   "unexpected_error",
   "merge_conflict",
   "no_suitable_model",
+  // 0.9 chat-first
+  "agent_needs_sign_in",
+  "api_key_auth",
 ] as const;
 
 /** Statuses only set_final may reach (plus "failed", which the carrier task sets). */
@@ -494,6 +497,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         verdict: z.enum(JOB_VERDICTS),
         summary: boundedText(4000).optional(),
         reason: z.enum(VERDICT_REASONS).optional(),
+        /** 0.9: the provider the reason is about (a participant of the job). */
+        provider: provider.optional(),
         evidence: boundedJson(TEAM_SIZE_LIMITS.evidenceBytes),
       })
       .strict(),
@@ -636,6 +641,7 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         verdict: input.payload.verdict,
         summary: input.payload.summary,
         reason: input.payload.reason,
+        provider: input.payload.provider,
         evidence: input.payload.evidence,
       });
     case "read_owner_notes":
@@ -685,6 +691,11 @@ export const startTeamJobInputSchema = z
     mode: z.enum(JOB_MODES).optional(),
     /** Who builds, for solo/pair. Ignored for team. */
     builder: z.enum(AGENT_PROVIDERS).optional(),
+    /** 0.9: the chat this work belongs to (same account and project); default = the project's default chat. */
+    chatId: z
+      .string()
+      .regex(/^tlcht_[0-9a-f]{32}$/)
+      .optional(),
     // No verifyCommands here: ThreadLink runs them itself, outside any agent
     // sandbox, so only the project's owner sets them (in the room policy).
     idempotencyKey: z
@@ -811,6 +822,13 @@ export const teamStatusRowSchema = z.object({
   builder: z.enum(AGENT_PROVIDERS).nullable().optional(),
   origin: z.enum(JOB_ORIGINS).optional(),
   stop_requested_at: z.string().nullable().optional(),
+  // 0.9 chat-first (optional: older rows parse).
+  chat_id: z.string().nullable().optional(),
+  last_phase: z.enum(JOB_STATUSES).nullable().optional(),
+  role_overrides: z.record(z.string(), z.string()).nullable().optional(),
+  verdict_reason: z.string().nullable().optional(),
+  verdict_provider: z.enum(AGENT_PROVIDERS).nullable().optional(),
+  retried_from_job_id: z.string().nullable().optional(),
   rounds: z.object({
     planning: z.object({ n: z.number(), max: z.number() }),
     review: z.object({ n: z.number(), max: z.number() }),
@@ -857,6 +875,15 @@ export type TeamStatus = {
   origin: JobOrigin;
   /** Set when the owner said "@team stop": finish the current round, then stop. */
   stopRequestedAt: string | null;
+  /** 0.9: the chat this job belongs to. */
+  chatId?: string | null;
+  /** 0.9: the last non-terminal status reached (null: unknown). */
+  lastPhase?: JobStatus | null;
+  /** 0.9: roles pinned for this job (e.g. {coordinator: "codex"} on a retry). */
+  roleOverrides?: Record<string, string> | null;
+  verdictReason?: string | null;
+  verdictProvider?: AgentProvider | null;
+  retriedFromJobId?: string | null;
   rounds: { planning: { n: number; max: number }; review: { n: number; max: number } };
   parallelAgents: number;
   planHash: string | null;
@@ -891,6 +918,13 @@ export function toTeamStatus(r: TeamStatusRow): TeamStatus {
     builder: r.builder ?? null,
     origin: r.origin ?? "controller",
     stopRequestedAt: r.stop_requested_at ?? null,
+    // 0.9 fields only when the database sent them (an older row stays as it was).
+    ...(r.chat_id !== undefined ? { chatId: r.chat_id } : {}),
+    ...(r.last_phase !== undefined ? { lastPhase: r.last_phase } : {}),
+    ...(r.role_overrides !== undefined ? { roleOverrides: r.role_overrides } : {}),
+    ...(r.verdict_reason !== undefined ? { verdictReason: r.verdict_reason } : {}),
+    ...(r.verdict_provider !== undefined ? { verdictProvider: r.verdict_provider } : {}),
+    ...(r.retried_from_job_id !== undefined ? { retriedFromJobId: r.retried_from_job_id } : {}),
     rounds: r.rounds,
     parallelAgents: r.parallel_agents,
     planHash: r.plan_hash,

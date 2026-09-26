@@ -19,10 +19,10 @@ const STATE_WORDS: Record<GraphLine["state"], string> = {
   skipped: "skipped",
 };
 
-/** The job's plan as a small tree: ✓ done, ● in progress, ○ not started. */
+/** The job's stages (units under Build): ✓ done, ● in progress, ✕ stopped, ○ not started, – not reached. */
 export function TaskGraph({ lines }: { lines: GraphLine[] }) {
   return (
-    <ol className="flex flex-col gap-1 text-sm" aria-label="Plan">
+    <ol className="flex flex-col gap-1 text-sm" aria-label="Progress">
       {lines.map((l) => (
         <li key={l.key} className="flex min-w-0 items-baseline gap-2">
           {l.branch ? (
@@ -201,7 +201,7 @@ export function JobLog({
           <AgentList agents={view.agents} />
         </Card>
         <Card labelledBy="log-plan">
-          <CardTitle id="log-plan">Units</CardTitle>
+          <CardTitle id="log-plan">Progress</CardTitle>
           <TaskGraph lines={view.graph} />
         </Card>
       </div>

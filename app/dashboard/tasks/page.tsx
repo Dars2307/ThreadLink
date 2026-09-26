@@ -27,8 +27,8 @@ export default async function TasksPage() {
           <CardTitle
             id="team-tasks"
             action={
-              <Link href="/dashboard/team" className="text-accent text-sm">
-                Team
+              <Link href="/dashboard/chats" className="text-accent text-sm">
+                Chats
               </Link>
             }
           >

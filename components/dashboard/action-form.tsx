@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState, type ReactNode } from "react";
 import { useFormStatus } from "react-dom";
 
@@ -56,6 +57,14 @@ export function ActionStatus({
       )}
     >
       {state ? state.message : ""}
+      {state?.ok && state.href ? (
+        <>
+          {" "}
+          <Link href={state.href} className="text-accent font-medium">
+            Open it →
+          </Link>
+        </>
+      ) : null}
     </p>
   );
 }

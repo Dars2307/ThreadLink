@@ -98,9 +98,9 @@ select public.approve_pairing(pg_temp.h('a-rt'), pg_temp.id('agent'), pg_temp.id
 select pg_temp.put('mlink2', public.request_pairing(pg_temp.h('a-mcp2'), pg_temp.id('mcp2'), pg_temp.id('agent')) ->> 'id');
 select public.approve_pairing(pg_temp.h('a-rt'), pg_temp.id('agent'), pg_temp.id('mlink2'));
 select public.report_provider_detection(pg_temp.h('a-rt'), 'claude-code',
-  '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}');
+  '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select public.report_provider_detection(pg_temp.h('a-rt'), 'codex',
-  '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}');
+  '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select pg_temp.put('roomA', public.create_room(pg_temp.h('a-chat'), pg_temp.id('chat'), 'A', pg_temp.id('link')) ->> 'room_id');
 select pg_temp.put('roomB', public.create_room(pg_temp.h('a-chat'), pg_temp.id('chat'), 'B', pg_temp.id('link2')) ->> 'room_id');
 
@@ -113,9 +113,9 @@ select pg_temp.put('bchat', public.register_session(pg_temp.h('b-chat'), null, n
 select pg_temp.put('blink', public.request_pairing(pg_temp.h('b-chat'), pg_temp.id('bchat'), pg_temp.id('bagent')) ->> 'id');
 select public.approve_pairing(pg_temp.h('b-rt'), pg_temp.id('bagent'), pg_temp.id('blink'));
 select public.report_provider_detection(pg_temp.h('b-rt'), 'claude-code',
-  '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}');
+  '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select public.report_provider_detection(pg_temp.h('b-rt'), 'codex',
-  '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}');
+  '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select pg_temp.put('broom', public.create_room(pg_temp.h('b-chat'), pg_temp.id('bchat'), 'Bob room') ->> 'room_id');
 
 -- Alice: an active job in each room, started by her; the Runtime claims both.

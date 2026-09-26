@@ -1127,3 +1127,61 @@ describe("provider plans and capabilities for the desktop app", () => {
     expect(view.profiles[0]!.declaredPlan).toBe("max_20x");
   });
 });
+
+describe("provider health for the desktop app and ThreadLink (0.9)", () => {
+  const claude = {
+    provider: "claude-code" as const,
+    installed: true,
+    executable: "claude.exe",
+    version: "2.1.266",
+    authenticated: true,
+    authMethod: "claude.ai",
+    detectedPlan: "max",
+    models: [],
+    currentModel: null,
+    capabilities: {} as never,
+    usage: { remaining: "unknown" as const },
+  };
+
+  it("checks with a real call, reports health with a fixed sentence, and shows it in the snapshot", async () => {
+    const { api } = fakeApi();
+    const probe = vi.fn(async () => "not_authenticated" as const);
+    const e = engine(api, fakeAdapter().adapter, {
+      discoverTeam: async () => [claude],
+      probeProvider: probe,
+    });
+    await e.refreshTeamProviders();
+    expect(probe).toHaveBeenCalledTimes(1);
+    const [, detected] = api.reportProviderDetection.mock.calls[0] as unknown as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(detected).toMatchObject({
+      health: "needs_sign_in",
+      healthDetail: "Needs you to sign in again on this computer.",
+    });
+    expect(typeof detected.healthCheckedAt).toBe("string");
+    expect(e.snapshot().teamProviders[0]).toMatchObject({
+      provider: "claude-code",
+      health: "needs_sign_in",
+    });
+    expect(e.providerHealth().map((r) => r.health)).toEqual(["needs_sign_in", "not_installed"]);
+  });
+
+  it("'Check again' probes even while a provider is backing off", async () => {
+    const { api } = fakeApi();
+    let answer: "not_authenticated" | "ok" = "not_authenticated";
+    const probe = vi.fn(async () => answer);
+    const e = engine(api, fakeAdapter().adapter, {
+      discoverTeam: async () => [claude],
+      probeProvider: probe,
+    });
+    await e.refreshTeamProviders();
+    await e.refreshTeamProviders(); // backoff: no second call
+    expect(probe).toHaveBeenCalledTimes(1);
+    answer = "ok";
+    const views = await e.checkProviders();
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(views[0]).toMatchObject({ health: "ready", healthDetail: "Signed in and answering." });
+  });
+});

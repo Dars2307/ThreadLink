@@ -6,6 +6,7 @@ const SECTIONS = [
   { href: "/dashboard/settings", label: "General" },
   { href: "/dashboard/settings/providers", label: "Providers & plans" },
   { href: "/dashboard/settings/apps", label: "Connected apps" },
+  { href: "/dashboard/devices", label: "Devices" },
   { href: "/dashboard/settings/cleanup", label: "Cleanup" },
   { href: "/dashboard/settings/advanced", label: "Advanced" },
 ] as const;

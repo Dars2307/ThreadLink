@@ -4,7 +4,9 @@ import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { healthViews } from "../../desktop/src/health.ts";
 import { planViews, type PlanProfile } from "../../desktop/src/plans.ts";
+import { PhaseMemory, workView } from "../../desktop/src/progress.ts";
 
 /**
  * Team Mode in the desktop app, driven through the real renderer.
@@ -98,7 +100,17 @@ const providers = (): Provider[] => [
   },
 ];
 
+/** The state main sends: the snapshot plus what main derives from it. */
 function appState(snapshot: Record<string, unknown> = {}) {
+  const state = rawState(snapshot);
+  return {
+    ...state,
+    health: healthViews(state.snapshot),
+    work: workView(state.snapshot.team, new PhaseMemory()),
+  };
+}
+
+function rawState(snapshot: Record<string, unknown> = {}) {
   return {
     signedIn: true,
     baseUrl: "https://threadlink-one.vercel.app",
@@ -276,7 +288,7 @@ describe("navigation", () => {
     mount(appState());
     await settle();
     expect([...document.querySelectorAll("#nav button")].map((b) => b.textContent?.trim())).toEqual(
-      ["Home", "Conversations", "Team", "This computer", "Notifications", "Settings"],
+      ["Home", "Chats", "Agents", "This computer", "Notifications", "Settings"],
     );
   });
 
@@ -284,8 +296,8 @@ describe("navigation", () => {
     mount(appState());
     await settle();
     for (const [label, title] of [
-      ["Conversations", "Conversations"],
-      ["Team", "Team"],
+      ["Agents", "Agents"],
+      ["Chats", "Chats"],
       ["This computer", "This computer"],
       ["Notifications", "Notifications"],
       ["Settings", "Settings"],
@@ -298,16 +310,14 @@ describe("navigation", () => {
   });
 });
 
-describe("the Team page", () => {
-  it("explains Team Mode when no job has run", async () => {
+describe("the Chats page", () => {
+  it("explains itself when nothing has run", async () => {
     mount(appState());
     await settle();
-    await navTo("Team");
+    await navTo("Chats");
     const text = viewText();
-    expect(text).toContain("Team Mode");
-    expect(text).toContain(
-      "Ask your controller (for example ChatGPT) to start a team job in a room",
-    );
+    expect(text).toContain("Chat with one AI, two AIs, or a team");
+    expect(text).toContain("Ask your controller (for example ChatGPT)");
     expect(text).not.toContain("Ask ChatGPT");
     expect(document.querySelector(".team-job")).toBeNull();
   });
@@ -315,8 +325,8 @@ describe("the Team page", () => {
   it("shows the room, the goal and what each agent is doing", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    await navTo("Team");
-    expect(document.querySelector(".team-room")?.textContent).toBe("Prism Team");
+    await navTo("Chats");
+    expect(document.querySelector(".chat-name")?.textContent).toBe("Prism");
     const text = viewText();
     expect(text).toContain("Add a weekly report page");
     const agents = [...document.querySelectorAll(".team-agent")].map((a) => a.textContent);
@@ -331,28 +341,43 @@ describe("the Team page", () => {
       }),
     );
     await settle();
-    await navTo("Team");
-    expect([...document.querySelectorAll(".team-room")].map((h) => h.textContent)).toEqual([
-      "Newer Team",
-      "Older Team",
+    await navTo("Chats");
+    expect([...document.querySelectorAll(".chat-name")].map((h) => h.textContent)).toEqual([
+      "Newer",
+      "Older",
     ]);
   });
 
-  it("marks each step done, in progress, waiting or failed", async () => {
+  it("marks each stage and unit done, in progress, waiting or failed", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    await navTo("Team");
+    await navTo("Chats");
     const s = steps();
-    expect(s[0]).toMatchObject({ state: "done", sym: "✓", text: "Plan" });
-    expect(s[1]).toMatchObject({
+    expect(s.map((x) => x.text.split(" — ")[0])).toEqual([
+      "Understanding request",
+      "Plan",
+      "Build",
+      "Report backend",
+      "Report UI",
+      "Report emails",
+      "Report export",
+      "Review",
+      "Integration",
+    ]);
+    expect(s[0]).toMatchObject({ state: "done", sym: "✓" });
+    // Units have started, so the plan was agreed.
+    expect(s[1]).toMatchObject({ state: "done", sym: "✓", text: "Plan" });
+    expect(s[2]).toMatchObject({ state: "active", sym: "●", text: "Build" });
+    expect(s[3]).toMatchObject({
       state: "done",
       sym: "✓",
       text: "Report backend — Claude Code, reviewed by Codex",
     });
-    expect(s[2]).toMatchObject({ state: "active", sym: "●", text: "Report UI — Codex" });
-    expect(s[3]).toMatchObject({ state: "waiting", sym: "○" });
-    expect(s[4]).toMatchObject({ state: "failed", sym: "✕" });
-    expect(s[5]).toMatchObject({ state: "waiting", sym: "○", text: "Integration → Final review" });
+    expect(s[4]).toMatchObject({ state: "active", sym: "●", text: "Report UI — Codex" });
+    expect(s[5]).toMatchObject({ state: "waiting", sym: "○" });
+    expect(s[6]).toMatchObject({ state: "failed", sym: "✕" });
+    expect(s[7]).toMatchObject({ state: "waiting", sym: "○", text: "Review" });
+    expect(s[8]).toMatchObject({ state: "waiting", sym: "○", text: "Integration" });
     // No graph words.
     expect(viewText()).not.toMatch(/\b(node|DAG|graph|in_review|changes_requested)\b/);
   });
@@ -375,7 +400,7 @@ describe("the Team page", () => {
       }),
     );
     await settle();
-    await navTo("Team");
+    await navTo("Chats");
     expect(document.querySelector(".team-verdict")?.textContent).toBe(words);
     expect(viewText()).not.toContain(verdict);
   });
@@ -383,13 +408,13 @@ describe("the Team page", () => {
   it("never shows a raw provider id", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    await navTo("Team");
+    await navTo("Chats");
     expect(visibleText()).not.toMatch(/claude-code|\bcodex\b/);
   });
 });
 
 describe("Home", () => {
-  it("summarises agents, conversations, team jobs and attention", async () => {
+  it("summarises agents, conversations, running chats and attention", async () => {
     mount(
       appState({
         team: [
@@ -404,7 +429,7 @@ describe("Home", () => {
     expect(tiles).toEqual([
       "Claude CodeAgents online",
       "1Conversations linked",
-      "1Team jobs running",
+      "1Chats running",
       "1Needs attention",
     ]);
     expect(document.getElementById("links")).toBeTruthy();
@@ -422,14 +447,16 @@ describe("Providers & plans", () => {
     const [claude, codex] = cards.map((c) => c.textContent ?? "");
     expect(claude).toContain("Claude Code");
     expect(claude).toContain("Installed");
-    expect(claude).toContain("Signed in");
+    // Health from the probe, never "Signed in" from a status command.
+    expect(claude).toContain("Not checked yet");
+    expect(claude).not.toContain("Signed in");
     expect(factOf(0, "Your plan")).toBe("Max 20×");
     expect(factOf(0, "Provider reported")).toBe("Max");
     expect(claude).toContain("2.1.266");
     expect(claude).toContain("Opus 4.1");
     expect(claude).toContain("Sonnet 4.5");
     expect(codex).toContain("Codex");
-    expect(codex).toContain("Not signed in");
+    expect(codex).toContain("Not checked yet");
     expect(factOf(1, "Provider reported")).toBe(
       "Codex doesn't report your plan — ThreadLink uses the plan you chose.",
     );
@@ -646,14 +673,7 @@ describe("identifiers", () => {
   it("never shows a tl*_ identifier outside a closed details section", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    for (const label of [
-      "Home",
-      "Conversations",
-      "Team",
-      "This computer",
-      "Notifications",
-      "Settings",
-    ]) {
+    for (const label of ["Home", "Chats", "Agents", "This computer", "Notifications", "Settings"]) {
       await navTo(label);
       expect(visibleText(), label).not.toMatch(/\btl[a-z]*_/);
     }

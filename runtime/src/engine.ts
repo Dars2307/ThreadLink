@@ -32,6 +32,13 @@ import {
   type WorkspaceState,
 } from "./state.ts";
 import type { ProviderDiscovery } from "./team/discovery.ts";
+import {
+  HEALTH_DETAIL,
+  ProviderHealthMonitor,
+  type HealthRecord,
+  type ProbeFn,
+  type ProviderHealth,
+} from "./team/health.ts";
 import { TEAM_TASK_TYPE, TeamExecutor } from "./team/executor.ts";
 import type { TeamProgress } from "./team/orchestrator.ts";
 import {
@@ -221,6 +228,15 @@ export type TeamProviderView = {
   /** No CLI reports remaining usage today, so this is never a guessed number. */
   remaining: "unknown";
   detail: string | null;
+  /**
+   * 0.9: what a real authenticated call last showed (not status output).
+   * "unknown" until checked, or when this Runtime does not probe.
+   */
+  health: ProviderHealth;
+  /** ISO time of that check; null when never checked. */
+  healthCheckedAt: string | null;
+  /** A short fixed sentence for the health value. Never provider output. */
+  healthDetail: string;
 };
 
 /** One provider as the desktop app's settings show it: the owner's plan and what was found here. */
@@ -313,6 +329,12 @@ export type EngineOptions = {
   discoverTeam?: (() => Promise<ProviderDiscovery[]>) | null;
   /** How to look for a Cursor CLI (detect-only, never run). Defaults to a PATH lookup. */
   detectCursor?: () => CursorDetection;
+  /**
+   * The authenticated health call (team/health.ts). With `discoverTeam`, the
+   * engine checks provider health at start, every 30 minutes while idle, at
+   * each team job claim and on "Check again". Omitted = no probing.
+   */
+  probeProvider?: ProbeFn | null;
 };
 
 const defaultSleep = (ms: number, signal: AbortSignal) =>
@@ -403,14 +425,22 @@ function defaultConversationName(mode: AttachedConversation["mode"]): string {
   return "Claude conversation";
 }
 
+const AGENT_IDS = ["claude-code", "codex"] as const;
+
 const isNetworkError = (e: unknown) =>
   e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429);
 
 export class RuntimeEngine {
   readonly #o: Required<
-    Omit<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam" | "detectCursor">
+    Omit<
+      EngineOptions,
+      "model" | "log" | "teamExecutor" | "discoverTeam" | "detectCursor" | "probeProvider"
+    >
   > &
-    Pick<EngineOptions, "model" | "log" | "teamExecutor" | "discoverTeam" | "detectCursor">;
+    Pick<
+      EngineOptions,
+      "model" | "log" | "teamExecutor" | "discoverTeam" | "detectCursor" | "probeProvider"
+    >;
   readonly #listeners = new Set<(e: EngineEvent) => void>();
   readonly #claimRef = `runtime-${randomUUID()}`;
   /**
@@ -429,7 +459,11 @@ export class RuntimeEngine {
   /** Newest first, capped at ACTIVITY_LIMIT. */
   #activity: ActivityEntry[] = [];
   #teamProviders: TeamProviderView[] = [];
+  /** The last discovery, local only (executable paths never leave this computer). */
+  #found: ProviderDiscovery[] = [];
   #providerCapabilities: ProviderCapability[] = [];
+  /** Provider health (team/health.ts); null when this engine does not probe. */
+  readonly #health: ProviderHealthMonitor | null;
   /** Team job progress by job id, in insertion order; capped. */
   #team = new Map<string, TeamProgress>();
   /** `${taskId}:${event}` already mirrored, so a retry cannot post it twice. */
@@ -455,6 +489,16 @@ export class RuntimeEngine {
       baseUrlLabel: "This address",
       ...options,
     };
+    const discover = this.#o.discoverTeam;
+    const probe = this.#o.probeProvider;
+    this.#health =
+      discover && probe
+        ? new ProviderHealthMonitor({
+            discover,
+            probe,
+            onChange: (changed) => void this.#healthChanged(changed),
+          })
+        : null;
   }
 
   // -------------------------------------------------------------------------
@@ -601,15 +645,83 @@ export class RuntimeEngine {
     return runtime;
   }
 
-  /** Finds out which Team Mode agents this computer has. Never throws. */
+  /** Finds out which Team Mode agents this computer has, and checks their health. Never throws. */
   async refreshTeamProviders(): Promise<TeamProviderView[]> {
+    return this.#refresh(false);
+  }
+
+  /**
+   * "Check again": discovery plus a real authenticated call to every provider,
+   * ignoring the backoff that normally spaces checks of a provider that needs
+   * sign-in. For the desktop app. Never throws.
+   */
+  async checkProviders(): Promise<TeamProviderView[]> {
+    return this.#refresh(true);
+  }
+
+  /** Provider health as last checked, one record per provider. Empty when this engine does not probe. */
+  providerHealth(): HealthRecord[] {
+    return this.#health?.records() ?? [];
+  }
+
+  async #refresh(force: boolean): Promise<TeamProviderView[]> {
     // Opt-in: discovery spawns the real CLIs, so only an engine built for the
     // real app (createEngine) does it. Tests and embedded engines do not.
     const discover = this.#o.discoverTeam;
     if (!discover) return this.#teamProviders;
     try {
       const found = await discover();
-      this.#teamProviders = found.map((p) => ({
+      this.#found = found;
+      if (this.#health) await this.#health.checkAll({ found, force });
+      this.#teamProviders = this.#views();
+      // Cursor is looked for on PATH only; nothing is run.
+      const cursor = (this.#o.detectCursor ?? detectCursor)();
+      this.#providerCapabilities = providerCapabilities(found, cursor);
+      this.#changed();
+      for (const p of found) await this.#report(p);
+    } catch {
+      /* discovery is advisory; a failure leaves the last known state */
+    }
+    return this.#teamProviders;
+  }
+
+  /** At most every 30 minutes while idle. Never throws. */
+  async #healthTick(): Promise<void> {
+    if (!this.#health) return;
+    try {
+      // tick() runs its own discovery when due; keep the local view in step.
+      if (!(await this.#health.tick())) return;
+      this.#found = AGENT_IDS.map((p) => this.#health!.discovery(p)).filter(
+        (p): p is ProviderDiscovery => p !== undefined,
+      );
+      this.#teamProviders = this.#views();
+      this.#changed();
+      for (const p of this.#found) await this.#report(p);
+    } catch {
+      /* advisory */
+    }
+  }
+
+  /** Health changed at a job claim or after a failed run: tell the app and ThreadLink now. */
+  async #healthChanged(changed: ("claude-code" | "codex")[]): Promise<void> {
+    if (!this.#health) return;
+    for (const provider of changed) {
+      const latest = this.#health.discovery(provider);
+      if (latest) this.#found = [...this.#found.filter((f) => f.provider !== provider), latest];
+    }
+    this.#teamProviders = this.#views();
+    this.#changed();
+    for (const provider of changed) {
+      const p = this.#found.find((f) => f.provider === provider);
+      if (p) await this.#report(p);
+    }
+  }
+
+  #views(): TeamProviderView[] {
+    return this.#found.map((p) => {
+      const h = this.#health?.get(p.provider);
+      const health = h?.health ?? "unknown";
+      return {
         provider: p.provider,
         installed: p.installed,
         authenticated: p.authenticated,
@@ -618,35 +730,35 @@ export class RuntimeEngine {
         models: p.models.map((m) => ({ id: m.id, displayName: m.displayName })),
         remaining: "unknown" as const,
         detail: p.detail ?? null,
-      }));
-      // Cursor is looked for on PATH only; nothing is run.
-      const cursor = (this.#o.detectCursor ?? detectCursor)();
-      this.#providerCapabilities = providerCapabilities(found, cursor);
-      this.#changed();
-      // Report to ThreadLink with exactly the keys it accepts. The local
-      // executable path and any free-text detail stay on this computer.
-      for (const p of found) {
-        await this.#o.api
-          .reportProviderDetection(p.provider, {
-            installed: p.installed,
-            authenticated: p.authenticated,
-            version: p.version,
-            authMethod: p.authMethod,
-            detectedPlan: p.detectedPlan,
-            models: p.models.map((m) => ({ id: m.id, displayName: m.displayName })),
-            currentModel: p.currentModel,
-            capabilities: p.capabilities,
-            usage: { remaining: "unknown" },
-            detectedAt: new Date().toISOString(),
-          })
-          .catch((error: unknown) =>
-            this.#o.log?.(`could not report ${p.provider}: ${String(error)}`),
-          );
-      }
-    } catch {
-      /* discovery is advisory; a failure leaves the last known state */
-    }
-    return this.#teamProviders;
+        health,
+        healthCheckedAt: h?.checkedAt ?? null,
+        healthDetail: HEALTH_DETAIL[health],
+      };
+    });
+  }
+
+  /**
+   * Reports one provider to ThreadLink with exactly the keys it accepts. The
+   * local executable path and any free-text detail stay on this computer; the
+   * health detail is a fixed sentence, never provider output.
+   */
+  async #report(p: ProviderDiscovery): Promise<void> {
+    const h = this.#health?.get(p.provider);
+    await this.#o.api
+      .reportProviderDetection(p.provider, {
+        installed: p.installed,
+        authenticated: p.authenticated,
+        version: p.version,
+        authMethod: p.authMethod,
+        detectedPlan: p.detectedPlan,
+        models: p.models.map((m) => ({ id: m.id, displayName: m.displayName })),
+        currentModel: p.currentModel,
+        capabilities: p.capabilities,
+        usage: { remaining: "unknown" },
+        detectedAt: new Date().toISOString(),
+        ...(h ? { health: h.health, healthCheckedAt: h.checkedAt, healthDetail: h.detail } : {}),
+      })
+      .catch((error: unknown) => this.#o.log?.(`could not report ${p.provider}: ${String(error)}`));
   }
 
   /**
@@ -1087,6 +1199,7 @@ export class RuntimeEngine {
       sessionId: c.sessionId!,
       claimRef: this.#claimRef,
       governor: this.#governor,
+      health: this.#health ?? undefined,
       write: (jobId, sessionId, claimRef, op, payload) =>
         this.#o.api.teamWrite(jobId, sessionId, claimRef, op, payload),
       onProgress: (progress) => {
@@ -1264,6 +1377,8 @@ export class RuntimeEngine {
           this.#setStatus(paused ? "paused" : "online");
           const processed = paused ? 0 : await this.deliverOnce();
           idle = processed ? 0 : idle + 1;
+          // Idle: keep provider health fresh (at most every 30 minutes).
+          if (!processed) void this.#healthTick();
           delay = processed ? 250 : nextDelay(Math.min(idle, 4), this.#o.backoff, this.#o.random);
         } catch (error) {
           if (error instanceof ApiError && error.status === 401) {

@@ -103,9 +103,9 @@ select public.approve_pairing(pg_temp.h('a-rt'), pg_temp.id('agent'), pg_temp.id
 select pg_temp.put('link2', public.request_pairing(pg_temp.h('a-chat'), pg_temp.id('chat'), pg_temp.id('agent2')) ->> 'id');
 select public.approve_pairing(pg_temp.h('a-rt'), pg_temp.id('agent2'), pg_temp.id('link2'));
 select public.report_provider_detection(pg_temp.h('a-rt'), 'claude-code',
-  '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}');
+  '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select public.report_provider_detection(pg_temp.h('a-rt'), 'codex',
-  '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}');
+  '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select pg_temp.put('room', public.create_room(pg_temp.h('a-chat'), pg_temp.id('chat'), 'Prism', pg_temp.id('link')) ->> 'room_id');
 select pg_temp.put('room2', public.create_room(pg_temp.h('a-chat'), pg_temp.id('chat'), 'Other', pg_temp.id('link2')) ->> 'room_id');
 
@@ -256,7 +256,8 @@ select pg_temp.put('pj', public.start_team_job(pg_temp.h('a-chat'), pg_temp.id('
 select is((pg_temp.job(pg_temp.id('pj'))).mode || '|' || (pg_temp.job(pg_temp.id('pj'))).builder_provider
   || '|' || (pg_temp.job(pg_temp.id('pj'))).origin, 'pair|codex|controller', 'the job records mode, builder and origin');
 select is(((pg_temp.task((pg_temp.job(pg_temp.id('pj'))).task_id)).content::jsonb)
-  - array['kind','version','jobId','roomId','roomName','goal','spec','budgets','policy','agents','verifyCommands'],
+  - array['kind','version','jobId','roomId','roomName','goal','spec','budgets','policy','agents','verifyCommands',
+      'chatId','participants','roleOverrides'],
   '{"mode":"pair","builder":"codex","reviewer":"claude-code","origin":"controller"}'::jsonb,
   'the carrier content carries mode, builder, reviewer and origin');
 select is(((pg_temp.task((pg_temp.job(pg_temp.id('pj'))).task_id)).content::jsonb) ->> 'version', '1',
@@ -527,7 +528,7 @@ select is(pg_temp.fails($$ select public.set_runtime_provider_plan(pg_temp.h('a-
 select is(pg_temp.fails($$ select public.set_runtime_provider_plan(pg_temp.h('a-chat'), 'codex', 'plus') $$),
   '42501:', 'a controller credential cannot set a plan');
 select public.report_provider_detection(pg_temp.h('a-rt'), 'codex',
-  '{"installed":true,"authenticated":true,"authMethod":"chatgpt","detectedPlan":"plus"}');
+  '{"installed":true,"authenticated":true,"authMethod":"chatgpt","detectedPlan":"plus"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select is((pg_temp.profile('user_ChatAlice00001', 'codex')).declared_plan, 'business_standard',
   'detection never touches the declared plan');
 select is(public.set_runtime_provider_plan(pg_temp.h('a-rt'), 'claude-code', 'max_20x') ->> 'declared_plan', 'max_20x',

@@ -6,6 +6,7 @@
 // `sonnet` and (wrongly) `haiku` both run claude-sonnet-5.
 //
 // FAKE_CT_MODE: ok | side_model | wrong_model | no_model_usage | quota | unauth |
+//               oauth_refresh | oauth_stderr |
 //               denials | structured | structured_fenced | structured_bad | hang | garbage
 // FAKE_CT_AUTH: max (default) | none
 // FAKE_PID_FILE: in hang mode, "<pid> <grandchildPid>" is written here.
@@ -108,6 +109,16 @@ process.stdin.on("end", () => {
     result = "Not logged in · Please run /login";
     isError = true;
     code = 1;
+  }
+  if (mode === "oauth_refresh") {
+    // Production, 0.8: `claude auth status` said loggedIn, and the run said this.
+    result = "Failed to refresh OAuth token";
+    isError = true;
+    code = 1;
+  }
+  if (mode === "oauth_stderr") {
+    process.stderr.write("Failed to refresh OAuth token: refresh token revoked\n");
+    process.exit(1);
   }
   if (mode === "structured") result = '{"verdict":"PASS","findings":[]}';
   if (mode === "structured_fenced") result = '```json\n{"verdict":"NEEDS_FIX","findings":[1]}\n```';

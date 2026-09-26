@@ -1,6 +1,7 @@
-import type { ChatEvent, ChatPage, JobMode, PostChatMessageResult } from "@/lib/chat/types";
+import type { ChatEvent, ChatPage, PostChatMessageResult } from "@/lib/chat/types";
 
-import { humanize, modelDisplayName, providerProductName, roleLabel, type Tone } from "./labels";
+import { humanize, modelDisplayName, roleLabel, type Tone } from "./labels";
+import { providerDisplay, shortModelName } from "./providers-display";
 
 /**
  * Pure helpers for the project chat (no I/O, no React). The chat is
@@ -19,6 +20,28 @@ export const GROUP_WINDOW_MS = 5 * 60_000;
 export const POLL_VISIBLE_MS = 3_000;
 export const POLL_HIDDEN_MS = 15_000;
 export const IDLE_AFTER_MS = 10 * 60_000;
+
+// ---------------------------------------------------------------------------
+// Routes (owned by the server; every chat URL the browser uses is built here)
+// ---------------------------------------------------------------------------
+
+/** GET: events of one chat after a cursor. */
+export function chatEventsUrl(chatId: string, after: number, technical: boolean): string {
+  const q = new URLSearchParams({
+    chat: chatId,
+    after: String(Math.max(0, Math.floor(after))),
+    technical: technical ? "1" : "0",
+  });
+  return `/api/dashboard/chat?${q.toString()}`;
+}
+
+/** POST {chatId, body, idempotencyKey}: the server routes it by the chat's mode and any @mention. */
+export const CHAT_POST_URL = "/api/dashboard/chat";
+
+/** POST {seq}: marks the chat read up to seq. */
+export function chatReadUrl(chatId: string): string {
+  return `/api/dashboard/chats/${encodeURIComponent(chatId)}/read`;
+}
 
 // ---------------------------------------------------------------------------
 // Merging pages
@@ -71,6 +94,8 @@ export type ChatBubbleView = {
   author: "controller" | "owner" | "agent";
   side: ChatSide;
   label: string;
+  /** What the bubble header says: "Claude Code · Sonnet 5", "Codex · GPT-6 Sol", "You". */
+  headline: string;
   /** "Claude Code" / "Codex" for agents; the controller's app name otherwise. */
   badge: string | null;
   badgeTone: Tone;
@@ -95,13 +120,15 @@ export type ChatMilestoneView = {
   seq: number;
   text: string;
   tone: Tone;
+  /** ✓ done, ● happening, ✕ stopped, · anything else. */
+  symbol: "✓" | "●" | "✕" | "·";
+  /** A provider could not be used: shown as a callout, not a one-line milestone. */
+  callout: boolean;
   at: string;
   technical: boolean;
 };
 
 export type ChatItemView = ChatBubbleView | ChatMilestoneView;
-
-const PROVIDER_TONE: Record<string, Tone> = { "claude-code": "accent", codex: "success" };
 
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
   proposal: "Proposal",
@@ -129,6 +156,38 @@ const MILESTONE_TONES: Partial<Record<ChatEvent["eventType"], Tone>> = {
   plan_agreed: "accent",
   job_started: "accent",
 };
+
+const DONE_EVENTS = new Set(["plan_agreed", "task_completed", "mode_changed"]);
+const ACTIVE_EVENTS = new Set([
+  "job_started",
+  "job_status",
+  "task_started",
+  "task_progress",
+  "unit_status",
+  "owner_routed",
+  "model_used",
+]);
+const STOPPED_EVENTS = new Set([
+  "task_failed",
+  "task_cancelled",
+  "model_mismatch",
+  "provider_blocked",
+]);
+
+/** The compact symbol a ThreadLink line starts with. */
+export function milestoneSymbol(
+  e: Pick<ChatEvent, "eventType" | "body">,
+): ChatMilestoneView["symbol"] {
+  const type: string = e.eventType;
+  if (type === "job_verdict") {
+    const tone = verdictTone(e.body);
+    return tone === "success" ? "✓" : tone === "danger" ? "✕" : "·";
+  }
+  if (DONE_EVENTS.has(type)) return "✓";
+  if (STOPPED_EVENTS.has(type)) return "✕";
+  if (ACTIVE_EVENTS.has(type)) return "●";
+  return "·";
+}
 
 /**
  * A verdict's colour comes from the verdict word the server put first, never
@@ -178,15 +237,19 @@ function milestoneText(e: ChatEvent): string {
 export function chatItemView(e: ChatEvent): ChatItemView {
   const technical = e.visibility === "technical";
   if (e.authorKind === "threadlink") {
+    const callout = (e.eventType as string) === "provider_blocked";
     return {
       kind: "milestone",
       key: e.id,
       seq: e.seq,
       text: milestoneText(e),
-      tone:
-        e.eventType === "job_verdict"
+      tone: callout
+        ? "warning"
+        : e.eventType === "job_verdict"
           ? verdictTone(e.body)
           : (MILESTONE_TONES[e.eventType] ?? "neutral"),
+      symbol: milestoneSymbol(e),
+      callout,
       at: e.createdAt,
       technical,
     };
@@ -196,19 +259,22 @@ export function chatItemView(e: ChatEvent): ChatItemView {
     author === "agent"
       ? modelLine(e.modelRequested, e.modelObserved)
       : { text: null, mismatch: false };
-  const agentBadge = e.authorProvider ? providerProductName(e.authorProvider) : null;
+  const agent = author === "agent" ? providerDisplay(e.authorProvider, e.authorLabel) : null;
+  const label =
+    e.authorLabel ||
+    (author === "owner" ? "You" : author === "controller" ? "Controller" : "Agent");
+  // The header names the model that actually answered; a requested-only model is not claimed.
+  const observed = agent && e.modelObserved ? shortModelName(e.modelObserved) : null;
   return {
     kind: "bubble",
     key: e.id,
     seq: e.seq,
     author,
     side: author === "owner" ? "right" : "left",
-    label:
-      e.authorLabel ||
-      (author === "owner" ? "You" : author === "controller" ? "Controller" : "Agent"),
-    badge: author === "agent" ? agentBadge : author === "controller" ? "Controller" : null,
-    badgeTone:
-      author === "agent" && e.authorProvider ? PROVIDER_TONE[e.authorProvider]! : "neutral",
+    label,
+    headline: agent ? [agent.name, observed].filter(Boolean).join(" · ") : label,
+    badge: agent ? agent.name : author === "controller" ? "Controller" : null,
+    badgeTone: agent ? agent.tone : "neutral",
     role: author === "agent" && e.authorRole ? roleLabel(e.authorRole) : null,
     model: model.text,
     modelMismatch: model.mismatch,
@@ -271,28 +337,27 @@ export function groupChat(events: ChatEvent[], opts: { technical?: boolean } = {
 // Composer
 // ---------------------------------------------------------------------------
 
+/**
+ * Mentions the server understands. `provider` says which participant a hint
+ * needs; `null` means it needs two or more agents in the chat.
+ */
 export const MENTION_HINTS = [
-  { insert: "@Claude ", label: "@Claude", description: "Ask Claude Code" },
-  { insert: "@Codex ", label: "@Codex", description: "Ask Codex" },
-  { insert: "@team ", label: "@team", description: "Ask both agents" },
+  { insert: "@Claude ", label: "@Claude", description: "Ask Claude Code", provider: "claude-code" },
+  { insert: "@Codex ", label: "@Codex", description: "Ask Codex", provider: "codex" },
+  { insert: "@team ", label: "@team", description: "Ask every agent", provider: null },
   {
     insert: "@team stop after this review round",
     label: "@team stop after this review round",
     description: "Finish the current round, then stop",
+    provider: null,
   },
 ] as const;
 
-export const MODE_OPTIONS: { value: JobMode; label: string; description: string }[] = [
-  { value: "solo", label: "Solo", description: "One agent builds and verifies." },
-  {
-    value: "pair",
-    label: "Builder + Reviewer",
-    description: "One builds, the other reviews before it passes.",
-  },
-  { value: "team", label: "Team", description: "Both plan, build and review each other." },
-];
-
-export type Builder = "claude-code" | "codex";
+/** The hints that make sense for this chat's agents. */
+export function mentionHints(agentProviders: string[]): (typeof MENTION_HINTS)[number][] {
+  const ids = new Set(agentProviders.map((p) => providerDisplay(p).id));
+  return MENTION_HINTS.filter((h) => (h.provider ? ids.has(h.provider) : ids.size >= 2));
+}
 
 /** A leading @mention, read only to hint where a message goes. The server decides. */
 export function mentionOf(body: string): "claude-code" | "codex" | "team" | "stop" | null {
@@ -317,10 +382,11 @@ export function checkDraft(body: string): DraftCheck {
   return { ok: true, body: trimmed };
 }
 
-/** What a send will do, shown above the composer. */
+/** What a send will do, shown above the composer. `how` is the chat's mode in words. */
 export function routeBanner(
   activeJob: ChatPage["activeJob"],
   draft: string,
+  how?: string,
 ): { text: string; tone: Tone } {
   const mention = mentionOf(draft);
   if (activeJob) {
@@ -337,22 +403,17 @@ export function routeBanner(
   }
   if (mention === "stop")
     return { text: "Nothing is running, so there is nothing to stop.", tone: "neutral" };
-  return { text: "Starts a new job in this project.", tone: "neutral" };
-}
-
-/** The mode and builder a new job asks for, from the picker and any leading @mention. */
-export function jobRequest(
-  draft: string,
-  picked: { mode: JobMode; builder: Builder },
-): { mode: JobMode; builder?: Builder } {
-  const mention = mentionOf(draft);
   if (mention === "claude-code" || mention === "codex") {
-    return picked.mode === "pair"
-      ? { mode: "pair", builder: mention }
-      : { mode: "solo", builder: mention };
+    return {
+      text: `Starts new work for ${providerDisplay(mention).name} only (from your @mention).`,
+      tone: "neutral",
+    };
   }
-  if (mention === "team") return { mode: "team" };
-  return picked.mode === "team" ? { mode: "team" } : { mode: picked.mode, builder: picked.builder };
+  if (mention === "team") return { text: "Starts new work for the whole team.", tone: "neutral" };
+  return {
+    text: how ? `Starts new work in this chat · ${how}.` : "Starts new work in this chat.",
+    tone: "neutral",
+  };
 }
 
 /** What happened after sending, in words. */

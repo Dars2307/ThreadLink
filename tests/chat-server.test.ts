@@ -29,7 +29,11 @@ import {
   toChatEvent,
   type ChatEventRow,
 } from "@/lib/chat/model";
-import { listChatFor, postChatMessageAs } from "@/lib/chat/queries";
+import {
+  ChatRoomNotFoundError as RealRoomNotFound,
+  listChatFor,
+  postChatMessageAs,
+} from "@/lib/chat/queries";
 import * as chatTypes from "@/lib/chat/types";
 import { OwnershipViolationError } from "@/lib/connections/model";
 
@@ -125,8 +129,12 @@ describe("chat event mapping", () => {
 
   it("the migration's vocabularies equal the shared types", () => {
     const sql = readFileSync("supabase/migrations/20260926000100_collaboration_chat.sql", "utf8");
+    // The event-type check is re-stated as a superset by the chat-first migration.
+    const latest = readFileSync("supabase/migrations/20260927000100_chat_first.sql", "utf8");
     const check =
-      /constraint chat_events_event_type_check check \(event_type in \(([^)]*)\)\)/.exec(sql)?.[1];
+      /constraint chat_events_event_type_check check \(event_type in \(([^)]*)\)\)/.exec(
+        latest,
+      )?.[1];
     const inSql = [...(check ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(inSql).toEqual([...chatTypes.CHAT_EVENT_TYPES]);
     expect(sql).toContain("check (author_kind in ('controller', 'owner', 'threadlink', 'agent'))");
@@ -328,7 +336,11 @@ describe("GET/POST /api/dashboard/chat", () => {
     } as unknown as Request);
     expect(res.status).toBe(401);
     expect(text).not.toHaveBeenCalled();
-    expect(await res.json()).toEqual({ ok: false, message: CHAT_ERROR_MESSAGES.unauthenticated });
+    expect(await res.json()).toEqual({
+      ok: false,
+      reason: "unauthenticated",
+      message: CHAT_ERROR_MESSAGES.unauthenticated,
+    });
     expect((await GET(new Request(`http://x/api/dashboard/chat?room=${ROOM}`))).status).toBe(401);
     expect(listMyChat).not.toHaveBeenCalled();
   });
@@ -345,7 +357,8 @@ describe("GET/POST /api/dashboard/chat", () => {
     listMyChat.mockRejectedValueOnce(new OwnershipViolationError());
     const foreign = await GET(new Request(`http://x/api/dashboard/chat?room=${ROOM}`));
     expect(foreign.status).toBe(404);
-    listMyChat.mockRejectedValueOnce(new ChatRoomNotFoundError());
+    // The route maps the real error class (lib/chat/route-helpers).
+    listMyChat.mockRejectedValueOnce(new RealRoomNotFound());
     expect((await GET(new Request(`http://x/api/dashboard/chat?room=${ROOM}`))).status).toBe(404);
   });
 
@@ -382,7 +395,11 @@ describe("GET/POST /api/dashboard/chat", () => {
       }),
     );
     expect(limited.status).toBe(429);
-    expect(await limited.json()).toEqual({ ok: false, message: CHAT_ERROR_MESSAGES.rate_limited });
+    expect(await limited.json()).toEqual({
+      ok: false,
+      reason: "rate_limited",
+      message: CHAT_ERROR_MESSAGES.rate_limited,
+    });
 
     postMyChatMessage.mockResolvedValueOnce({ ok: true, routed: "note_to_active_job", jobId: JOB });
     const ok = await POST(

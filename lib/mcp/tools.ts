@@ -22,11 +22,13 @@ import type { ThreadLinkView } from "@/lib/pairing/model";
 import { LOCAL_BINDING_REF_PATTERN } from "@/lib/sessions/model";
 import { PRIORITY_PATTERN } from "@/lib/tasks/model";
 import {
+  createChatTask,
   createRoom,
   getRoom,
   getTeamLog,
   getTeamStatus,
   listRooms,
+  ProviderUnhealthyError,
   startTeamJob,
 } from "@/lib/team/client-api";
 import {
@@ -69,6 +71,13 @@ const jobIdInput = z
   .string()
   .regex(/^tljob_[0-9a-f]{32}$/)
   .describe("A jobId returned by start_team_job.");
+const chatIdInput = z
+  .string()
+  .regex(/^tlcht_[0-9a-f]{32}$/)
+  .describe(
+    "Optional: the ThreadLink chat this work belongs to (the user can copy it from the chat's " +
+      "Details tab). Omit to use the project's default chat.",
+  );
 
 export const toolInputs = {
   ensure_session: {
@@ -113,6 +122,7 @@ export const toolInputs = {
       .regex(/^tllnk_[0-9a-f]{32}$/)
       .optional()
       .describe("Only needed when list_links shows more than one active link."),
+    chatId: chatIdInput.optional(),
   },
   get_task_status: {
     sessionId: sessionIdInput,
@@ -187,6 +197,7 @@ export const toolInputs = {
       .enum(AGENT_PROVIDERS)
       .optional()
       .describe("For solo or pair: who builds ('claude-code' or 'codex'). Ignored for team."),
+    chatId: chatIdInput.optional(),
     idempotencyKey: z
       .string()
       .regex(/^[A-Za-z0-9._:-]{1,128}$/)
@@ -224,6 +235,8 @@ export class ToolError extends Error {}
 
 export function describeError(error: unknown): string {
   if (error instanceof ToolError) return error.message;
+  // Health refusals say who is not ready, in fixed words built from provider ids.
+  if (error instanceof ProviderUnhealthyError) return error.userMessage;
   if (error instanceof ClientOperationError) return ERROR_MESSAGES[error.kind] ?? "Request failed.";
   return ERROR_MESSAGES.unavailable;
 }
@@ -370,14 +383,18 @@ export async function sendToAgent(ctx: McpContext, input: Input<"send_to_agent">
       options: resolution.options,
     };
   }
-  const { task, created } = await createTask(ctx.db, ctx.credentialHash, {
+  const taskInput = {
     originSessionId: input.sessionId,
     threadLinkId: resolution.link.linkId,
     title: input.title ?? input.content.slice(0, 80),
     content: input.content,
     priority: input.priority,
     idempotencyKey: input.idempotencyKey,
-  });
+  };
+  // With a chat: the same task, shown in that chat (validated by the database).
+  const { task, created } = input.chatId
+    ? await createChatTask(ctx.db, ctx.credentialHash, { ...taskInput, chatId: input.chatId })
+    : await createTask(ctx.db, ctx.credentialHash, taskInput);
   return {
     status: task.status,
     taskId: task.taskId,
@@ -563,6 +580,7 @@ export async function startTeamJobTool(ctx: McpContext, input: Input<"start_team
     parallelAgents: input.parallelAgents,
     mode: input.mode,
     builder: input.builder,
+    chatId: input.chatId,
     idempotencyKey: input.idempotencyKey,
   });
   return {
@@ -572,6 +590,7 @@ export async function startTeamJobTool(ctx: McpContext, input: Input<"start_team
     status: job.status,
     mode: job.mode,
     builder: job.builder,
+    chatId: job.chatId ?? null,
     budgets: {
       planningRounds: job.rounds.planning.max,
       reviewRounds: job.rounds.review.max,

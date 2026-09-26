@@ -165,3 +165,27 @@ export async function loadProject(
     return null;
   }
 }
+
+/** The owner's projects for pickers and filters (not deleted), or null. */
+export async function loadProjectChoices(): Promise<
+  { roomId: string; name: string; archived: boolean }[] | null
+> {
+  try {
+    const rooms = await listMyRooms();
+    return rooms
+      .filter((r) => r.status !== "deleted")
+      .map((r) => ({ roomId: r.roomId, name: r.name, archived: r.status === "archived" }));
+  } catch {
+    return null;
+  }
+}
+
+/** The connected controller's name ("ChatGPT"), or a generic phrase. Never fails. */
+export async function loadControllerName(): Promise<string> {
+  return controllerName(await listMyConnections().catch(() => []));
+}
+
+/** The request's clock, read once per page load (pages stay pure). */
+export async function loadNow(): Promise<number> {
+  return Date.now();
+}

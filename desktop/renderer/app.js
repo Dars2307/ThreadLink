@@ -35,8 +35,8 @@ const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(t
 
 const SECTIONS = [
   { id: "home", label: "Home", title: "Home" },
-  { id: "conversations", label: "Conversations", title: "Conversations" },
-  { id: "team", label: "Team", title: "Team" },
+  { id: "chats", label: "Chats", title: "Chats" },
+  { id: "agents", label: "Agents", title: "Agents" },
   { id: "runtime", label: "This computer", title: "This computer" },
   { id: "notifications", label: "Notifications", title: "Notifications" },
   { id: "settings", label: "Settings", title: "Settings" },
@@ -156,8 +156,8 @@ function render() {
   el("page-title").textContent = section === "attach" ? "Attach a conversation" : current.title;
   el("page-sub").textContent = subtitleFor();
   if (section === "attach") return void renderAttach(mine);
-  if (section === "conversations") return renderConversations();
-  if (section === "team") return renderTeam();
+  if (section === "agents") return renderAgents();
+  if (section === "chats") return renderChats();
   if (section === "runtime") return renderRuntime();
   if (section === "notifications") return renderNotifications();
   if (section === "settings") return renderSettings();
@@ -167,13 +167,13 @@ function render() {
 function subtitleFor() {
   const snap = state.snapshot;
   if (section === "home") return snap?.runtime?.label ?? snap?.identity?.label ?? "";
-  if (section === "conversations") {
+  if (section === "agents") {
     const n = conversationsOf(state).length;
-    return n ? `${n} attached` : "Nothing attached yet";
+    return n ? `${n} Claude conversation${n === 1 ? "" : "s"} attached` : "Nothing attached yet";
   }
-  if (section === "team") {
-    const running = teamOf(state).filter(jobRunning).length;
-    return running ? `${running} running` : "";
+  if (section === "chats") {
+    const running = workOf(state).reduce((n, g) => n + g.running, 0);
+    return running ? `${running} running` : "Running and recent work";
   }
   if (section === "runtime") return snap?.identity?.platform ?? "";
   return "";
@@ -195,7 +195,7 @@ function renderNav() {
       count.textContent = String(waiting);
       button.append(count);
     }
-    const here = s.id === section || (section === "attach" && s.id === "conversations");
+    const here = s.id === section || (section === "attach" && s.id === "agents");
     button.setAttribute("aria-current", here ? "true" : "false");
     button.addEventListener("click", () => go(s.id));
     nav.append(button);
@@ -254,6 +254,7 @@ function renderHome() {
   const snap = state.snapshot;
   renderLinkRequests();
   renderSummary(el("home-summary"));
+  renderHealth(el("home-health"));
 
   const list = el("home-conversations");
   list.replaceChildren();
@@ -273,7 +274,7 @@ function renderHome() {
   );
   el("home-activity-dashboard").addEventListener("click", () => api.openDashboard());
 
-  el("home-manage").addEventListener("click", () => go("conversations"));
+  el("home-manage").addEventListener("click", () => go("agents"));
   el("mcp-url").textContent = `${state.baseUrl}/mcp`;
   bindCopy(el("copy-mcp"), () => `${state.baseUrl}/mcp`);
 }
@@ -281,6 +282,12 @@ function renderHome() {
 /** Who can work right now: Team Mode's view if it has one, else the classic providers. */
 function agentsOnline(s) {
   const team = s.snapshot?.teamProviders ?? [];
+  // A Runtime that probes health is believed over "signed in": status output
+  // is not proof that a provider can actually run.
+  if (team.some((p) => p && "health" in p))
+    return healthOf(s)
+      .filter((h) => h.health === "ready")
+      .map((h) => h.provider);
   if (team.length) return team.filter((p) => p.installed && p.authenticated).map((p) => p.provider);
   return (s.snapshot?.providers ?? []).filter((p) => p.available).map((p) => p.id);
 }
@@ -291,7 +298,7 @@ function renderSummary(node) {
   node.replaceChildren();
   const online = agentsOnline(state);
   const jobs = teamOf(state);
-  const running = jobs.filter(jobRunning).length;
+  const running = workOf(state).reduce((n, g) => n + g.running, 0);
   const waiting = (state.snapshot?.pendingLinks ?? []).length;
   const decisions = jobs.filter((j) => j.verdict === "NEEDS_USER_DECISION").length;
   // A conversation needs you only while its newest line (the feed is newest
@@ -300,7 +307,8 @@ function renderSummary(node) {
   for (const a of activityOf(state))
     if (!latest.has(a.localBindingRef)) latest.set(a.localBindingRef, a);
   const blocked = [...latest.values()].filter((a) => a.event === "task_blocked").length;
-  const needs = waiting + decisions + blocked;
+  const signIn = healthOf(state).filter((h) => h.health === "needs_sign_in").length;
+  const needs = waiting + decisions + blocked + signIn;
   const linked = conversationsOf(state).length;
 
   const tiles = [
@@ -308,15 +316,15 @@ function renderSummary(node) {
       label: "Agents online",
       value: online.length ? online.map(providerName).join(" · ") : "None",
       tone: online.length ? "ready" : "warn",
-      go: "settings",
+      go: "agents",
     },
-    { label: "Conversations linked", value: String(linked), go: "conversations" },
-    { label: "Team jobs running", value: String(running), tone: running ? "run" : "", go: "team" },
+    { label: "Conversations linked", value: String(linked), go: "agents" },
+    { label: "Chats running", value: String(running), tone: running ? "run" : "", go: "chats" },
     {
       label: "Needs attention",
       value: needs ? String(needs) : "Nothing",
       tone: needs ? "warn" : "",
-      go: decisions ? "team" : null,
+      go: decisions ? "chats" : signIn ? "agents" : null,
     },
   ];
   for (const t of tiles) {
@@ -446,8 +454,9 @@ function renderLinkRequests() {
 
 // ----------------------------------------------------------- conversations
 
-function renderConversations() {
-  view.append(tpl("conversations"));
+function renderAgents() {
+  view.append(tpl("agents"));
+  renderHealth(el("agents-health"));
   const attached = el("attached");
   attached.replaceChildren();
   const all = (state.snapshot?.workspaces ?? []).flatMap((w) =>
@@ -639,7 +648,7 @@ async function renderAttach(mine) {
   /** True once a newer render has started: this pass must touch nothing. */
   const superseded = () => mine !== pass;
   view.append(tpl("attach"));
-  el("attach-back").addEventListener("click", () => go("conversations"));
+  el("attach-back").addEventListener("click", () => go("agents"));
   const claude = (state.snapshot?.providers ?? []).find((p) => p.id === "claude-code");
   el("claude-detect").textContent = claude?.available
     ? `Detected Claude Code ${claude.version ?? ""}`.trim()
@@ -729,7 +738,7 @@ async function renderAttach(mine) {
         problem.hidden = false;
         return;
       }
-      go("conversations");
+      go("agents");
     });
     cl.append(item);
   }
@@ -740,7 +749,7 @@ async function renderAttach(mine) {
       problem.hidden = false;
       return;
     }
-    go("conversations");
+    go("agents");
   });
 }
 
@@ -807,6 +816,8 @@ function renderSettings() {
     api.setSettings({ autoStart: e.target.checked }),
   );
   renderProviders(el("providers"));
+  const recheck = el("providers-check");
+  if (recheck) recheck.replaceChildren(checkAgainRow());
   el("plan-dashboard").addEventListener("click", () => api.openDashboard());
   copyRows(el("settings-advanced"), [
     ["ThreadLink address", state.baseUrl],
@@ -822,6 +833,121 @@ const PROVIDER_NAMES = { "claude-code": "Claude Code", codex: "Codex" };
 const providerName = (id) => PROVIDER_NAMES[id] ?? "Another agent";
 
 const PLAN_SAVE_FAILED = "Couldn't save your plan — nothing changed";
+
+// ----------------------------------------------------------- provider health
+
+/**
+ * Health as main derived it from the Runtime's probe (fixed words only). With
+ * no view at all, every provider is "Not checked yet": never Ready by default.
+ */
+const HEALTH_FALLBACK = [
+  { provider: "claude-code", providerName: "Claude Code", health: "unknown" },
+  { provider: "codex", providerName: "Codex", health: "unknown" },
+].map((h) => ({
+  ...h,
+  text: "Not checked yet",
+  line: `${h.providerName} — Not checked yet`,
+  tone: "wait",
+  checkedAt: null,
+  instruction: null,
+}));
+const healthOf = (s) => (Array.isArray(s?.health) && s.health.length ? s.health : HEALTH_FALLBACK);
+
+/** "Check again" is allowed once per 30 s here, and again in main. */
+const CHECK_MS = 30_000;
+const check = { at: 0, busy: false, note: null, timer: null };
+
+const CHECK_NOTES = {
+  ok: "Checked just now.",
+  "too-soon": "Checked a moment ago. Try again in a little while.",
+  unavailable: "This computer's ThreadLink can't check right now. Restart ThreadLink to check.",
+  failed: "Couldn't check right now. Try again in a moment.",
+  invalid: "Couldn't check right now. Try again in a moment.",
+};
+
+async function checkAgain(button) {
+  if (check.busy || Date.now() - check.at < CHECK_MS) return;
+  check.busy = true;
+  check.at = Date.now();
+  check.note = null;
+  button.disabled = true;
+  button.textContent = "Checking…";
+  let result = null;
+  try {
+    result = await api.checkProviders();
+  } catch {
+    result = null;
+  }
+  check.busy = false;
+  // Only fixed words: whatever the probe printed never reaches the page.
+  check.note = result?.ok ? CHECK_NOTES.ok : (CHECK_NOTES[result?.error] ?? CHECK_NOTES.failed);
+  clearTimeout(check.timer);
+  check.timer = setTimeout(() => {
+    check.timer = null;
+    render();
+  }, CHECK_MS);
+  render();
+}
+
+/** The "Check again" button with its note, sharing one cool-down everywhere. */
+function checkAgainRow() {
+  const row = document.createElement("div");
+  row.className = "row health-check";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost small-btn check-again";
+  const cooling = Date.now() - check.at < CHECK_MS;
+  button.textContent = check.busy ? "Checking…" : "Check again";
+  button.disabled = check.busy || cooling;
+  button.addEventListener("click", () => void checkAgain(button));
+  row.append(button);
+  if (check.note) {
+    const note = document.createElement("span");
+    note.className = "muted small check-note";
+    note.setAttribute("role", "status");
+    note.textContent = check.note;
+    row.append(note);
+  }
+  return row;
+}
+
+/** One provider's health: "Claude Code — Needs sign-in", and what to do about it. */
+function healthLine(h) {
+  const line = document.createElement("div");
+  line.className = `health ${h.tone}`;
+  line.dataset.health = h.health;
+  const head = document.createElement("div");
+  head.className = "health-head";
+  const dot = document.createElement("span");
+  dot.className = `dot ${h.tone === "ready" ? "ready" : h.tone === "fail" ? "off" : "busy"}`;
+  dot.setAttribute("aria-hidden", "true");
+  const text = document.createElement("span");
+  text.className = "health-line";
+  text.textContent = h.line;
+  head.append(dot, text);
+  if (h.checkedAt) {
+    const when = document.createElement("span");
+    when.className = "muted small";
+    when.textContent = `checked ${ago(h.checkedAt)}`;
+    head.append(when);
+  }
+  line.append(head);
+  if (h.instruction) {
+    const how = document.createElement("p");
+    how.className = "small health-instruction";
+    how.textContent = h.instruction;
+    line.append(how);
+  }
+  return line;
+}
+
+/** Every provider's health, with one "Check again" for all of them. */
+function renderHealth(node) {
+  if (!node) return;
+  node.replaceChildren();
+  for (const h of healthOf(state)) node.append(healthLine(h));
+  node.append(checkAgainRow());
+}
 
 /** Asks the main process (and so the server) for the declared plans. */
 async function loadPlans() {
@@ -995,9 +1121,11 @@ function renderProviders(node) {
     name.textContent = providerName(p.provider);
     const tags = document.createElement("div");
     tags.className = "tags";
+    // Health from the Runtime's probe, not "signed in" from a status command.
+    const health = healthOf(state).find((h) => h.provider === p.provider);
     tags.append(
       badge(p.installed ? "Installed" : "Not installed", p.installed ? "ready" : "fail"),
-      badge(p.authenticated ? "Signed in" : "Not signed in", p.authenticated ? "ready" : "wait"),
+      badge(health?.text ?? "Not checked yet", health?.tone ?? "wait"),
     );
     head.append(name, tags);
 
@@ -1020,7 +1148,9 @@ function renderProviders(node) {
     }
     for (const m of p.models ?? []) models.append(badge(m.displayName, "model"));
 
-    card.append(head, planBlock(p.provider), facts, models);
+    card.append(head);
+    if (health) card.append(healthLine(health));
+    card.append(planBlock(p.provider), facts, models);
     const tech = techDetails([
       ["Version", p.version],
       ["Detail", p.detail],
@@ -1030,18 +1160,11 @@ function renderProviders(node) {
   }
 }
 
-// -------------------------------------------------------------------- team
+// ------------------------------------------------------------------- chats
 
 const teamOf = (s) => s.snapshot?.team ?? [];
-const FINISHED = new Set([
-  "completed",
-  "needs_fix",
-  "blocked",
-  "needs_user_decision",
-  "failed",
-  "cancelled",
-]);
-const jobRunning = (j) => !j.verdict && !FINISHED.has(j.status);
+/** Running and recent work, grouped by chat by main (honest stages included). */
+const workOf = (s) => (Array.isArray(s?.work) ? s.work : []);
 
 /** Each final verdict, in plain words. */
 const VERDICTS = {
@@ -1053,7 +1176,8 @@ const VERDICTS = {
 
 /** What a job is doing overall, when it has no verdict yet. */
 const JOB_PHASES = {
-  normalising: "Getting started",
+  queued: "Waiting to start",
+  normalising: "Understanding the request",
   planning: "Planning",
   building: "Building",
   reviewing: "Reviewing",
@@ -1063,14 +1187,16 @@ const JOB_PHASES = {
   cancelled: "Cancelled",
 };
 
-/** The four states a step can be in, and how each one looks. */
+/** How a chat runs its work, in the words the web uses. */
+const JOB_MODES = { solo: "Solo", pair: "Builder + Reviewer", team: "Team" };
+
+/** The five states a step can be in, and how each one looks. */
 const STEP = {
   done: { sym: "✓", label: "Done" },
   active: { sym: "●", label: "In progress" },
-  waiting: { sym: "○", label: "Waiting" },
-  failed: { sym: "✕", label: "Failed" },
+  waiting: { sym: "○", label: "Not started" },
+  failed: { sym: "✕", label: "Stopped here" },
   skipped: { sym: "–", label: "Skipped" },
-  attention: { sym: "!", label: "Needs attention" },
 };
 
 const UNIT_STEP = {
@@ -1085,46 +1211,64 @@ const UNIT_STEP = {
   skipped: "skipped",
 };
 
-function renderTeam() {
-  view.append(tpl("team"));
-  const list = el("team-jobs");
+function renderChats() {
+  view.append(tpl("chats"));
+  const list = el("chat-groups");
   list.replaceChildren();
-  const jobs = teamOf(state);
-  if (!jobs.length) {
+  const groups = workOf(state);
+  if (!groups.length) {
     const box = document.createElement("div");
     box.className = "card stack team-empty";
     const h = document.createElement("h2");
-    h.textContent = "No team jobs yet";
+    h.textContent = "Nothing running yet";
     const what = document.createElement("p");
     what.className = "muted";
     what.textContent =
-      "Team Mode has Claude Code and Codex work on one goal together: each builds part of it, " +
-      "reviews the other's work, and ThreadLink keeps only what passed review.";
+      "Chat with one AI, two AIs, or a team. Work that runs on this computer shows up here, " +
+      "grouped by the chat it belongs to.";
     const how = document.createElement("p");
     how.className = "muted small";
     how.textContent =
-      "Ask your controller (for example ChatGPT) to start a team job in a room. " +
+      "Ask your controller (for example ChatGPT), or start a chat in ThreadLink on the web. " +
       "Its progress shows up here.";
     box.append(h, what, how);
     list.append(box);
     return;
   }
-  for (const job of jobs) list.append(teamJob(job));
+  for (const group of groups) list.append(chatGroup(group));
+}
+
+/** One chat (or, for older work with no chat, one room) and its jobs. */
+function chatGroup(group) {
+  const card = document.createElement("section");
+  card.className = "card stack chat-group";
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const h = document.createElement("h2");
+  h.className = "chat-name";
+  h.textContent = String(group.name ?? "Chat");
+  head.append(h);
+  if (group.running) head.append(badge(`${group.running} running`, "run"));
+  card.append(head);
+  for (const job of group.jobs ?? []) card.append(teamJob(job));
+  return card;
 }
 
 function teamJob(job) {
   const card = document.createElement("article");
-  card.className = "card stack team-job";
+  card.className = "stack team-job";
 
   const head = document.createElement("div");
   head.className = "card-head";
-  const h = document.createElement("h3");
-  h.className = "team-room";
-  h.textContent = /\bteam$/i.test(job.room) ? job.room : `${job.room} Team`;
+  const goal = document.createElement("p");
+  goal.className = "team-goal";
+  goal.textContent = job.goal;
   const verdict = VERDICTS[job.verdict];
-  const running = jobRunning(job);
-  head.append(
-    h,
+  const running = job.running === true;
+  const tags = document.createElement("div");
+  tags.className = "tags";
+  if (JOB_MODES[job.mode]) tags.append(badge(JOB_MODES[job.mode], "mode"));
+  tags.append(
     verdict
       ? badge(verdict.label, verdict.tone)
       : badge(
@@ -1132,11 +1276,8 @@ function teamJob(job) {
           running ? "run" : "lost",
         ),
   );
-
-  const goal = document.createElement("p");
-  goal.className = "team-goal";
-  goal.textContent = job.goal;
-  card.append(head, goal);
+  head.append(goal, tags);
+  card.append(head);
 
   if (running) {
     const agents = document.createElement("div");
@@ -1191,27 +1332,32 @@ function teamJob(job) {
     final.textContent = JOB_PHASES[job.status] ?? "Finished";
     card.append(final);
   }
+
+  // Why it stopped, from the verdict reason: "Claude Code needs you to sign in
+  // again on this computer." rather than a vague "an agent failed".
+  if (job.stop?.text) {
+    const why = document.createElement("p");
+    why.className = `small team-stop${job.stop.needsSignIn ? " sign-in" : ""}`;
+    why.textContent = job.stop.text;
+    card.append(why);
+    if (job.stop.instruction) {
+      const how = document.createElement("p");
+      how.className = "small muted team-stop-how";
+      how.textContent = job.stop.instruction;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "ghost small-btn";
+      open.textContent = "Check agents";
+      open.addEventListener("click", () => go("agents"));
+      card.append(how, open);
+    }
+  }
   return card;
 }
 
-/** Plan, each unit, then integration and final review, without graph jargon. */
-function teamSteps(job) {
-  const units = job.units ?? [];
-  const early = job.status === "normalising" || job.status === "planning";
-  const steps = [];
-  steps.push({
-    state:
-      early && !job.verdict
-        ? "active"
-        : units.length
-          ? "done"
-          : job.verdict
-            ? "skipped"
-            : "waiting",
-    text: "Plan",
-    branch: "",
-  });
-  for (const u of units) {
+/** The unit lines that sit under Build, without graph jargon. */
+function unitSteps(job) {
+  return (job.units ?? []).map((u, i, all) => {
     const state = UNIT_STEP[u.status] ?? "waiting";
     const owner = providerName(u.owner);
     // A solo unit has no reviewer: never claim one reviewed it.
@@ -1230,24 +1376,37 @@ function teamSteps(job) {
             ? `${owner}, fixing review notes from ${reviewer}`
             : owner,
     }[state];
-    steps.push({ state, text: `${u.title} — ${who}`, branch: "├─" });
+    return {
+      state,
+      text: `${u.title} — ${who}`,
+      branch: i === all.length - 1 ? "└─" : "├─",
+      unit: true,
+    };
+  });
+}
+
+/**
+ * Understanding request · Plan · Build (with its units) · Review · Integration.
+ * The stages come from main (the Runtime's own, or an honest derivation); a
+ * stage never shows ✓ here unless main said so.
+ */
+function teamSteps(job) {
+  const stages = Array.isArray(job.stages) ? job.stages : [];
+  const steps = [];
+  for (const stage of stages) {
+    const known = STEP[stage.state] ? stage.state : "waiting";
+    steps.push({ state: known, text: String(stage.label ?? ""), branch: "", key: stage.key });
+    if (stage.key === "build") steps.push(...unitSteps(job));
   }
-  let last = "waiting";
-  if (job.status === "integrating" || job.status === "inspecting") last = "active";
-  else if (job.verdict === "PASS") last = "done";
-  else if (job.verdict) last = "attention";
-  else if (job.status === "failed" || job.status === "cancelled") last = "skipped";
-  steps.push({ state: last, text: "Integration → Final review", branch: "└─" });
-  if (!units.length) for (const s of steps) s.branch = "";
-  steps[0].branch = "";
 
   const list = document.createElement("ol");
   list.className = "steps";
   list.setAttribute("aria-label", "Progress");
   for (const s of steps) {
     const item = document.createElement("li");
-    item.className = `step ${s.state}`;
+    item.className = `step ${s.state}${s.unit ? " unit" : " stage"}`;
     item.dataset.state = s.state;
+    if (s.key) item.dataset.stage = s.key;
     if (s.branch) {
       const branch = document.createElement("span");
       branch.className = "branch";

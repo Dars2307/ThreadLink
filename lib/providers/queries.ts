@@ -4,6 +4,12 @@ import { z } from "zod";
 import type { ThreadLinkUser } from "@/lib/auth/provision";
 import { OwnershipViolationError } from "@/lib/connections/model";
 import {
+  effectiveHealth,
+  fixedHealthDetail,
+  PROVIDER_HEALTH_LABELS,
+  type ProviderHealth,
+} from "@/lib/providers/health";
+import {
   AGENT_PROVIDERS,
   CHATGPT_PLANS,
   CLAUDE_PLANS,
@@ -59,6 +65,14 @@ export type OwnerProviderProfile = {
     version: string | null;
     plan: string | null;
     currentModel: string | null;
+    /** 0.9: the health that counts now (fresh, authenticated, subscription). */
+    health?: ProviderHealth;
+    /** "Needs sign-in" etc. */
+    healthLabel?: string;
+    /** When the Runtime last really checked (null: never). */
+    healthCheckedAt?: string | null;
+    /** The Runtime's fixed sentence about that check, if any. */
+    healthDetail?: string | null;
   };
   detectedAt: string | null;
 };
@@ -69,6 +83,7 @@ function toOwnerProfile(r: z.infer<typeof profileRow>): OwnerProviderProfile {
   const d = r.detected;
   const str = (v: unknown) => (typeof v === "string" ? v : null);
   const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
+  const health = effectiveHealth(r.provider, d, r.detected_at);
   return {
     provider: r.provider,
     providerName: NAMES[r.provider],
@@ -81,6 +96,10 @@ function toOwnerProfile(r: z.infer<typeof profileRow>): OwnerProviderProfile {
       version: str(d.version),
       plan: str(d.detectedPlan),
       currentModel: str(d.currentModel),
+      health,
+      healthLabel: PROVIDER_HEALTH_LABELS[health],
+      healthCheckedAt: str(d.healthCheckedAt),
+      healthDetail: fixedHealthDetail(d.healthDetail),
     },
     detectedAt: r.detected_at,
   };

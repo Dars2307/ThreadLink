@@ -18,7 +18,7 @@ export default async function DashboardLayout({ children }: LayoutProps<"/dashbo
         profile={<ProfileMenu theme={theme} />}
         badges={
           pending
-            ? { "/dashboard/conversations": pending, "/dashboard/notifications": pending }
+            ? { "/dashboard/agents": pending, "/dashboard/notifications": pending }
             : undefined
         }
       />

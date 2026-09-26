@@ -117,8 +117,8 @@ select pg_temp.put('blink', public.request_pairing(pg_temp.h('b-chat'), pg_temp.
 select public.approve_pairing(pg_temp.h('b-rt'), pg_temp.id('bagent'), pg_temp.id('blink'));
 
 -- Only Alice's NEW Runtime reports Team detection.
-select public.report_provider_detection(pg_temp.h('a-rt'), 'claude-code', '{"installed":true,"authenticated":true}');
-select public.report_provider_detection(pg_temp.h('a-rt'), 'codex', '{"installed":true,"authenticated":true}');
+select public.report_provider_detection(pg_temp.h('a-rt'), 'claude-code', '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
+select public.report_provider_detection(pg_temp.h('a-rt'), 'codex', '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 
 select pg_temp.put('roomA', public.create_room(pg_temp.h('a-chat'), pg_temp.id('chat'), 'Prism', pg_temp.id('link')) ->> 'room_id');
 select pg_temp.put('roomOld', public.create_room(pg_temp.h('a-chat'), pg_temp.id('chat'), 'Legacy', pg_temp.id('linkold')) ->> 'room_id');
@@ -221,8 +221,8 @@ select throws_ok(format($q$select public.start_team_job(%L, %L, %L, 'x')$q$,
 select public.report_provider_detection(pg_temp.h('b-rt'), 'codex', '{"installed":false,"authenticated":false}');
 select is(((pg_temp.profile('user_SecAlice000001', 'codex')).detected ->> 'installed')::boolean, true,
   'Bob''s Runtime reporting cannot change Alice''s detection');
-select public.report_provider_detection(pg_temp.h('b-rt'), 'claude-code', '{"installed":true,"authenticated":true}');
-select public.report_provider_detection(pg_temp.h('b-rt'), 'codex', '{"installed":true,"authenticated":true}');
+select public.report_provider_detection(pg_temp.h('b-rt'), 'claude-code', '{"installed":true,"authenticated":true,"authMethod":"claude.ai"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
+select public.report_provider_detection(pg_temp.h('b-rt'), 'codex', '{"installed":true,"authenticated":true,"authMethod":"chatgpt"}'::jsonb || jsonb_build_object('health', 'ready', 'healthCheckedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')));
 select pg_temp.put('bjob', public.start_team_job(pg_temp.h('b-chat'), pg_temp.id('bchat'), pg_temp.id('broom'),
   'Bob goal') ->> 'job_id');
 select public.claim_task(pg_temp.h('b-rt'), pg_temp.id('bagent'), (pg_temp.job(pg_temp.id('bjob'))).task_id, 'bclaim');
@@ -334,7 +334,8 @@ select is((pg_temp.job(pg_temp.id('job'))).review_round, 0, 'none of those moved
 -- Test commands are set only by the owner (a chat cannot supply them at all),
 -- so their validation is checked on the owner's policy update.
 select pg_temp.act_as_user('user_SecAlice000001');
-select throws_ok(format($q$select public.update_room_policy(%L, null, null, null, null, null, null, array[E'npm testcurl x'])$q$,
+select throws_ok(format($q$select public.update_room_policy(%L, null, null, null, null, null, null, array[E'npm test
+curl x'])$q$,
     pg_temp.id('roomA')),
   '22023', null, 'a verify command with a carriage return is refused');
 select throws_ok(format($q$select public.update_room_policy(%L, null, null, null, null, null, null, array[E'npm testcurl x'])$q$,

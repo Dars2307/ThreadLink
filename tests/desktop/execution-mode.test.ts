@@ -171,14 +171,14 @@ describe("the app's shape", () => {
     mount(appState([conversation()]));
     await settle();
     expect([...document.querySelectorAll("#nav button")].map((b) => b.textContent?.trim())).toEqual(
-      ["Home", "Conversations", "Team", "This computer", "Notifications", "Settings"],
+      ["Home", "Chats", "Agents", "This computer", "Notifications", "Settings"],
     );
   });
 
   it("keeps identifiers out of the everyday view", async () => {
     mount(appState([conversation({ mode: "worker" })]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     const text = document.getElementById("view")?.textContent ?? "";
     expect(text).toContain("ThreadLink Alpha v0.1 bootstrap");
     expect(text).not.toMatch(/tlses_|tlrun_|tlwsp_|cc:|31a711b2/);
@@ -228,7 +228,7 @@ describe("attaching a conversation", () => {
   it("offers both modes with background worker already chosen", async () => {
     mount(appState([]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
 
@@ -246,7 +246,7 @@ describe("attaching a conversation", () => {
   it("attaches in background mode by default", async () => {
     mount(appState([]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
     buttonWith("Attach")!.dispatchEvent(new Event("click"));
@@ -259,7 +259,7 @@ describe("attaching a conversation", () => {
   it("attaches in exact mode when that is deliberately chosen", async () => {
     mount(appState([]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
     const input = modeOption("Exact conversation")!.querySelector("input") as HTMLInputElement;
@@ -302,7 +302,7 @@ describe("attaching a conversation", () => {
     (state.snapshot as Record<string, unknown>).pendingLinks = [];
     mount(state);
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
 
@@ -316,14 +316,14 @@ describe("changing the mode of an existing link", () => {
   it("offers the switch on an attached conversation", async () => {
     mount(appState([conversation({ mode: "resume" })]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     expect(buttonWith("Change mode")).toBeTruthy();
   });
 
   it("switches an exact link to a background worker in one step", async () => {
     mount(appState([conversation({ mode: "resume" })]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Change mode")!.dispatchEvent(new Event("click"));
     await settle();
 
@@ -339,7 +339,7 @@ describe("changing the mode of an existing link", () => {
   it("promises not to disturb anything else", async () => {
     mount(appState([conversation({ mode: "resume" })]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Change mode")!.dispatchEvent(new Event("click"));
     await settle();
     const text = document.getElementById("view")?.textContent ?? "";
@@ -351,7 +351,7 @@ describe("changing the mode of an existing link", () => {
     setModeResult = { ok: false, error: "Claude Code cannot work in the background." };
     mount(appState([conversation({ mode: "resume" })]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Change mode")!.dispatchEvent(new Event("click"));
     await settle();
     buttonWith("Confirm")!.dispatchEvent(new Event("click"));
@@ -376,7 +376,7 @@ describe("changing the mode of an existing link", () => {
       ]),
     );
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     expect(buttonWith("Change mode")!.disabled).toBe(true);
   });
 });
@@ -391,7 +391,7 @@ describe("the attach screen under overlapping renders", () => {
   const openAttach = async () => {
     mount(appState([]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
   };
@@ -455,7 +455,7 @@ describe("mode wording is truthful", () => {
       const bridge = (window as unknown as { threadlink: Record<string, unknown> }).threadlink;
       bridge.listConversations = vi.fn(async () => conversations);
     }
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
   };
@@ -512,7 +512,7 @@ describe("exact mode with nothing to use exactly", () => {
     await settle();
     const bridge = (window as unknown as { threadlink: Record<string, unknown> }).threadlink;
     bridge.listConversations = vi.fn(async () => conversations);
-    await navTo("Conversations");
+    await navTo("Agents");
     buttonWith("Attach another")!.dispatchEvent(new Event("click"));
     await settle();
   };

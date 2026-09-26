@@ -1,5 +1,8 @@
 import type { EngineSnapshot } from "threadlink";
 
+import type { HealthView } from "./health.js";
+import type { ChatGroupView } from "./progress.js";
+
 /**
  * Pure presentation logic for the desktop app (tray menu, status text, icon
  * colour). No Electron imports, so it is unit-tested directly.
@@ -15,6 +18,10 @@ export type AppState = {
   notice?: string | null;
   localPaused: boolean;
   settings: { autoStart: boolean; notifications: boolean };
+  /** Provider health, derived by main from the snapshot (fixed words only). */
+  health?: HealthView[];
+  /** Running and recent work grouped by chat, with honest stages. */
+  work?: ChatGroupView[];
 };
 
 export type StatusTone = "ready" | "busy" | "warn" | "off";
@@ -32,6 +39,12 @@ export function statusLine(state: AppState): { title: string; detail: string; to
       detail: "Install Claude Code to receive requests",
       tone: "warn",
     };
+  }
+  // A provider the Runtime's probe found signed out is the one thing that
+  // stops every job before it starts: say so before anything else.
+  const signIn = (state.health ?? []).find((h) => h.health === "needs_sign_in");
+  if (signIn && snap?.status === "online") {
+    return { title: `${signIn.providerName} needs sign-in`, detail: signIn.line, tone: "warn" };
   }
   // Only an exact-conversation binding is blocked by Claude being open; a
   // background worker runs alongside it and must not be reported as in use.

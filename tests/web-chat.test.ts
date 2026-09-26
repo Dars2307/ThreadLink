@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { ActionStatus } from "@/components/dashboard/action-form";
-import { ProjectChat } from "@/components/dashboard/project-chat";
+import { ChatView } from "@/components/dashboard/chat-view";
 import type { ChatEvent, ChatPage } from "@/lib/chat/types";
 import { failed, runAction, saved } from "@/lib/dashboard/action-result";
 import {
@@ -17,7 +17,6 @@ import {
   IDLE_AFTER_MS,
   isChatPage,
   isPostResult,
-  jobRequest,
   mentionOf,
   mergeEvents,
   modelLine,
@@ -39,6 +38,7 @@ const ROOM = `tlrom_${hex(1)}`;
 const JOB = `tljob_${hex(1)}`;
 const JOB_OLD = `tljob_${hex(2)}`;
 const AGENT = `tlses_${hex(9)}`;
+const CHAT_ID = `tlcht_${hex(7)}`;
 const ID = /\btl[a-z]{2,5}_[0-9a-f]/;
 
 let n = 0;
@@ -77,6 +77,7 @@ describe("chat: one event → what the timeline shows", () => {
       author: "agent",
       side: "left",
       label: "Claude Code",
+      headline: "Claude Code · Sonnet 5",
       badge: "Claude Code",
       role: "Builder",
       round: "Round 1",
@@ -258,23 +259,17 @@ describe("chat: composer", () => {
     const job = { jobId: JOB, mode: "team" as const, status: "building" };
     expect(routeBanner(job, "hello").text).toMatch(/goes to the running job/);
     expect(routeBanner(job, "@team stop after this review round").text).toMatch(/then stops/);
-    expect(routeBanner(null, "hello").text).toBe("Starts a new job in this project.");
+    expect(routeBanner(null, "hello").text).toBe("Starts new work in this chat.");
   });
 
-  it("derives mode and builder from the picker and a mention", () => {
-    expect(jobRequest("@codex fix", { mode: "team", builder: "claude-code" })).toEqual({
-      mode: "solo",
-      builder: "codex",
-    });
-    expect(jobRequest("@codex fix", { mode: "pair", builder: "claude-code" })).toEqual({
-      mode: "pair",
-      builder: "codex",
-    });
-    expect(jobRequest("@team go", { mode: "solo", builder: "codex" })).toEqual({ mode: "team" });
-    expect(jobRequest("go", { mode: "pair", builder: "codex" })).toEqual({
-      mode: "pair",
-      builder: "codex",
-    });
+  it("says a mention overrides the chat's mode for one message", () => {
+    expect(routeBanner(null, "@codex fix it", "Team · Claude Code + Codex").text).toBe(
+      "Starts new work for Codex only (from your @mention).",
+    );
+    expect(routeBanner(null, "@team go").text).toBe("Starts new work for the whole team.");
+    expect(routeBanner(null, "go", "Solo · Auto").text).toBe(
+      "Starts new work in this chat · Solo · Auto.",
+    );
   });
 
   it("explains the routed result and keeps server errors human-safe", () => {
@@ -338,12 +333,15 @@ describe("chat: rendering is plain text only", () => {
     activeJob: null,
   };
   const html = renderToStaticMarkup(
-    createElement(ProjectChat, {
-      roomId: ROOM,
+    createElement(ChatView, {
+      chatId: CHAT_ID,
       initial: page,
       controller: "ChatGPT",
-      twoAgents: true,
+      agentProviders: ["claude-code", "codex"],
+      modeSummary: "Team · Claude Code + Codex",
       archived: false,
+      hasProject: true,
+      healthHint: null,
     }),
   );
 
@@ -360,41 +358,51 @@ describe("chat: rendering is plain text only", () => {
     expect(html).not.toContain("<strong>bold</strong>");
   });
 
-  it("offers the mode picker and mention hints when no job is running", () => {
-    expect(html).toContain("Builder + Reviewer");
+  it("offers mention hints and says how new work runs, without a per-message builder", () => {
     expect(html).toContain("@team stop after this review round");
-    expect(html).toContain("Starts a new job in this project.");
+    expect(html).toContain("Starts new work in this chat · Team · Claude Code + Codex.");
+    expect(html).not.toContain("How to run it");
+    expect(html).not.toMatch(/<select/);
     expect(html).toMatch(/aria-live="polite"/);
   });
 
   it("says the message goes to the running job when one is active", () => {
     const running = renderToStaticMarkup(
-      createElement(ProjectChat, {
-        roomId: ROOM,
+      createElement(ChatView, {
+        chatId: CHAT_ID,
         initial: { ...page, activeJob: { jobId: JOB, mode: "team", status: "building" } },
         controller: "ChatGPT",
-        twoAgents: true,
+        agentProviders: ["claude-code", "codex"],
+        modeSummary: "Team · Claude Code + Codex",
         archived: false,
+        hasProject: true,
+        healthHint: null,
       }),
     );
     expect(running).toContain("Your message goes to the running job");
-    expect(running).not.toContain("How to run it");
+    expect(running).toContain("Send to running work");
   });
 
   it("explains how to start without assuming ChatGPT", () => {
     const empty = renderToStaticMarkup(
-      createElement(ProjectChat, {
-        roomId: ROOM,
+      createElement(ChatView, {
+        chatId: CHAT_ID,
         initial: { events: [], cursor: 0, activeJob: null },
         controller: "your controller (for example ChatGPT)",
-        twoAgents: false,
+        agentProviders: ["claude-code"],
+        modeSummary: "Solo · Claude Code",
         archived: false,
+        hasProject: false,
+        healthHint: null,
       }),
     );
     expect(empty).toContain("No messages yet");
     expect(empty).toContain("@Claude");
+    // One agent: no @team hints.
+    expect(empty).not.toContain("@team");
     expect(empty).toContain("ask your controller (for example ChatGPT)");
     expect(empty).not.toContain("Ask ChatGPT");
+    expect(empty).toContain("Choose a project for this chat");
   });
 });
 

@@ -122,6 +122,9 @@ async function account(sub: string, label: string): Promise<Account> {
         authenticated: true,
         // Signed in with the subscription: an API-key sign-in is refused.
         authMethod: provider === "claude-code" ? "claude.ai" : "chatgpt",
+        // 0.9: a recent, real authenticated check (the health gate needs it).
+        health: "ready",
+        healthCheckedAt: new Date().toISOString(),
       },
     });
   }

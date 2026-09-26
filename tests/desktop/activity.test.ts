@@ -276,7 +276,7 @@ describe("whose conversation a line belongs to", () => {
   it("files each line under its own conversation, not one flat list", async () => {
     mount(two());
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
 
     const groups = groupsOnConversations();
     expect(groups.map((g) => g.title)).toEqual([BOOTSTRAP, DASHBOARD]);
@@ -311,7 +311,7 @@ describe("whose conversation a line belongs to", () => {
       ),
     );
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
 
     const groups = groupsOnConversations();
     expect(groups.map((g) => g.title)).toEqual([BOOTSTRAP, DASHBOARD]);
@@ -345,7 +345,7 @@ describe("order and quantity", () => {
 });
 
 describe("what the feed must never show", () => {
-  it("keeps identifiers out of the feed, on Home and on Conversations", async () => {
+  it("keeps identifiers out of the feed, on Home and on Agents", async () => {
     const state = appState([conversation()], completedRun());
     mount(state);
     await settle();
@@ -353,7 +353,7 @@ describe("what the feed must never show", () => {
     expect(home).toContain("Task completed");
     expect(home).not.toMatch(/tltsk_|tlses_|tlrun_|tlwsp_|cc:|31a711b2/);
 
-    await navTo("Conversations");
+    await navTo("Agents");
     const conversations = document.getElementById("view")?.textContent ?? "";
     expect(conversations).toContain("Task completed");
     expect(conversations).not.toMatch(/tltsk_|tlses_|tlrun_|tlwsp_|cc:|31a711b2/);
@@ -393,7 +393,7 @@ describe("seeing the whole story", () => {
   it("offers the dashboard beside a conversation's own feed", async () => {
     mount(appState([conversation()], completedRun()));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
 
     const open = [...document.querySelectorAll(".activity button")].find((b) =>
       (b.textContent ?? "").includes("Open dashboard"),
@@ -418,7 +418,7 @@ describe("before anything has run", () => {
   it("says so under a conversation that has not run anything", async () => {
     mount(appState([conversation()]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
 
     const groups = groupsOnConversations();
     expect(groups[0]!.empty.join(" ")).toMatch(/Nothing has run here yet/i);
@@ -428,7 +428,7 @@ describe("before anything has run", () => {
   it("does not offer the dashboard on a conversation with no activity", async () => {
     mount(appState([conversation()]));
     await settle();
-    await navTo("Conversations");
+    await navTo("Agents");
 
     const buttons = [...document.querySelectorAll(".activity button")];
     expect(buttons).toHaveLength(0);

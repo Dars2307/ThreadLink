@@ -12,11 +12,13 @@
 import type { ExecutionResult, Executor, TaskInput } from "../executor.ts";
 import { summarize } from "../summary.ts";
 import { discoverProviders, type ProviderDiscovery } from "./discovery.ts";
+import type { ProviderHealthMonitor } from "./health.ts";
 import { parseTeamJob, TeamJobError } from "./job.ts";
 import { classifyModels, isSelectable, type ModelClassOverrides } from "./models.ts";
 import {
   TeamOrchestrator,
   type AgentRunner,
+  type HealthPort,
   type TeamOp,
   type TeamOutcome,
   type TeamProgress,
@@ -24,7 +26,7 @@ import {
 import { graphPort, routePort } from "./ports.ts";
 import type { RouteOverride } from "./router.ts";
 import { createRunners } from "./providers.ts";
-import type { AgentProvider } from "./types.ts";
+import type { AgentProvider, ModelClass } from "./types.ts";
 import { UsageGovernor } from "./usage.ts";
 import { runVerify } from "./verify.ts";
 import { WorktreeManager } from "./worktrees.ts";
@@ -48,6 +50,12 @@ export type TeamExecutorOptions = {
   /** Shared across jobs so exhaustion and user preferences persist. */
   governor: UsageGovernor;
   classOverrides?: ModelClassOverrides;
+  /**
+   * Provider health, shared with the Runtime: checked at claim (re-probed if
+   * older than 10 minutes) and told about every failed run. Absent: a provider
+   * with a runner counts as ready.
+   */
+  health?: ProviderHealthMonitor;
   /** Injectable for tests; real discovery and real CLIs otherwise. */
   discover?: () => Promise<ProviderDiscovery[]>;
   runners?: (found: ProviderDiscovery[]) => Partial<Record<AgentProvider, AgentRunner>>;
@@ -98,8 +106,28 @@ export class TeamExecutor implements Executor {
       ).filter(isSelectable),
     );
 
+    const modelClasses: Partial<Record<AgentProvider, ModelClass[]>> = {};
+    for (const m of available) {
+      if (m.legacy) continue;
+      (modelClasses[m.provider] ??= []).push(m.modelClass);
+    }
+    const monitor = this.#o.health;
+    const health: HealthPort | undefined = monitor
+      ? {
+          ensure: async (providers) => {
+            const records = await monitor.ensureFresh(providers, { found });
+            return Object.fromEntries(providers.map((p) => [p, records[p]?.health ?? "unknown"]));
+          },
+          noteFailure: (provider, failure) => monitor.noteFailure(provider, failure),
+          confirm: (provider) => monitor.confirm(provider),
+          recentFailures: () => monitor.recentFailures(),
+        }
+      : undefined;
+
     const orchestrator = new TeamOrchestrator(job, {
       runners: (this.#o.runners ?? createRunners)(found),
+      health,
+      modelClasses,
       route: routePort({
         available,
         policy: job.policy.usagePolicy,

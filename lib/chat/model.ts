@@ -17,6 +17,8 @@ import {
  */
 
 export const roomIdSchema = z.string().regex(/^tlrom_[0-9a-f]{32}$/);
+export const chatIdSchema = z.string().regex(/^tlcht_[0-9a-f]{32}$/);
+export const groupIdSchema = z.string().regex(/^tlgrp_[0-9a-f]{32}$/);
 
 /** Max events per page (contract section 7). */
 export const CHAT_PAGE_SIZE = 200;
@@ -33,7 +35,9 @@ export const chatEventRowSchema = z.object({
   owner_user_id: z.string(),
   created_at: z.string(),
   room_id: z.string().nullable(),
-  agent_session_id: z.string(),
+  // Optional so a row from before chat-first still parses.
+  chat_id: z.string().nullable().optional(),
+  agent_session_id: z.string().nullable(),
   job_id: z.string().nullable(),
   task_id: z.string().nullable(),
   node_id: z.string().nullable(),
@@ -54,7 +58,7 @@ export type ChatEventRow = z.infer<typeof chatEventRowSchema>;
 
 /** Exactly the columns a ChatEvent needs (plus the owner, for the re-check). */
 export const CHAT_EVENT_COLUMNS =
-  "seq, id, owner_user_id, created_at, room_id, agent_session_id, job_id, task_id, node_id, " +
+  "seq, id, owner_user_id, created_at, room_id, chat_id, agent_session_id, job_id, task_id, node_id, " +
   "author_kind, author_provider, author_label, author_role, audience, event_type, message_type, " +
   "round, model_requested, model_observed, body, visibility";
 
@@ -64,6 +68,7 @@ export function toChatEvent(r: ChatEventRow): ChatEvent {
     id: r.id,
     createdAt: r.created_at,
     roomId: r.room_id,
+    chatId: r.chat_id ?? null,
     agentSessionId: r.agent_session_id,
     jobId: r.job_id,
     taskId: r.task_id,
@@ -84,15 +89,21 @@ export function toChatEvent(r: ChatEventRow): ChatEvent {
   };
 }
 
-/** GET /api/dashboard/chat?room=&after=&technical= */
+/**
+ * GET /api/dashboard/chat?room=&after=&technical=  (0.8, a project's timeline)
+ * GET /api/dashboard/chat?chat=&after=&technical=  (0.9, one chat's timeline)
+ * Exactly one of roomId / chatId.
+ */
 export const chatQuerySchema = z
   .object({
-    roomId: roomIdSchema,
+    roomId: roomIdSchema.optional(),
+    chatId: chatIdSchema.optional(),
     /** Omitted: the latest page. Given: everything after this seq (oldest first). */
     after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     technical: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .refine((q) => (q.roomId === undefined) !== (q.chatId === undefined), "exactly one scope");
 export type ChatQuery = z.input<typeof chatQuerySchema>;
 
 /** Parses URL search params into a ChatQuery (strings -> typed), or null if malformed. */
@@ -101,8 +112,11 @@ export function parseChatSearchParams(params: URLSearchParams): ChatQuery | null
   const technical = params.get("technical");
   if (after !== null && !/^\d{1,15}$/.test(after)) return null;
   if (technical !== null && !["0", "1", "true", "false"].includes(technical)) return null;
+  const room = params.get("room");
+  const chat = params.get("chat");
   const parsed = chatQuerySchema.safeParse({
-    roomId: params.get("room") ?? "",
+    ...(chat === null ? { roomId: room ?? "" } : { chatId: chat }),
+    ...(room !== null && chat !== null ? { roomId: room } : {}),
     after: after === null ? undefined : Number(after),
     technical: technical === "1" || technical === "true",
   });
@@ -123,11 +137,25 @@ export const postChatMessageSchema = z
   })
   .strict();
 
+/** 0.9: a post keyed by chat. No mode/builder: the chat's mode and a leading @mention decide. */
+export const postChatByChatSchema = z
+  .object({
+    chatId: chatIdSchema,
+    body: z.string().max(CHAT_MESSAGE_MAX_CHARS),
+    idempotencyKey: z
+      .string()
+      .regex(/^[A-Za-z0-9._:-]{1,128}$/)
+      .optional(),
+  })
+  .strict();
+
 export const postChatMessageRowSchema = z.object({
-  routed: z.enum(["note_to_active_job", "stop_requested", "new_job"]),
+  routed: z.enum(["note_to_active_job", "stop_requested", "new_job", "provider_blocked"]),
   job_id: z.string().nullable(),
   event_id: z.string().optional(),
+  chat_id: z.string().optional(),
   replayed: z.boolean().optional(),
+  health: z.unknown().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -152,6 +180,21 @@ export const CHAT_ERROR_REASONS = [
   "agents_unavailable",
   "conflict",
   "unavailable",
+  // 0.9 chat-first
+  "needs_project",
+  "provider_unhealthy",
+  "job_active",
+  "name_taken",
+  "limit_reached",
+  "not_retryable",
+  "invalid_name",
+  "invalid_pair",
+  "invalid_roles",
+  "chat_not_found",
+  "group_not_found",
+  "project_not_found",
+  "job_not_found",
+  "project_changed",
 ] as const;
 export type ChatErrorReason = (typeof CHAT_ERROR_REASONS)[number];
 
@@ -176,6 +219,22 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorReason, string> = {
     "Open the ThreadLink app and sign in to every agent this job needs, then try again.",
   conflict: "That can't be done right now.",
   unavailable: "ThreadLink couldn't send that message right now. Try again.",
+  needs_project: "Choose a project for this chat so the agents know which folder to work in.",
+  provider_unhealthy:
+    "An agent this work needs isn't ready. Open the ThreadLink app on this computer to check.",
+  job_active: "Work is still running in this chat. Stop it first, then try again.",
+  name_taken: "A group with this name already exists.",
+  limit_reached:
+    "You've reached the limit for this. Delete some you no longer need, then try again.",
+  not_retryable: "Only work that was blocked before it had a plan can be retried this way.",
+  invalid_name: "Use a shorter name on one line.",
+  invalid_pair: "An agent can't review its own work. Choose two different agents.",
+  invalid_roles: "That agent can't take that role for this work.",
+  chat_not_found: "This chat wasn't found.",
+  group_not_found: "This group wasn't found.",
+  project_not_found: "This project wasn't found.",
+  job_not_found: "This work wasn't found.",
+  project_changed: "This chat now belongs to another project; start a new request instead.",
 };
 
 export const CHAT_ERROR_STATUS: Record<ChatErrorReason, number> = {
@@ -196,6 +255,20 @@ export const CHAT_ERROR_STATUS: Record<ChatErrorReason, number> = {
   agents_unavailable: 409,
   conflict: 409,
   unavailable: 503,
+  needs_project: 409,
+  provider_unhealthy: 409,
+  job_active: 409,
+  name_taken: 409,
+  limit_reached: 409,
+  not_retryable: 409,
+  invalid_name: 400,
+  invalid_pair: 400,
+  invalid_roles: 400,
+  chat_not_found: 404,
+  group_not_found: 404,
+  project_not_found: 404,
+  job_not_found: 404,
+  project_changed: 409,
 };
 
 const HINT_REASONS: Record<string, ChatErrorReason> = {
@@ -215,6 +288,21 @@ const HINT_REASONS: Record<string, ChatErrorReason> = {
   link_paused: "link_paused",
   runtime_outdated: "runtime_outdated",
   agents_unavailable: "agents_unavailable",
+  conflict: "conflict",
+  needs_project: "needs_project",
+  provider_unhealthy: "provider_unhealthy",
+  job_active: "job_active",
+  name_taken: "name_taken",
+  limit_reached: "limit_reached",
+  not_retryable: "not_retryable",
+  invalid_name: "invalid_name",
+  invalid_pair: "invalid_pair",
+  invalid_roles: "invalid_roles",
+  chat_not_found: "chat_not_found",
+  group_not_found: "group_not_found",
+  project_not_found: "project_not_found",
+  job_not_found: "job_not_found",
+  project_changed: "project_changed",
 };
 
 const CODE_REASONS: Record<string, ChatErrorReason> = {

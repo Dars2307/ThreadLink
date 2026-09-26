@@ -542,21 +542,42 @@ describe("Team", () => {
     );
   });
 
-  it("draws the plan as a tree with ✓ ● ○ and no graph words", () => {
+  it("draws honest stages with units under Build, and no graph words", () => {
     expect(taskGraph(runningDetail).map((l) => l.text)).toEqual([
+      "✓ Understanding request",
       "✓ Plan",
+      "● Build",
       "├─ ● UI — Codex, reviewed by Claude Code",
       "├─ ✓ Backend — Claude Code, reviewed by Codex",
-      "├─ ● API contract — Claude Code, reviewed by Codex",
-      "└─ ○ Integration → Final review",
+      "└─ ● API contract — Claude Code, reviewed by Codex",
+      "○ Review",
+      "○ Integration",
     ]);
     // A step always comes after the steps it depends on.
     const reordered = taskGraph({ ...runningDetail, nodes: [...runningDetail.nodes].reverse() });
-    expect(reordered.map((l) => l.label).slice(1, 4)).toEqual(["Backend", "API contract", "UI"]);
-    const done = taskGraph({ ...runningDetail, status: "completed", verdict: "PASS", nodes: [] });
-    expect(done.map((l) => l.text)).toEqual(["✓ Plan", "└─ ✓ Integration → Final review"]);
+    expect(reordered.map((l) => l.label).slice(3, 6)).toEqual(["Backend", "API contract", "UI"]);
+    const done = taskGraph({
+      ...runningDetail,
+      status: "completed",
+      verdict: "PASS",
+      planPersisted: true,
+      planApproved: true,
+    });
+    expect(done.filter((l) => !l.branch).map((l) => l.text)).toEqual([
+      "✓ Understanding request",
+      "✓ Plan",
+      "✓ Build",
+      "✓ Review",
+      "✓ Integration",
+    ]);
     const planning = taskGraph({ status: "planning", verdict: null, nodes: [] });
-    expect(planning[0]!.text).toBe("● Plan");
+    expect(planning.map((l) => l.text)).toEqual([
+      "✓ Understanding request",
+      "● Plan",
+      "○ Build",
+      "○ Review",
+      "○ Integration",
+    ]);
     expect(JSON.stringify(taskGraph(runningDetail))).not.toMatch(/\b(DAG|node|edge|graph)\b/i);
   });
 

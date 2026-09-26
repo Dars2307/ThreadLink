@@ -3,6 +3,7 @@ import { mkdirSync, openSync, readFileSync, rmSync, writeSync, closeSync } from 
 import { join } from "node:path";
 
 import type { Artifact } from "./api.ts";
+import { buildAgentEnv } from "./team/env.ts";
 import type { AgentsLister } from "./claude-sessions.ts";
 
 /**
@@ -396,6 +397,10 @@ export class ClaudeCodeExecutor implements Executor {
       try {
         child = spawnFn(command, this.args(), {
           cwd,
+          // The same scrubbed environment Team Mode uses: no API keys or
+          // provider base URLs, so a single task can only run on the owner's
+          // subscription sign-in, never bill per token.
+          env: buildAgentEnv(process.env).env as NodeJS.ProcessEnv,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });

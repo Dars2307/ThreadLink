@@ -6,12 +6,12 @@ import { useState, type ReactNode } from "react";
 
 import { cx } from "@/components/ui";
 
-const NAV = [
+/** Primary navigation (docs/design/chat-first.md §7). Devices live under Agents and Settings. */
+export const NAV = [
   { href: "/dashboard", label: "Home" },
+  { href: "/dashboard/chats", label: "Chats" },
   { href: "/dashboard/projects", label: "Projects" },
-  { href: "/dashboard/conversations", label: "Conversations" },
-  { href: "/dashboard/team", label: "Team" },
-  { href: "/dashboard/devices", label: "Devices" },
+  { href: "/dashboard/agents", label: "Agents" },
   { href: "/dashboard/notifications", label: "Notifications" },
   { href: "/dashboard/settings", label: "Settings" },
 ] as const;

@@ -230,7 +230,7 @@ export function accessMatches(
 
 // --- event stream ------------------------------------------------------------------
 
-type EventState = {
+export type CodexEventState = {
   threadId: string | null;
   lastMessage: string | null;
   turnCompleted: boolean;
@@ -241,7 +241,22 @@ type EventState = {
   sawUsage: boolean;
 };
 
-function onEvent(state: EventState, line: string): void {
+/** A fresh state for onCodexEvent. */
+export function newCodexEventState(): CodexEventState {
+  return {
+    threadId: null,
+    lastMessage: null,
+    turnCompleted: false,
+    turnFailed: null,
+    errors: [],
+    inputTokens: 0,
+    outputTokens: 0,
+    sawUsage: false,
+  };
+}
+
+/** Folds one `codex exec --json` stdout line into `state`. Unknown lines are ignored. */
+export function onCodexEvent(state: CodexEventState, line: string): void {
   let event: unknown;
   try {
     event = JSON.parse(line);
@@ -339,16 +354,7 @@ export class CodexTeamRunner implements AgentRunner {
       const viaStdin = prompt.length > CODEX_ARGV_PROMPT_LIMIT;
       args.push(viaStdin ? "-" : prompt);
 
-      const state: EventState = {
-        threadId: null,
-        lastMessage: null,
-        turnCompleted: false,
-        turnFailed: null,
-        errors: [],
-        inputTokens: 0,
-        outputTokens: 0,
-        sawUsage: false,
-      };
+      const state = newCodexEventState();
       const timeoutMs =
         request.timeoutMs ?? this.#options.defaultTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
       const outcome = await runProcess({
@@ -360,7 +366,7 @@ export class CodexTeamRunner implements AgentRunner {
         stdinText: viaStdin ? prompt : null,
         timeoutMs,
         signal: request.signal,
-        onStdoutLine: (line) => onEvent(state, line),
+        onStdoutLine: (line) => onCodexEvent(state, line),
       });
       const processError = processFailure(request, outcome, "Codex", timeoutMs);
       if (processError) return { ...processError, threadId: state.threadId };

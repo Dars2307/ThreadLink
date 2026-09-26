@@ -876,8 +876,76 @@ button.tile:hover:not(:disabled) {
   color: var(--danger);
 }
 
-.step.attention .sym {
+.step.unit .step-text {
+  color: var(--text-dim);
+}
+
+.chat-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.chat-group .team-job + .team-job {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.team-stop {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.team-stop-how,
+.health-instruction {
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------- provider health */
+
+.health-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.health {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.health-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.health-line {
+  font-weight: 600;
+}
+
+.health.fail .health-line {
+  color: var(--danger);
+}
+
+.health.wait .health-line {
   color: var(--warn);
+}
+
+.health-instruction {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.health-check {
+  align-items: center;
+  gap: 10px;
 }
 
 .team-verdict {

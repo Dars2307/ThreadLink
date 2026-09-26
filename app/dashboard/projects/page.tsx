@@ -5,12 +5,14 @@ import {
   archiveProjectAction,
   deleteProjectAction,
   renameProjectAction,
-  updateProjectPolicyAction,
 } from "@/app/dashboard/team-actions";
 import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { ConfirmAction } from "@/components/dashboard/confirm-action";
+import { ProjectPolicyForm } from "@/components/dashboard/project-settings";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { Badge, buttonStyles, Card, EmptyState } from "@/components/ui";
+import { chatCounts, chatCountText } from "@/lib/dashboard/chats";
+import { loadChats } from "@/lib/dashboard/chats-data";
 import { loadTeam } from "@/lib/dashboard/data";
 import { deriveProjects } from "@/lib/dashboard/pages";
 import { projectHref } from "@/lib/dashboard/project";
@@ -20,17 +22,14 @@ export const metadata: Metadata = { title: "Projects · ThreadLink" };
 
 const field = "border-border-strong bg-surface rounded-lg border px-3 py-2 text-sm";
 
-function range(min: number, max: number): number[] {
-  return Array.from({ length: max - min + 1 }, (_, i) => min + i);
-}
-
 export default async function ProjectsPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const showArchived = (await searchParams).archived === "1";
-  const team = await loadTeam();
+  const [team, chats] = await Promise.all([loadTeam(), loadChats()]);
+  const counts = chats ? chatCounts(chats) : null;
   if (!team) return <LoadError what="your projects" />;
   const { view, handles } = deriveProjects(team, team.now, { showArchived });
   const { limits } = view;
@@ -39,7 +38,7 @@ export default async function ProjectsPage({
     <Shell>
       <PageHeader
         title="Projects"
-        description={`A project is a folder on your computer that Claude and Codex work on together. Ask ${CONTROLLER_HINT} to “create a ThreadLink project” to add one.`}
+        description={`A project is a folder on your computer. Its chats run their work there. Ask ${CONTROLLER_HINT} to “create a ThreadLink project” to add one.`}
         actions={
           view.archivedCount ? (
             <Link
@@ -74,6 +73,7 @@ export default async function ProjectsPage({
                     </Link>
                   </h2>
                   <p className="text-muted text-sm">
+                    {counts ? `${chatCountText(counts.get(roomId))} · ` : ""}
                     {p.team} · {p.folder}
                     {p.conversation ? ` · ${p.conversation}` : ""}
                   </p>
@@ -96,12 +96,7 @@ export default async function ProjectsPage({
                       key={j.key}
                       className="flex flex-col gap-1 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                     >
-                      <Link
-                        href={projectHref(roomId, { tab: "chat", job: handles[j.key]!.jobId })}
-                        className="min-w-0 truncate text-sm hover:underline"
-                      >
-                        {j.goal}
-                      </Link>
+                      <span className="min-w-0 truncate text-sm">{j.goal}</span>
                       <span className="flex shrink-0 items-center gap-2">
                         <span className="text-subtle text-xs">{j.when}</span>
                         <Badge tone={j.tone}>{j.status}</Badge>
@@ -115,80 +110,12 @@ export default async function ProjectsPage({
                 <summary className="text-muted hover:text-foreground cursor-pointer text-sm">
                   Team settings <span className="text-subtle">· {p.policy.text}</span>
                 </summary>
-                <ActionForm
-                  action={updateProjectPolicyAction}
-                  className="bg-surface-muted mt-3 grid gap-3 rounded-xl p-4 sm:grid-cols-2"
-                  statusClassName="sm:col-span-2"
-                >
-                  <input type="hidden" name="roomId" value={roomId} />
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-subtle text-xs">Agents working at once</span>
-                    <select
-                      key={String(p.policy.parallelAgents)}
-                      name="parallelAgents"
-                      defaultValue={p.policy.parallelAgents}
-                      className={field}
-                    >
-                      {range(limits.parallelAgents.min, limits.parallelAgents.max).map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-subtle text-xs">Usage policy</span>
-                    <select
-                      key={String(p.policy.usagePolicy)}
-                      name="usagePolicy"
-                      defaultValue={p.policy.usagePolicy}
-                      className={field}
-                    >
-                      {view.usagePolicies.map((u) => (
-                        <option key={u.value} value={u.value}>
-                          {u.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-subtle text-xs">Planning rounds (at most)</span>
-                    <select
-                      key={String(p.policy.maxPlanningRounds)}
-                      name="maxPlanningRounds"
-                      defaultValue={p.policy.maxPlanningRounds}
-                      className={field}
-                    >
-                      {range(limits.planningRounds.min, limits.planningRounds.max).map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    <span className="text-subtle text-xs">Review rounds (at most)</span>
-                    <select
-                      key={String(p.policy.maxReviewRounds)}
-                      name="maxReviewRounds"
-                      defaultValue={p.policy.maxReviewRounds}
-                      className={field}
-                    >
-                      {range(limits.reviewRounds.min, limits.reviewRounds.max).map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <p className="text-subtle text-xs sm:col-span-2">
-                    Applies to new team work in this project. When the rounds run out, the team
-                    stops and asks you rather than passing work that is not ready.
-                  </p>
-                  <SubmitButton className={`${buttonStyles.secondary} w-fit`}>
-                    Save team settings
-                  </SubmitButton>
-                </ActionForm>
+                <ProjectPolicyForm
+                  roomId={roomId}
+                  policy={p.policy}
+                  limits={limits}
+                  usagePolicies={view.usagePolicies}
+                />
               </details>
 
               <div className="border-border flex flex-wrap items-center gap-2 border-t pt-3">
@@ -224,7 +151,7 @@ export default async function ProjectsPage({
                 </ActionForm>
 
                 <Link href={projectHref(roomId)} className={buttonStyles.ghost}>
-                  Open chat
+                  Open project
                 </Link>
 
                 <ConfirmAction

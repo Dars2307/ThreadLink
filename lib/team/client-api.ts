@@ -6,7 +6,21 @@ import {
   validate,
   type ClientDatabase,
 } from "@/lib/client-api/operations";
+import {
+  fixedHealthDetail,
+  HEALTH_CHECKED_AT_PATTERN,
+  healthMessage,
+  parseHealthDetail,
+  PROVIDER_HEALTH,
+  type ProviderHealthEntry,
+} from "@/lib/providers/health";
 import { sessionIdSchema } from "@/lib/sessions/model";
+import {
+  PRIORITY_PATTERN,
+  taskEnvelopeSchema,
+  toTaskEnvelope,
+  type TaskEnvelope,
+} from "@/lib/tasks/model";
 
 import {
   AGENT_PROVIDERS,
@@ -113,13 +127,56 @@ export async function getRoom(
   };
 }
 
+/**
+ * A job start refused by the health gate (docs/design/chat-first.md section 2):
+ * nothing was created. `health` comes from the database's machine-readable
+ * DETAIL, parsed strictly; the sentence is built here from ids and fixed words:
+ * "Claude Code — Needs sign-in · Codex — Ready. Claude Code needs you to sign in again on this computer."
+ */
+export class ProviderUnhealthyError extends ClientOperationError {
+  readonly health: ProviderHealthEntry[];
+  readonly userMessage: string;
+  constructor(health: ProviderHealthEntry[] | null) {
+    super("conflict");
+    this.name = "ProviderUnhealthyError";
+    this.health = health ?? [];
+    this.userMessage = healthMessage(this.health);
+  }
+}
+
+type RpcErrorDetail = {
+  message: string;
+  code?: string;
+  hint?: string | null;
+  details?: string | null;
+};
+
+/** Like `call`, but a provider_unhealthy refusal becomes ProviderUnhealthyError. */
+async function callGated<T>(
+  db: ClientDatabase,
+  fn: string,
+  args: Record<string, unknown>,
+  parse: (data: unknown) => T,
+): Promise<T> {
+  let result: { data: unknown; error: RpcErrorDetail | null };
+  try {
+    result = (await db.rpc(fn, args)) as { data: unknown; error: RpcErrorDetail | null };
+  } catch {
+    throw new ClientOperationError("unavailable");
+  }
+  if (result.error?.hint === "provider_unhealthy") {
+    throw new ProviderUnhealthyError(parseHealthDetail(result.error.details));
+  }
+  return call({ rpc: async () => result }, fn, args, parse);
+}
+
 export async function startTeamJob(
   db: ClientDatabase,
   credentialHash: string,
   rawInput: unknown,
 ): Promise<{ job: TeamStatus; created: boolean }> {
   const input = validate(startTeamJobInputSchema, rawInput);
-  const row = await call(
+  const row = await callGated(
     db,
     "start_team_job",
     {
@@ -137,10 +194,58 @@ export async function startTeamJob(
       // that takes a mode; the database validates both.
       p_mode: input.mode ?? null,
       p_builder: input.builder ?? null,
+      // 0.9: always sent (null = the project's default chat), so the call
+      // resolves to the overload that takes a chat; validated by the database.
+      p_chat_id: input.chatId ?? null,
     },
     (data) => teamStatusRowSchema.parse(data),
   );
   return { job: toTeamStatus(row), created: row.created === true };
+}
+
+export const createChatTaskInputSchema = z
+  .object({
+    originSessionId: z.string().regex(/^tlses_[0-9a-f]{32}$/),
+    threadLinkId: z.string().regex(/^tllnk_[0-9a-f]{32}$/),
+    chatId: z.string().regex(/^tlcht_[0-9a-f]{32}$/),
+    title: z.string().trim().min(1).max(255),
+    content: z.string().min(1).max(60_000),
+    priority: z.string().regex(PRIORITY_PATTERN).optional(),
+    idempotencyKey: z
+      .string()
+      .regex(/^[A-Za-z0-9._:-]{1,128}$/)
+      .optional(),
+  })
+  .strict();
+
+/**
+ * send_to_agent in a chat (0.9): an ordinary task over the caller's link that
+ * lands in the named chat. The database checks the chat is this account's, in
+ * a live project the link reaches; otherwise "not found" and nothing is made.
+ */
+export async function createChatTask(
+  db: ClientDatabase,
+  credentialHash: string,
+  rawInput: unknown,
+): Promise<{ task: TaskEnvelope; created: boolean }> {
+  const input = validate(createChatTaskInputSchema, rawInput);
+  const row = await call(
+    db,
+    "create_chat_task",
+    {
+      p_token_hash: credentialHash,
+      p_origin_session_id: input.originSessionId,
+      p_thread_link_id: input.threadLinkId,
+      p_chat_id: input.chatId,
+      p_title: input.title,
+      p_content: input.content,
+      p_priority: input.priority ?? "C",
+      p_idempotency_key: input.idempotencyKey ?? null,
+      p_expires_in_seconds: null,
+    },
+    (data) => taskEnvelopeSchema.parse(data),
+  );
+  return { task: toTaskEnvelope(row), created: row.created === true };
 }
 
 export async function getTeamStatus(
@@ -383,6 +488,16 @@ export const providerDetectionSchema = z
         capabilities: z.record(z.string(), z.boolean()).optional(),
         usage: z.record(z.string(), z.unknown()).optional(),
         detectedAt: z.string().max(40).optional(),
+        // 0.9 health (docs/design/chat-first.md section 2). The detail is a fixed
+        // Runtime sentence; the database also caps, pattern-checks and redacts it.
+        health: z.enum(PROVIDER_HEALTH).optional(),
+        healthCheckedAt: z.string().regex(HEALTH_CHECKED_AT_PATTERN).nullable().optional(),
+        // Only the Runtime's fixed sentences are kept; anything else becomes null
+        // (never refused: the health itself must still arrive).
+        healthDetail: z
+          .unknown()
+          .optional()
+          .transform((v) => (v === undefined ? undefined : fixedHealthDetail(v))),
       })
       .strict()
       .refine((d) => !hasForbiddenContent(d), "identity- or credential-shaped content")

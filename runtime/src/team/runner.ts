@@ -211,6 +211,18 @@ const AUTH_PATTERNS = [
   /\b401\b/,
   /authentication (?:failed|required|error)/i,
   /oauth token (?:has )?expired/i,
+  // 0.9 (docs/design/chat-first.md §2). A real run failed with "Failed to refresh
+  // OAuth token" while `claude auth status` still said loggedIn: true.
+  /failed to refresh oauth/i,
+  /refresh[ _-]?token/i,
+  /oauth\b.{0,80}\b(?:expired|invalid|revoked)/i,
+  /please run .{0,40}login/i,
+  /session (?:has )?expired/i,
+  /\bre-?authenticate\b/i,
+  // Codex's sign-in failures.
+  /\bcodex login\b/i,
+  /not signed in/i,
+  /\btoken\b.{0,40}\bexpired\b/i,
 ];
 
 /**

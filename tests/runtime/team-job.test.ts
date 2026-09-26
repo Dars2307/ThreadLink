@@ -115,10 +115,12 @@ describe("a job's mode and builder", () => {
     });
   });
 
-  it("uses the only agent for a solo job that names none, and Claude Code for a pair", () => {
+  it("leaves an unnamed builder to role assignment: no provider is a default", () => {
     const one = [{ provider: "codex", displayName: "Codex", roles: ["builder"] }];
-    expect(parse({ mode: "solo", agents: one })).toMatchObject({ builder: "codex" });
-    expect(parse({ mode: "pair" })).toMatchObject({ builder: "claude-code" });
+    expect(parse({ mode: "solo", agents: one })).toMatchObject({ builder: null });
+    // Builder + Reviewer used to default to Claude Code building. It no longer does.
+    expect(parse({ mode: "pair" })).toMatchObject({ builder: null, reviewer: null });
+    expect(parse({ mode: "solo" })).toMatchObject({ mode: "solo", builder: null });
   });
 
   it("refuses an unknown mode, an unknown builder, or a builder not in the room", () => {
@@ -128,7 +130,51 @@ describe("a job's mode and builder", () => {
     expect(() => parse({ mode: "solo", builder: "claude-code", agents: one })).toThrow(/room/);
   });
 
-  it("refuses a solo job in a two-agent room that does not name its builder", () => {
-    expect(() => parse({ mode: "solo" })).toThrow(/name its builder/);
+  it("parses an explicit pair reviewer, and refuses one that would review itself", () => {
+    expect(parse({ mode: "pair", builder: "codex", reviewer: "claude-code" })).toMatchObject({
+      builder: "codex",
+      reviewer: "claude-code",
+    });
+    expect(() => parse({ mode: "pair", builder: "codex", reviewer: "codex" })).toThrow(
+      /its own work/,
+    );
+    expect(() => parse({ mode: "pair", reviewer: "cursor" })).toThrow(/reviewer/);
+  });
+});
+
+describe("0.9 carrier fields", () => {
+  it("are optional: an older carrier parses as before", () => {
+    expect(parseTeamJob(JSON.stringify(valid()))).toMatchObject({
+      roleOverrides: {},
+      participants: null,
+      chatId: null,
+    });
+  });
+
+  it("parses roleOverrides, participants and chatId", () => {
+    const chatId = `tlcht_${"c".repeat(32)}`;
+    expect(
+      parse({
+        roleOverrides: { coordinator: "codex", reviewer: null },
+        participants: ["codex", "claude-code", "codex"],
+        chatId,
+      }),
+    ).toMatchObject({
+      roleOverrides: { coordinator: "codex" },
+      participants: ["codex", "claude-code"],
+      chatId,
+    });
+  });
+
+  it("fails closed on a malformed value rather than guessing", () => {
+    expect(() => parse({ roleOverrides: { coordinator: "cursor" } })).toThrow(/provider/);
+    expect(() => parse({ roleOverrides: { boss: "codex" } })).toThrow(/role/);
+    expect(() => parse({ roleOverrides: ["codex"] })).toThrow(/object/);
+    expect(() => parse({ participants: ["gemini"] })).toThrow(/participants/);
+    expect(() => parse({ participants: [] })).toThrow(/participants/);
+    expect(() => parse({ chatId: "tlcht_nope" })).toThrow(/chatId/);
+    expect(() =>
+      parse({ mode: "pair", builder: "codex", roleOverrides: { builder: "claude-code" } }),
+    ).toThrow(/different agents/);
   });
 });

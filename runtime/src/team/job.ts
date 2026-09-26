@@ -14,6 +14,13 @@
 
 import type { TeamSpec } from "./prompts.ts";
 import {
+  parseChatId,
+  parseParticipants,
+  parseRoleOverrides,
+  WireFieldError,
+  type OverridableRole,
+} from "./wire.ts";
+import {
   AGENT_PROVIDERS,
   JOB_MODES,
   TEAM_LIMITS,
@@ -47,8 +54,19 @@ export type TeamJobDefinition = {
    * Mode; `parseTeamJob` always sets it.
    */
   mode?: JobMode;
-  /** For solo and pair: the provider that builds. Resolved and checked by `parseTeamJob`. */
+  /**
+   * For solo and pair: the provider the owner chose to build. Null means
+   * "choose for me" (roles.ts), never "Claude Code".
+   */
   builder?: AgentProvider | null;
+  /** For pair: the provider the owner chose to review. Null = choose. */
+  reviewer?: AgentProvider | null;
+  /** 0.9: roles the owner pinned to a provider. Absolute: never substituted. */
+  roleOverrides?: Partial<Record<OverridableRole, AgentProvider>>;
+  /** 0.9: the chat's participants (provider ids). Null = the room's agents. */
+  participants?: AgentProvider[] | null;
+  /** 0.9: the chat this job belongs to. */
+  chatId?: string | null;
 };
 
 export class TeamJobError extends Error {
@@ -171,7 +189,26 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     };
   });
 
-  const { mode, builder } = parseMode(raw.mode, raw.builder, agents);
+  const { mode, builder, reviewer } = parseMode(raw.mode, raw.builder, raw.reviewer, agents);
+
+  let roleOverrides: Partial<Record<OverridableRole, AgentProvider>>;
+  let participants: AgentProvider[] | null;
+  let chatId: string | null;
+  try {
+    roleOverrides = parseRoleOverrides(raw.roleOverrides);
+    participants = parseParticipants(raw.participants);
+    chatId = parseChatId(raw.chatId);
+  } catch (error) {
+    if (error instanceof WireFieldError) throw new TeamJobError(error.message);
+    throw error;
+  }
+  // The same role named twice with different providers is not something to pick between.
+  if (builder && roleOverrides.builder && roleOverrides.builder !== builder) {
+    throw new TeamJobError("builder and roleOverrides.builder name different agents.");
+  }
+  if (reviewer && roleOverrides.reviewer && roleOverrides.reviewer !== reviewer) {
+    throw new TeamJobError("reviewer and roleOverrides.reviewer name different agents.");
+  }
 
   const verifyIn = raw.verifyCommands ?? [];
   if (!Array.isArray(verifyIn) || verifyIn.length > 10) {
@@ -209,49 +246,51 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     verifyCommands: verifyIn.map(command),
     mode,
     builder,
+    reviewer,
+    roleOverrides,
+    participants,
+    chatId,
   };
 }
 
 /**
- * The job's mode and, for solo and pair, who builds. Both are optional on the
- * wire (absent means Team Mode, as every job was before modes existed), but a
- * value that is present must be exactly right: an unknown mode or a builder
- * that is not in the room fails the job rather than being guessed at.
+ * The job's mode and, for solo and pair, who the owner chose to build and
+ * review. All optional on the wire (absent means Team Mode, as every job was
+ * before modes existed; no builder means "choose for me"), but a value that is
+ * present must be exactly right: an unknown mode, or a builder or reviewer
+ * that is not in the room, fails the job rather than being guessed at. No
+ * provider is a default (docs/design/chat-first.md §4).
  */
 function parseMode(
   rawMode: unknown,
   rawBuilder: unknown,
+  rawReviewer: unknown,
   agents: { provider: AgentProvider }[],
-): { mode: JobMode; builder: AgentProvider | null } {
+): { mode: JobMode; builder: AgentProvider | null; reviewer: AgentProvider | null } {
   if (rawMode !== undefined && rawMode !== null && !JOB_MODES.includes(rawMode as JobMode)) {
     throw new TeamJobError("mode is not solo, pair or team.");
   }
   const mode = (rawMode ?? "team") as JobMode;
-  if (
-    rawBuilder !== undefined &&
-    rawBuilder !== null &&
-    !AGENT_PROVIDERS.includes(rawBuilder as AgentProvider)
-  ) {
-    throw new TeamJobError("builder is not a supported provider.");
-  }
-  const present = [...new Set(agents.map((a) => a.provider))];
-  let builder = (rawBuilder ?? null) as AgentProvider | null;
-
-  if (mode === "team") return { mode, builder: null };
-  if (builder && !present.includes(builder)) {
+  const provider = (value: unknown, what: string): AgentProvider | null => {
+    if (value === undefined || value === null) return null;
+    if (!AGENT_PROVIDERS.includes(value as AgentProvider)) {
+      throw new TeamJobError(`${what} is not a supported provider.`);
+    }
+    return value as AgentProvider;
+  };
+  const builder = provider(rawBuilder, "builder");
+  const reviewer = provider(rawReviewer, "reviewer");
+  if (mode === "team") return { mode, builder: null, reviewer: null };
+  const present = new Set(agents.map((a) => a.provider));
+  if (builder && !present.has(builder)) {
     throw new TeamJobError("the builder is not one of the room's agents.");
   }
-  if (!builder) {
-    if (mode === "solo") {
-      // Solo with no builder named is only unambiguous in a one-agent room.
-      if (present.length !== 1) {
-        throw new TeamJobError("a solo job in a room with two agents must name its builder.");
-      }
-      builder = present[0]!;
-    } else {
-      // Builder + Reviewer defaults to Claude Code building (design §5).
-      builder = present.includes("claude-code") ? "claude-code" : present[0]!;
-    }
+  if (mode === "solo") return { mode, builder, reviewer: null };
+  if (reviewer && !present.has(reviewer)) {
+    throw new TeamJobError("the reviewer is not one of the room's agents.");
   }
-  return { mode, builder };
+  if (builder && reviewer && builder === reviewer) {
+    throw new TeamJobError("the builder cannot review its own work.");
+  }
+  return { mode, builder, reviewer };
 }
