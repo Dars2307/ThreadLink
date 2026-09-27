@@ -29,6 +29,8 @@ const planDraft = {};
 const planNote = {};
 /** Providers whose save is in flight, so a re-render cannot send it twice. */
 const planSaving = new Set();
+/** Which agent's settings Agents shows. Claude Code first: it has the most. */
+let agentTab = "claude-code";
 
 const el = (id) => document.getElementById(id);
 const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(true);
@@ -96,23 +98,23 @@ function attention(s) {
   return null;
 }
 
-const conversationsOf = (s) => (s.snapshot?.workspaces ?? []).flatMap((w) => w.conversations);
-
+/**
+ * The one global status: what the agents are doing ("2 agents ready",
+ * "1 agent working", "Execution host online"). Never one provider's window
+ * state -- that is a detail of one binding, shown under Agents → Claude Code.
+ */
 function statusOf(s) {
   if (!s.signedIn) return { title: "Not connected", tone: "warn", detail: "" };
   const snap = s.snapshot;
-  const attached = conversationsOf(s);
-  if (snap?.status === "online" && attached.length) {
-    // Only an exact-conversation binding can be blocked by Claude being open.
-    const busy = attached.some((c) => c.mode === "resume" && c.busy);
+  if (snap?.status === "online") {
+    const title = s.agentsLine || "Execution host online";
     return {
-      title: busy ? "Claude is currently open" : "Connected",
-      tone: busy ? "busy" : "ready",
-      detail: `${attached.length} conversation${attached.length === 1 ? "" : "s"} linked`,
+      title,
+      tone: /working/.test(title) ? "busy" : "ready",
+      detail: snap.runtime?.label ?? snap.identity?.label ?? "",
     };
   }
   const map = {
-    online: { title: "Choose a conversation", tone: "warn" },
     paused: { title: "Paused", tone: "warn" },
     offline: { title: "Reconnecting…", tone: "warn" },
     starting: { title: "Starting…", tone: "warn" },
@@ -124,7 +126,8 @@ function statusOf(s) {
 
 /** What one attached conversation is doing, in the user's words. */
 function conversationStatus(c) {
-  if (c.mode === "resume" && c.busy) return { label: "Claude is currently open", tone: "busy" };
+  // Only an exact-conversation binding waits while its conversation is open.
+  if (c.mode === "resume" && c.busy) return { label: "Waiting: open in Claude Code", tone: "busy" };
   return { label: "Ready", tone: "ready" };
 }
 
@@ -136,6 +139,14 @@ function render() {
   el("rail-status").textContent = status.title;
   el("rail-dot").className = `dot ${status.tone}`;
   el("footer-detail").textContent = state.error ?? state.notice ?? status.detail ?? "";
+
+  // An open chat is never rebuilt by a state snapshot: its timeline grows by
+  // appending (see the chat section). Only the chrome above is refreshed.
+  if (section === "chat" && chatView.mounted && state.signedIn && !state.pendingSignIn) {
+    renderNav();
+    return;
+  }
+  stopChat();
 
   view.replaceChildren();
   const mine = ++pass;
@@ -153,8 +164,10 @@ function render() {
   el("shell").className = "shell";
   renderNav();
   const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
-  el("page-title").textContent = section === "attach" ? "Attach a conversation" : current.title;
+  el("page-title").textContent =
+    section === "attach" ? "Attach a conversation" : section === "chat" ? "Chat" : current.title;
   el("page-sub").textContent = subtitleFor();
+  if (section === "chat") return renderChat();
   if (section === "attach") return void renderAttach(mine);
   if (section === "agents") return renderAgents();
   if (section === "chats") return renderChats();
@@ -167,13 +180,10 @@ function render() {
 function subtitleFor() {
   const snap = state.snapshot;
   if (section === "home") return snap?.runtime?.label ?? snap?.identity?.label ?? "";
-  if (section === "agents") {
-    const n = conversationsOf(state).length;
-    return n ? `${n} Claude conversation${n === 1 ? "" : "s"} attached` : "Nothing attached yet";
-  }
+  if (section === "agents") return state.agentsLine ?? "";
   if (section === "chats") {
     const running = workOf(state).reduce((n, g) => n + g.running, 0);
-    return running ? `${running} running` : "Running and recent work";
+    return running ? `${running} running on this computer` : "Your chats and the work they run";
   }
   if (section === "runtime") return snap?.identity?.platform ?? "";
   return "";
@@ -195,7 +205,10 @@ function renderNav() {
       count.textContent = String(waiting);
       button.append(count);
     }
-    const here = s.id === section || (section === "attach" && s.id === "agents");
+    const here =
+      s.id === section ||
+      (section === "attach" && s.id === "agents") ||
+      (section === "chat" && s.id === "chats");
     button.setAttribute("aria-current", here ? "true" : "false");
     button.addEventListener("click", () => go(s.id));
     nav.append(button);
@@ -203,12 +216,13 @@ function renderNav() {
 }
 
 function go(next) {
-  // Settings always re-reads the plan from ThreadLink when it is opened.
-  if (next === "settings" && section !== "settings") {
+  // Agents always re-reads the plan from ThreadLink when it is opened.
+  if (next === "agents" && section !== "agents") {
     plans.stale = true;
     for (const k of Object.keys(planNote)) delete planNote[k];
     for (const k of Object.keys(planDraft)) delete planDraft[k];
   }
+  if (next !== "chat") stopChat();
   section = next;
   changing = null;
   render();
@@ -251,18 +265,11 @@ function renderWaiting() {
 
 function renderHome() {
   view.append(tpl("home"));
-  const snap = state.snapshot;
   renderLinkRequests();
   renderSummary(el("home-summary"));
   renderHealth(el("home-health"));
-
-  const list = el("home-conversations");
-  list.replaceChildren();
-  const all = (snap?.workspaces ?? []).flatMap((w) => w.conversations.map((c) => ({ w, c })));
-  if (!all.length) {
-    list.append(empty("No Claude conversation is linked yet."));
-  }
-  for (const { w, c } of all) list.append(conversationCard(w, c, false));
+  renderChatRows(el("home-chat-list"), { limit: HOME_CHATS });
+  el("home-chats").addEventListener("click", () => go("chats"));
 
   const recent = el("home-activity");
   recent.replaceChildren(
@@ -274,7 +281,6 @@ function renderHome() {
   );
   el("home-activity-dashboard").addEventListener("click", () => api.openDashboard());
 
-  el("home-manage").addEventListener("click", () => go("agents"));
   el("mcp-url").textContent = `${state.baseUrl}/mcp`;
   bindCopy(el("copy-mcp"), () => `${state.baseUrl}/mcp`);
 }
@@ -286,7 +292,7 @@ function agentsOnline(s) {
   // is not proof that a provider can actually run.
   if (team.some((p) => p && "health" in p))
     return healthOf(s)
-      .filter((h) => h.health === "ready")
+      .filter((h) => (h.fresh ? h.fresh === "ready" : h.health === "ready"))
       .map((h) => h.provider);
   if (team.length) return team.filter((p) => p.installed && p.authenticated).map((p) => p.provider);
   return (s.snapshot?.providers ?? []).filter((p) => p.available).map((p) => p.id);
@@ -308,8 +314,9 @@ function renderSummary(node) {
     if (!latest.has(a.localBindingRef)) latest.set(a.localBindingRef, a);
   const blocked = [...latest.values()].filter((a) => a.event === "task_blocked").length;
   const signIn = healthOf(state).filter((h) => h.health === "needs_sign_in").length;
-  const needs = waiting + decisions + blocked + signIn;
-  const linked = conversationsOf(state).length;
+  const chatsNeedYou = chatList.rows.filter((r) => r.state === "Needs you").length;
+  const needs = waiting + decisions + blocked + signIn + chatsNeedYou;
+  const host = state.host;
 
   const tiles = [
     {
@@ -318,13 +325,18 @@ function renderSummary(node) {
       tone: online.length ? "ready" : "warn",
       go: "agents",
     },
-    { label: "Conversations linked", value: String(linked), go: "agents" },
+    {
+      label: "Execution host",
+      value: host?.updateRequired ? "Update needed" : "Online",
+      tone: host?.updateRequired ? "warn" : "ready",
+      go: "runtime",
+    },
     { label: "Chats running", value: String(running), tone: running ? "run" : "", go: "chats" },
     {
       label: "Needs attention",
       value: needs ? String(needs) : "Nothing",
       tone: needs ? "warn" : "",
-      go: decisions ? "chats" : signIn ? "agents" : null,
+      go: decisions || chatsNeedYou ? "chats" : signIn ? "agents" : null,
     },
   ];
   for (const t of tiles) {
@@ -454,9 +466,66 @@ function renderLinkRequests() {
 
 // ----------------------------------------------------------- conversations
 
+const AGENT_TABS = [
+  { id: "claude-code", name: "Claude Code" },
+  { id: "codex", name: "Codex" },
+];
+
+/**
+ * Agents: every agent's health at the top, then one section per agent
+ * (Agents → Claude Code, Agents → Codex) with its plan, version and models.
+ * Everything specific to one provider lives in its own section: for Claude
+ * Code that is the background worker / exact conversation / headless session
+ * choice, native sessions and the attach flow.
+ */
 function renderAgents() {
   view.append(tpl("agents"));
   renderHealth(el("agents-health"));
+  if (plans.stale && !plans.loading) void loadPlans();
+  const tabs = el("agent-tabs");
+  const panel = el("agent-panel");
+  const found = state.snapshot?.teamProviders ?? [];
+  if (!found.length) {
+    panel.append(
+      empty(
+        "ThreadLink has not found Claude Code or Codex on this computer yet. Install one, then restart ThreadLink.",
+      ),
+    );
+  }
+  for (const t of AGENT_TABS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "agent-tab";
+    const h = healthOf(state).find((x) => x.provider === t.id);
+    b.textContent = h ? `${t.name} · ${h.text}` : t.name;
+    b.setAttribute("aria-current", t.id === agentTab ? "true" : "false");
+    b.addEventListener("click", () => {
+      agentTab = t.id;
+      for (const other of tabs.children)
+        other.setAttribute("aria-current", other === b ? "true" : "false");
+      document.getElementById(`agent-${t.id}`)?.scrollIntoView?.({ block: "start" });
+    });
+    tabs.append(b);
+
+    const sectionNode = document.createElement("section");
+    sectionNode.className = "stack agent-section";
+    sectionNode.id = `agent-${t.id}`;
+    if (found.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "card stack";
+      const h2 = document.createElement("h2");
+      h2.textContent = t.name;
+      wrap.append(h2, providerCard(t.id));
+      sectionNode.append(wrap);
+    }
+    if (t.id === "claude-code") sectionNode.append(tpl("agent-claude"));
+    panel.append(sectionNode);
+  }
+  renderClaudeConversations();
+}
+
+/** Agents → Claude Code: attached conversations and the attach flow (unchanged). */
+function renderClaudeConversations() {
   const attached = el("attached");
   attached.replaceChildren();
   const all = (state.snapshot?.workspaces ?? []).flatMap((w) =>
@@ -725,7 +794,7 @@ async function renderAttach(mine) {
       c.title ?? "Untitled conversation",
       `Used ${ago(c.lastUsedAt)}`,
       c.attached ? "Attached" : "Attach",
-      c.busy && attachMode === "resume" ? "Claude is currently open" : null,
+      c.busy && attachMode === "resume" ? "Open in Claude Code now" : null,
     );
     const button = item.querySelector("button");
     button.disabled = c.attached;
@@ -759,13 +828,28 @@ function renderRuntime() {
   view.append(tpl("runtime"));
   const snap = state.snapshot;
   const paused = state.localPaused || snap?.runtime?.paused;
+  const host = state.host ?? {};
   kv(el("runtime-kv"), [
-    ["Name", snap?.runtime?.label ?? snap?.identity?.label ?? "—"],
-    ["Computer", snap?.identity?.platform ?? "—"],
-    ["State", paused ? "Paused" : statusOf(state).title],
+    ["Name", host.label ?? snap?.runtime?.label ?? snap?.identity?.label ?? "—"],
+    ["Computer", host.platform ?? snap?.identity?.platform ?? "—"],
+    ["State", paused ? "Paused" : host.online ? "Online" : statusOf(state).title],
+    ["Agents", state.agentsLine ?? "—"],
     ["Last check-in", snap?.lastHeartbeatAt ? ago(snap.lastHeartbeatAt) : "connecting"],
+    ["ThreadLink Runtime", host.version ? `Version ${host.version}` : "—"],
+    [
+      "Protocol",
+      host.protocol === null || host.protocol === undefined ? "—" : String(host.protocol),
+    ],
     ["Requests handled", String(snap?.tasksCompleted ?? 0)],
   ]);
+  const update = el("update-card");
+  update.hidden = !host.updateRequired;
+  el("update-text").textContent = host.updateText ?? "";
+  el("update-get").addEventListener("click", () => {
+    if (state.baseUrl) api.openExternal(`${state.baseUrl}/download`);
+    else api.openDashboard();
+  });
+  el("open-logs").addEventListener("click", () => api.openLogs?.());
   const pause = el("pause");
   pause.textContent = paused ? "Resume" : "Pause";
   pause.addEventListener("click", () => api.setPaused(!paused));
@@ -815,9 +899,7 @@ function renderSettings() {
   el("set-autostart").addEventListener("change", (e) =>
     api.setSettings({ autoStart: e.target.checked }),
   );
-  renderProviders(el("providers"));
-  const recheck = el("providers-check");
-  if (recheck) recheck.replaceChildren(checkAgainRow());
+  el("settings-agents").addEventListener("click", () => go("agents"));
   el("plan-dashboard").addEventListener("click", () => api.openDashboard());
   copyRows(el("settings-advanced"), [
     ["ThreadLink address", state.baseUrl],
@@ -916,6 +998,12 @@ function healthLine(h) {
   const line = document.createElement("div");
   line.className = `health ${h.tone}`;
   line.dataset.health = h.health;
+  line.dataset.fresh = h.fresh ?? "";
+  line.addEventListener("click", () => {
+    if (section !== "agents") return;
+    agentTab = h.provider;
+    document.getElementById(`agent-${h.provider}`)?.scrollIntoView?.({ block: "start" });
+  });
   const head = document.createElement("div");
   head.className = "health-head";
   const dot = document.createElement("span");
@@ -925,10 +1013,12 @@ function healthLine(h) {
   text.className = "health-line";
   text.textContent = h.line;
   head.append(dot, text);
-  if (h.checkedAt) {
+  // Freshness comes from main's single calculation: never "Ready" beside
+  // stale words, and never recomputed here.
+  if (h.when) {
     const when = document.createElement("span");
-    when.className = "muted small";
-    when.textContent = `checked ${ago(h.checkedAt)}`;
+    when.className = "muted small health-when";
+    when.textContent = h.when;
     head.append(when);
   }
   line.append(head);
@@ -967,7 +1057,7 @@ async function loadPlans() {
   } else {
     plans.failed = true;
   }
-  if (section === "settings") render();
+  if (section === "agents") render();
 }
 
 /** Where usage policy and paid usage are changed: the web dashboard only. */
@@ -1090,18 +1180,18 @@ function planBlock(provider) {
   return box;
 }
 
-/** One card per Team Mode agent this computer knows about. */
-function renderProviders(node) {
-  if (!node) return;
-  node.replaceChildren();
-  const list = state.snapshot?.teamProviders ?? [];
-  if (!list.length) {
+/** Agents → <provider>: health, plan, version and models for one agent. */
+function providerCard(provider) {
+  const node = document.createElement("div");
+  node.className = "stack";
+  const p = (state.snapshot?.teamProviders ?? []).find((x) => x.provider === provider);
+  if (!p) {
     node.append(
       empty(
-        "ThreadLink has not found Claude Code or Codex on this computer yet. Install one, then restart ThreadLink.",
+        `ThreadLink has not found ${providerName(provider)} on this computer yet. Install it, then restart ThreadLink.`,
       ),
     );
-    return;
+    return node;
   }
   if (plans.fromCache && plans.views) {
     const stale = document.createElement("p");
@@ -1109,8 +1199,7 @@ function renderProviders(node) {
     stale.textContent = "Showing the plan ThreadLink last sent. It couldn't be refreshed just now.";
     node.append(stale);
   }
-  if (plans.stale && !plans.loading) void loadPlans();
-  for (const p of list) {
+  {
     const card = document.createElement("div");
     card.className = "provider";
 
@@ -1125,7 +1214,7 @@ function renderProviders(node) {
     const health = healthOf(state).find((h) => h.provider === p.provider);
     tags.append(
       badge(p.installed ? "Installed" : "Not installed", p.installed ? "ready" : "fail"),
-      badge(health?.text ?? "Not checked yet", health?.tone ?? "wait"),
+      badge(health?.status ?? health?.text ?? "Not checked yet", health?.tone ?? "wait"),
     );
     head.append(name, tags);
 
@@ -1149,7 +1238,12 @@ function renderProviders(node) {
     for (const m of p.models ?? []) models.append(badge(m.displayName, "model"));
 
     card.append(head);
-    if (health) card.append(healthLine(health));
+    if (health?.instruction) {
+      const how = document.createElement("p");
+      how.className = "small health-instruction";
+      how.textContent = health.instruction;
+      card.append(how);
+    }
     card.append(planBlock(p.provider), facts, models);
     const tech = techDetails([
       ["Version", p.version],
@@ -1158,6 +1252,7 @@ function renderProviders(node) {
     if (tech) card.append(tech);
     node.append(card);
   }
+  return node;
 }
 
 // ------------------------------------------------------------------- chats
@@ -1213,6 +1308,20 @@ const UNIT_STEP = {
 
 function renderChats() {
   view.append(tpl("chats"));
+  renderChatRows(el("chat-list"), { sections: true });
+  for (const [id, groupBy] of [
+    ["chats-by-recent", "recent"],
+    ["chats-by-project", "project"],
+  ]) {
+    const b = el(id);
+    b.setAttribute("aria-pressed", chatList.groupBy === groupBy ? "true" : "false");
+    b.addEventListener("click", () => {
+      if (chatList.groupBy === groupBy) return;
+      chatList.groupBy = groupBy;
+      chatList.loadedAt = 0;
+      void loadChatList();
+    });
+  }
   const list = el("chat-groups");
   list.replaceChildren();
   const groups = workOf(state);
@@ -1602,6 +1711,497 @@ function detachedActivity(attachedRefs) {
   });
 }
 
+// ------------------------------------------------------------ chats (0.10)
+
+/**
+ * The chat list and one open chat, read and written through main's chat API
+ * (the same server timeline as the web). Main hands over plain-text views
+ * only; everything here is set with textContent.
+ *
+ * Performance: an open chat is built once and then only APPENDED to; state
+ * snapshots never rebuild it. Polling uses the per-chat cursor with backoff,
+ * slows down when the window is hidden, and the DOM keeps a bounded number of
+ * rows.
+ */
+
+const HOME_CHATS = 5;
+const CHAT_LIST_TTL_MS = 15_000;
+const POLL_MIN_MS = 2_000;
+const POLL_IDLE_MAX_MS = 15_000;
+const POLL_ERROR_MAX_MS = 60_000;
+const POLL_HIDDEN_MS = 30_000;
+const MAX_ROWS = 400;
+const READ_EVERY_MS = 10_000;
+
+const CHAT_ERRORS = {
+  invalid: "That message could not be sent as it is.",
+  rate_limited: "Slow down a moment, then try again.",
+  unavailable: "This computer isn't connected to ThreadLink right now.",
+  not_found: "That chat was not found.",
+  signed_out: "This computer's ThreadLink sign-in has expired. Sign in again.",
+  failed: "Couldn't reach ThreadLink. Try again.",
+};
+const chatError = (r) =>
+  typeof r?.message === "string" && r.message
+    ? r.message
+    : (CHAT_ERRORS[r?.error] ?? CHAT_ERRORS.failed);
+
+/** The chat list as main last returned it (sections of plain rows). */
+const chatList = {
+  sections: [],
+  rows: [],
+  groupBy: "recent",
+  loadedAt: 0,
+  loading: false,
+  error: null,
+};
+
+async function loadChatList() {
+  if (chatList.loading || typeof api.listChats !== "function") return;
+  chatList.loading = true;
+  let res = null;
+  try {
+    res = await api.listChats(chatList.groupBy);
+  } catch {
+    res = null;
+  }
+  chatList.loading = false;
+  chatList.loadedAt = Date.now();
+  if (res?.ok && Array.isArray(res.sections)) {
+    chatList.sections = res.sections;
+    chatList.rows = res.sections.flatMap((s) => s.rows ?? []);
+    chatList.error = null;
+  } else {
+    chatList.error = chatError(res);
+  }
+  if (section === "chats" || section === "home") render();
+}
+
+/** One chat row: name, project, mode badge, participants, state. */
+function chatRowNode(r) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = `item chat-row${r.unread ? " unread" : ""}`;
+  const body = document.createElement("div");
+  body.className = "item-body";
+  const title = document.createElement("div");
+  title.className = "title chat-row-name";
+  title.textContent = r.name;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = [r.project, r.participants].filter(Boolean).join(" · ");
+  body.append(title, meta);
+  const tags = document.createElement("div");
+  tags.className = "tags";
+  tags.append(badge(r.modeBadge, "mode"), badge(r.state, r.stateTone));
+  item.append(body, tags);
+  item.addEventListener("click", () => openChat(r.chatId));
+  return item;
+}
+
+function renderChatRows(node, { limit = Infinity, sections = false } = {}) {
+  if (!node) return;
+  node.replaceChildren();
+  if (typeof api.listChats !== "function") return;
+  if (!chatList.loading && Date.now() - chatList.loadedAt > CHAT_LIST_TTL_MS) void loadChatList();
+  if (chatList.error && !chatList.rows.length) {
+    node.append(empty(chatList.error));
+    return;
+  }
+  if (!chatList.rows.length) {
+    node.append(
+      empty(
+        chatList.loadedAt
+          ? "No chats yet. Start one in ThreadLink on the web, or with `threadlink new` in a terminal."
+          : "Loading your chats…",
+      ),
+    );
+    return;
+  }
+  if (!sections) {
+    for (const r of chatList.rows.slice(0, limit)) node.append(chatRowNode(r));
+    return;
+  }
+  for (const s of chatList.sections) {
+    const group = document.createElement("div");
+    group.className = "stack tight chat-section";
+    const h = document.createElement("h3");
+    h.className = "chat-section-title";
+    h.textContent = s.title;
+    group.append(h);
+    for (const r of s.rows ?? []) group.append(chatRowNode(r));
+    node.append(group);
+  }
+}
+
+// -------------------------------------------------------------- one chat
+
+const chatView = {
+  id: null,
+  mounted: false,
+  gen: 0,
+  cursor: 0,
+  oldest: null,
+  hasOlder: false,
+  rows: new Map(),
+  timer: null,
+  delay: POLL_MIN_MS,
+  pending: null,
+  sending: false,
+  lastRead: 0,
+  readAt: 0,
+};
+
+function openChat(chatId) {
+  stopChat();
+  chatView.id = chatId;
+  section = "chat";
+  changing = null;
+  render();
+}
+
+function stopChat() {
+  clearTimeout(chatView.timer);
+  chatView.timer = null;
+  chatView.mounted = false;
+  chatView.gen++;
+}
+
+/** A fresh idempotency key per message (reused only to retry that same message). */
+function newKey() {
+  if (crypto?.randomUUID) return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function clock(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function blocksInto(node, blocks) {
+  node.replaceChildren();
+  for (const b of blocks ?? []) {
+    if (b.t === "code") {
+      const pre = document.createElement("pre");
+      pre.className = "code-block";
+      const code = document.createElement("code");
+      code.textContent = b.v;
+      pre.append(code);
+      node.append(pre);
+    } else {
+      const p = document.createElement("p");
+      p.className = "msg-text";
+      p.textContent = b.v;
+      node.append(p);
+    }
+  }
+}
+
+/** One timeline row, styled by identity (You / controller / ThreadLink / agent). */
+function eventNode(ev) {
+  const item = document.createElement("article");
+  item.className = `msg id-${ev.identity.kind}${ev.note ? " note" : ""}`;
+  item.dataset.seq = String(ev.seq);
+  if (ev.identity.hue !== null && ev.identity.hue !== undefined)
+    item.dataset.hue = String(ev.identity.hue);
+  const head = document.createElement("div");
+  head.className = "msg-head";
+  const who = document.createElement("span");
+  who.className = "msg-who";
+  who.textContent = ev.identity.label;
+  const when = document.createElement("span");
+  when.className = "msg-when";
+  when.textContent = clock(ev.at);
+  head.append(who, when);
+  if (ev.delivery) {
+    const d = document.createElement("span");
+    d.className = "msg-delivery";
+    d.textContent = ev.delivery;
+    head.append(d);
+  }
+  const body = document.createElement("div");
+  body.className = "msg-body";
+  blocksInto(body, ev.body.preview);
+  item.append(head, body);
+  if (ev.body.collapsed && ev.body.full) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "ghost small-btn msg-more";
+    more.textContent = "Show more";
+    let open = false;
+    more.addEventListener("click", () => {
+      open = !open;
+      blocksInto(body, open ? ev.body.full : ev.body.preview);
+      more.textContent = open ? "Show less" : "Show more";
+    });
+    item.append(more);
+    if (ev.body.truncated) {
+      const note = document.createElement("p");
+      note.className = "muted small";
+      note.textContent = "Very long message: the rest is in ThreadLink on the web.";
+      item.append(note);
+    }
+  }
+  return item;
+}
+
+const nearBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+
+/** Appends new rows (never re-renders), keeping at most MAX_ROWS. */
+function appendEvents(events) {
+  const list = el("chat-events");
+  const box = el("chat-timeline");
+  if (!list || !box) return 0;
+  const stick = nearBottom(box);
+  const frag = document.createDocumentFragment();
+  let added = 0;
+  for (const ev of events) {
+    if (chatView.rows.has(ev.seq)) continue;
+    const node = eventNode(ev);
+    chatView.rows.set(ev.seq, node);
+    frag.append(node);
+    added++;
+    if (chatView.oldest === null || ev.seq < chatView.oldest) chatView.oldest = ev.seq;
+  }
+  if (!added) return 0;
+  list.append(frag);
+  // Bounded: drop the oldest rows; they can be loaded again.
+  if (chatView.rows.size > MAX_ROWS && stick) {
+    const seqs = [...chatView.rows.keys()].sort((a, b) => a - b);
+    for (const seq of seqs.slice(0, chatView.rows.size - MAX_ROWS)) {
+      chatView.rows.get(seq)?.remove();
+      chatView.rows.delete(seq);
+    }
+    chatView.oldest = Math.min(...chatView.rows.keys());
+    chatView.hasOlder = true;
+    el("chat-older").hidden = false;
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+  return added;
+}
+
+function prependEvents(events) {
+  const list = el("chat-events");
+  const box = el("chat-timeline");
+  if (!list || !box) return;
+  const before = box.scrollHeight;
+  const frag = document.createDocumentFragment();
+  for (const ev of events) {
+    if (chatView.rows.has(ev.seq)) continue;
+    const node = eventNode(ev);
+    chatView.rows.set(ev.seq, node);
+    frag.append(node);
+    if (chatView.oldest === null || ev.seq < chatView.oldest) chatView.oldest = ev.seq;
+  }
+  list.prepend(frag);
+  box.scrollTop += box.scrollHeight - before;
+}
+
+/** Live rows for runs that are working but have not said anything yet. */
+function renderLive(live) {
+  const node = el("chat-live");
+  if (!node) return;
+  node.replaceChildren();
+  for (const r of (live ?? []).slice(0, 12)) {
+    const row = document.createElement("div");
+    row.className = "live-row";
+    const dot = document.createElement("span");
+    dot.className = "dot busy";
+    dot.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span");
+    text.textContent = `${r.label} · ${r.activity}${r.startedAt ? ` · started ${ago(r.startedAt)}` : ""}`;
+    row.append(dot, text);
+    node.append(row);
+  }
+}
+
+function applyPage(page) {
+  chatView.cursor = Math.max(chatView.cursor, page.cursor ?? 0);
+  const added = appendEvents(page.events ?? []);
+  renderLive(page.live);
+  return added;
+}
+
+async function markRead() {
+  if (typeof api.markChatRead !== "function") return;
+  if (chatView.cursor <= chatView.lastRead || Date.now() - chatView.readAt < READ_EVERY_MS) return;
+  chatView.readAt = Date.now();
+  const seq = chatView.cursor;
+  try {
+    const r = await api.markChatRead(chatView.id, seq);
+    if (r?.ok) chatView.lastRead = seq;
+  } catch {
+    /* advisory */
+  }
+}
+
+function schedulePoll(gen) {
+  clearTimeout(chatView.timer);
+  const hidden = document.visibilityState === "hidden";
+  const delay = hidden ? Math.max(chatView.delay, POLL_HIDDEN_MS) : chatView.delay;
+  chatView.timer = setTimeout(() => void poll(gen), delay);
+}
+
+async function poll(gen) {
+  if (gen !== chatView.gen || !chatView.mounted) return;
+  let res = null;
+  try {
+    res = await api.chatEvents(chatView.id, { after: chatView.cursor });
+  } catch {
+    res = null;
+  }
+  if (gen !== chatView.gen) return;
+  if (res?.ok) {
+    const added = applyPage(res.page);
+    chatView.delay = added
+      ? POLL_MIN_MS
+      : Math.min(POLL_IDLE_MAX_MS, Math.round(chatView.delay * 1.5));
+    if (added) void markRead();
+  } else {
+    chatView.delay = Math.min(POLL_ERROR_MAX_MS, Math.max(5_000, chatView.delay * 2));
+  }
+  schedulePoll(gen);
+}
+
+/** Builds the chat view once; afterwards it only grows. */
+function renderChat() {
+  view.append(tpl("chat"));
+  chatView.mounted = true;
+  chatView.rows = new Map();
+  chatView.cursor = 0;
+  chatView.oldest = null;
+  chatView.hasOlder = false;
+  chatView.delay = POLL_MIN_MS;
+  chatView.lastRead = 0;
+  chatView.readAt = 0;
+  const gen = ++chatView.gen;
+  const id = chatView.id;
+
+  el("chat-back").addEventListener("click", () => go("chats"));
+  el("chat-older").addEventListener("click", () => void loadOlder(gen));
+  const input = el("chat-input");
+  const send = el("chat-send");
+  send.addEventListener("click", () => void sendMessage(gen));
+  // Cheap: the handler only looks at the key; sending happens off the event.
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      void sendMessage(gen);
+    }
+  });
+
+  if (typeof api.openChat !== "function") return;
+  void (async () => {
+    let res = null;
+    try {
+      res = await api.openChat(id);
+    } catch {
+      res = null;
+    }
+    if (gen !== chatView.gen) return;
+    if (!res?.ok) {
+      el("chat-title").textContent = "Chat";
+      showProblem(chatError(res));
+      schedulePoll(gen);
+      return;
+    }
+    el("chat-title").textContent = res.chat.name;
+    el("page-sub").textContent = res.chat.name;
+    el("chat-sub").textContent = res.chat.sub;
+    const stateBadge = el("chat-state");
+    stateBadge.textContent = res.chat.state;
+    stateBadge.className = `badge ${res.chat.state === "Working" ? "run" : res.chat.state === "Needs you" ? "wait" : "ready"}`;
+    if (res.chat.host) {
+      el("chat-host").textContent = res.chat.host;
+      el("chat-host").hidden = false;
+    }
+    chatView.hasOlder = res.page.hasOlder === true;
+    el("chat-older").hidden = !chatView.hasOlder;
+    applyPage(res.page);
+    if (!chatView.rows.size) {
+      el("chat-events").append(empty("No messages yet. Say what you want done."));
+    }
+    const box = el("chat-timeline");
+    box.scrollTop = box.scrollHeight;
+    void markRead();
+    schedulePoll(gen);
+  })();
+}
+
+async function loadOlder(gen) {
+  if (!chatView.hasOlder || chatView.oldest === null) return;
+  const button = el("chat-older");
+  button.disabled = true;
+  let res = null;
+  try {
+    res = await api.chatEvents(chatView.id, { before: chatView.oldest });
+  } catch {
+    res = null;
+  }
+  if (gen !== chatView.gen) return;
+  button.disabled = false;
+  if (!res?.ok) return showProblem(chatError(res));
+  prependEvents(res.page.events ?? []);
+  chatView.hasOlder = res.page.hasOlder === true;
+  button.hidden = !chatView.hasOlder;
+}
+
+function showProblem(text) {
+  const p = el("chat-problem");
+  if (!p) return;
+  p.textContent = text ?? "";
+  p.hidden = !text;
+}
+
+async function sendMessage(gen) {
+  const input = el("chat-input");
+  const button = el("chat-send");
+  if (!input || chatView.sending || typeof api.sendChat !== "function") return;
+  const body = input.value.trim();
+  if (!body) return;
+  if (body.length > 4000) return showProblem("That message is too long (4000 characters at most).");
+  // One key per message; a retry of the same text reuses it, so a send that
+  // reached ThreadLink but lost its answer is never posted twice.
+  const key = chatView.pending?.body === body ? chatView.pending.key : newKey();
+  chatView.pending = { body, key };
+  chatView.sending = true;
+  button.disabled = true;
+  button.textContent = "Sending…";
+  showProblem(null);
+  let res = null;
+  try {
+    res = await api.sendChat(chatView.id, body, key);
+  } catch {
+    res = null;
+  }
+  if (gen !== chatView.gen) return;
+  chatView.sending = false;
+  button.disabled = false;
+  button.textContent = "Send";
+  if (res?.ok) {
+    chatView.pending = null;
+    if (input.value.trim() === body) input.value = "";
+    chatView.delay = POLL_MIN_MS;
+    clearTimeout(chatView.timer);
+    void poll(gen);
+    return;
+  }
+  // A refusal the server answered for good (not a lost connection) is final.
+  if (res?.message) chatView.pending = null;
+  showProblem(chatError(res));
+}
+
+document.addEventListener("visibilitychange", () => {
+  // Back on screen: catch up at once instead of waiting out a hidden delay.
+  if (document.visibilityState === "visible" && chatView.mounted && section === "chat") {
+    chatView.delay = POLL_MIN_MS;
+    schedulePoll(chatView.gen);
+  }
+});
+
 // ------------------------------------------------------------------- bits
 
 function kv(node, pairs) {
@@ -1739,9 +2339,16 @@ function nameOf(path) {
 }
 
 el("open-dashboard").addEventListener("click", () => api.openDashboard());
+/** Snapshots can arrive in bursts; one render per burst is enough. */
+let renderQueued = false;
 api.onState((next) => {
   state = next;
-  render();
+  if (renderQueued) return;
+  renderQueued = true;
+  queueMicrotask(() => {
+    renderQueued = false;
+    render();
+  });
 });
 api.getState().then((next) => {
   state = next;

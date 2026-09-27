@@ -226,3 +226,49 @@ Contract: `docs/design/chat-first.md` (section 10 lists where the server is stri
   `/api/dashboard/chats/[chatId]` (GET, PATCH, DELETE); `/api/dashboard/chats/[chatId]/read`
   (POST); `/api/dashboard/chats/groups` (GET, POST); `/api/dashboard/chats/groups/[groupId]`
   (PATCH, DELETE). Errors are `{ok:false, reason, message}` with fixed sentences.
+
+## ThreadLink 0.10 (migration `20260927000200_threadlink_0_10.sql`)
+
+Contract: `docs/design/threadlink-0.10.md` (section 12 lists where the server differs).
+
+- **Tables.** `agent_providers` (registry; RLS on, no policy: read through
+  `agent_providers_list()` by anon and authenticated), `agent_runs` (`tlarn_`; select-own, every
+  column except `native_session_id`), `user_choices` (`tlchc_`), `chat_artifacts` (`tlart_`).
+  `chat_events` gains `chat_seq` (per chat, trigger-assigned), `run_id`, `reply_to_event_id`,
+  `ref_kind`/`ref_id`, `payload` (≤ 16 KiB, shape-checked per event type), `team_message_id`,
+  `queued_for`, `consumed_by_run_id`; `chats` gains `last_event_seq`, `last_read_chat_seq`;
+  `team_jobs` gains `control`, `control_requested_at` and the statuses `interrupted`, `paused`;
+  `team_findings` gains the states accepted/disputed/fixed/dismissed, `owner_participant`,
+  `file_path`, `line`, `raised_run_id`, `resolved_run_id`; `team_decisions` gains
+  `title_source`, `author_run_id`; `team_messages` gains `run_id`, `reply_to_event_id`,
+  `ref_kind`, `ref_id`; `runtimes` gains `protocol`.
+- **Runtime protocol.** `register_runtime(…, p_protocol)` and `runtime_heartbeat(…, p_protocol)`
+  overloads record it; the old calls clear it (judged by version: 0.9.x = 9). Every answer
+  (`runtime_json`) carries `protocol`, `protocol_reported`, `min_protocol` (10) and
+  `update_required`. `min_protocol_for(feature)`: team 7, solo/pair 8 (unchanged), job control,
+  choices and runs 10. From protocol 10, `add_message` / `add_finding` by an agent need a run and
+  `add_decision` needs `title_source` (a 0.9 Runtime keeps writing legacy runless rows).
+- **Runtime ops** (`team_job_write`, claim-gated, camelCase in `lib/team/model.ts`):
+  `run_started` (idempotent by run key), `run_activity` (≤ 1 per 5 s, extra reports are ignored
+  with `throttled: true`), `run_finished` (verification, native session; a timeout writes the
+  ThreadLink `timeout` row), `request_choice` / `read_choices`, `add_change` (the builder run's
+  card, plus a diff artifact when `diff` is sent), `add_artifact` (≤ 512 KiB, redacted),
+  `ack_control`; `add_message` (runId, replyTo, refs), `add_finding` (runId,
+  ownerParticipant, file, line), `set_finding_status` (new states, runId), `add_decision`
+  (titleSource, runId), `read_owner_notes` (runId, or `{consumedByRunId, noteIds}`),
+  `set_status` (`interrupted`, `paused`). Every answer carries `control`,
+  `control_requested_at` and `pending_choices`.
+- **Owner RPCs** (`authenticated`): `decide_choice`, `control_job`, `add_chat_attachment`,
+  `delete_chat_artifact`, `reveal_run_native_session` (audited), `mark_chat_read_seq`,
+  `chat_list_extras_v2`, `search_my_chats`, `chat_host_status`; `mark_chat_read` keeps both
+  cursors in step.
+- **Triggers.** Agent messages carry their run, reply and reference; finding rows carry a
+  payload card; decisions with a title source become `decision_card`; job updates add `phase`
+  separators, the `interrupted` row and, with the verdict, the `job_summary` card (job data
+  only); a finished job cancels its open runs and pending choices.
+- **Routes** (Clerk owner, user-scoped client): `GET /api/dashboard/chats/[chatId]/events`
+  (per-chat cursor), `/activity`, `/runs/[runId]` (+ `POST /reveal`), `/findings`,
+  `/decisions`, `/choices` (+ `POST /choices/[choiceId]`), `POST /control`, `/artifacts`
+  (GET, POST attach; `GET|DELETE /artifacts/[artifactId]`), `POST /read {chatSeq}`;
+  `GET /api/dashboard/search?q=`, `GET /api/dashboard/providers`. Library:
+  `lib/chat/work.ts`, wrappers in `lib/chat/owner.ts`.

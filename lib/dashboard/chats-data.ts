@@ -37,6 +37,19 @@ import type { JobDetail } from "./pages";
  *   createMyChatGroup(name) · renameMyChatGroup(groupId, name) · deleteMyChatGroup(groupId)
  *   retryMyJobWithRoles(jobId, coordinator)
  *   lib/team/owner: getMyJobDetail(jobId), listMyRoomJobs(roomId)
+ *
+ * 0.10 (docs/design/threadlink-0.10.md), each looked up by NAME in
+ * lib/chat/owner, then lib/team/owner; a missing one reads as "not available"
+ * (reads → null, mutations → ChatServerUnavailableError). Nothing is invented:
+ *   listMyAgentProviders() → ProviderInfo[]
+ *   listMyChatTimeline(chatId, {limit}) → ChatTimelinePage (first page, per-chat cursor)
+ *   getMyHostStatus(chatId) → ChatHostStatus (runtime presence, agents' health + checkedAt)
+ *   listMyFindings(chatId) · listMyDecisions(chatId) · listMyChoices(chatId) · listMyArtifacts(chatId)
+ *   getMyRunProvenance(chatId, runId) · revealMyRunNativeSession(chatId, runId)   (owner only)
+ *   decideMyChoice(chatId, choiceId, {key}) · controlMyJob(chatId, {jobId, action})
+ *   addMyAttachment(chatId, {title, content, mime})
+ *   searchMyChats({q, limit})
+ *   NOT provided by the server yet (read as null): listMyChatRuns(chatId), getMyProjectHub(roomId)
  */
 
 type AnyFn = (...args: unknown[]) => Promise<unknown>;
@@ -277,3 +290,165 @@ export const renameChatGroup = (groupId: unknown, name: unknown) =>
 export const deleteChatGroup = (groupId: unknown) => call("deleteMyChatGroup", groupId);
 export const retryJobWithRoles = (jobId: unknown, coordinator: unknown) =>
   call("retryMyJobWithRoles", jobId, coordinator);
+
+// ---------------------------------------------------------------------------
+// 0.10 — the real ThreadLink experience (see the header for every name used)
+// ---------------------------------------------------------------------------
+
+/** 0.10 lookups: lib/chat/owner first, then lib/team/owner. */
+const anyFn = (name: string) => chatFn(name) ?? lookup(teamOwner, name);
+
+async function call10(name: string, ...args: unknown[]): Promise<unknown> {
+  const fn = anyFn(name);
+  if (!fn) throw new ChatServerUnavailableError();
+  return fn(...args);
+}
+
+/** A read that says null when the function is missing or fails. */
+async function read10(name: string, ...args: unknown[]): Promise<unknown> {
+  const fn = anyFn(name);
+  if (!fn) return null;
+  try {
+    return await fn(...args);
+  } catch {
+    return null;
+  }
+}
+
+const rows = (v: unknown): Record<string, unknown>[] | null =>
+  Array.isArray(v)
+    ? v.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === "object")
+    : null;
+
+/** Registry rows (agent_providers), or null → the UI uses its local fallback. */
+export async function loadProviderRegistryRows(): Promise<unknown[] | null> {
+  return rows(await read10("listMyAgentProviders"));
+}
+
+/** The first (latest) page by the per-chat cursor; the 0.9 page only as a fallback. */
+export async function loadChatTimeline(chatId: string): Promise<unknown> {
+  if (!CHAT_ID.test(chatId)) return null;
+  const fn = anyFn("listMyChatTimeline");
+  if (fn) {
+    try {
+      return await fn(chatId, { limit: 100 });
+    } catch {
+      return null;
+    }
+  }
+  return loadChatEvents(chatId);
+}
+
+export type ChatHost = {
+  label: string | null;
+  online: boolean | null;
+  lastSeenAt: string | null;
+  working: boolean;
+  protocolOutdated: boolean;
+};
+
+export type HostStatus = {
+  host: ChatHost | null;
+  /** provider id → {health, checkedAt} from the same check the server judged. */
+  agents: Record<string, { health: string; checkedAt: string | null }>;
+};
+
+/** "Runs on <host>", presence and each agent's health with its check time, or null. */
+export async function loadHostStatus(chatId: string): Promise<HostStatus | null> {
+  if (!CHAT_ID.test(chatId)) return null;
+  const raw = (await read10("getMyHostStatus", chatId)) as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object") return null;
+  const rt = raw.runtime as Record<string, unknown> | null | undefined;
+  const presence = rt && isStr(rt.presence) ? rt.presence : null;
+  const host: ChatHost | null =
+    rt && isStr(rt.label)
+      ? {
+          label: rt.label.slice(0, 60),
+          online:
+            presence === "online" || presence === "working"
+              ? true
+              : presence === "offline"
+                ? false
+                : null,
+          lastSeenAt: strOrNull(rt.lastSeenAt),
+          working: presence === "working",
+          protocolOutdated: rt.needsUpdate === true,
+        }
+      : null;
+  const agents: HostStatus["agents"] = {};
+  for (const a of rows(raw.agents) ?? []) {
+    if (!isStr(a.provider) || !isStr(a.health)) continue;
+    agents[a.provider] = { health: a.health, checkedAt: strOrNull(a.checkedAt) };
+  }
+  return { host, agents };
+}
+
+export const loadChatFindings = async (chatId: string) =>
+  rows(await read10("listMyFindings", chatId));
+export const loadChatDecisions = async (chatId: string) =>
+  rows(await read10("listMyDecisions", chatId));
+export const loadChatChoices = async (chatId: string) =>
+  rows(await read10("listMyChoices", chatId));
+/** Not provided by the server in 0.10 (null → Details says where run details are). */
+export const loadChatRuns = async (chatId: string) => rows(await read10("listMyChatRuns", chatId));
+
+export type ArtifactRow = {
+  artifactId: string;
+  kind: string;
+  title: string;
+  mime: string;
+  bytes: number | null;
+  createdAt: string | null;
+  createdBy: string | null;
+};
+
+const ARTIFACT_ID = /^[A-Za-z0-9_-]{1,80}$/;
+
+function toArtifact(r: Record<string, unknown>): ArtifactRow | null {
+  const artifactId = isStr(r.artifactId) ? r.artifactId : isStr(r.id) ? r.id : null;
+  if (!artifactId || !ARTIFACT_ID.test(artifactId)) return null;
+  return {
+    artifactId,
+    kind: isStr(r.kind) ? r.kind.slice(0, 30) : "notes",
+    title: isStr(r.title) ? r.title.slice(0, 200) : "Untitled",
+    mime: isStr(r.mime) ? r.mime.slice(0, 80) : "text/plain",
+    bytes: typeof r.bytes === "number" ? r.bytes : null,
+    createdAt: strOrNull(r.createdAt),
+    createdBy: strOrNull(r.createdBy),
+  };
+}
+
+export async function loadChatArtifacts(chatId: string): Promise<ArtifactRow[] | null> {
+  const list = rows(await read10("listMyArtifacts", chatId));
+  return list ? list.map(toArtifact).filter((a): a is ArtifactRow => a !== null) : null;
+}
+
+export const loadRunProvenance = (chatId: string, runId: string) =>
+  read10("getMyRunProvenance", chatId, runId);
+export const revealNativeSession = (chatId: unknown, runId: unknown) =>
+  call10("revealMyRunNativeSession", chatId, runId);
+export const decideChoice = (chatId: unknown, choiceId: unknown, key: unknown) =>
+  call10("decideMyChoice", chatId, choiceId, { key });
+export const controlJob = (chatId: unknown, jobId: unknown, action: unknown) =>
+  call10("controlMyJob", chatId, { jobId, action });
+export const addChatAttachment = (
+  chatId: unknown,
+  file: { title: string; mime: "text/plain" | "text/markdown"; content: string },
+) => call10("addMyAttachment", chatId, file);
+
+/** Server search (owner-scoped; the query only). null = unavailable; [] = no results. */
+export async function searchChats(query: string): Promise<Record<string, unknown>[] | null> {
+  const fn = anyFn("searchMyChats");
+  if (!fn) return null;
+  try {
+    return rows(await fn({ q: query, limit: 50 })) ?? [];
+  } catch {
+    return null;
+  }
+}
+
+/** Not provided by the server in 0.10: null → the hub says nothing is configured. */
+export async function loadProjectHub(roomId: string): Promise<Record<string, unknown> | null> {
+  const raw = await read10("getMyProjectHub", roomId);
+  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+}

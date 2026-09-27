@@ -11,6 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
+import { codexEventActivity } from "../activity.ts";
 import { findCodexExecutable } from "../discovery.ts";
 import { buildAgentEnv, type EnvLike } from "../env.ts";
 import {
@@ -366,7 +367,21 @@ export class CodexTeamRunner implements AgentRunner {
         stdinText: viaStdin ? prompt : null,
         timeoutMs,
         signal: request.signal,
-        onStdoutLine: (line) => onCodexEvent(state, line),
+        onStdoutLine: (line) => {
+          onCodexEvent(state, line);
+          if (request.onActivity) {
+            // Only the event and item types are read (activity.ts), never text.
+            let event: unknown;
+            try {
+              event = JSON.parse(line);
+            } catch {
+              return;
+            }
+            const activity = codexEventActivity(event, request.role);
+            if (activity) request.onActivity(activity);
+          }
+        },
+        hooks: request.onProcess,
       });
       const processError = processFailure(request, outcome, "Codex", timeoutMs);
       if (processError) return { ...processError, threadId: state.threadId };
@@ -448,6 +463,8 @@ export class CodexTeamRunner implements AgentRunner {
           failure: "model_mismatch",
         };
       }
+      // The session record names exactly the model asked for.
+      verified.modelVerified = true;
       if (!access.ok) {
         return {
           ...verified,

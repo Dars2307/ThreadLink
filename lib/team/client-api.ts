@@ -348,14 +348,50 @@ export type TeamWriteResult = TeamStatus & {
    * ThreadLink. `audience` is who it is for ("team" = every agent).
    */
   ownerNotes?: OwnerNote[];
+  // --- 0.10 (docs/design/threadlink-0.10.md) --------------------------------
+  /** add_message: the chat row the message became (reply to it with replyTo). */
+  eventId?: string | null;
+  /** run_started / run_activity / run_finished. */
+  runId?: string;
+  /** run_started, request_choice, add_artifact: false when the key was already used (replay). */
+  created?: boolean;
+  /** run_started / run_finished: the run's status; request_choice: the choice's status. */
+  runStatus?: string;
+  /** run_activity: false when the report came within 5 s of the last one (ignored). */
+  activityUpdated?: boolean;
+  /** run_finished: completed + model + access verified + native session + the project's own Runtime. */
+  verified?: boolean;
+  /** request_choice. */
+  choiceId?: string;
+  /** read_choices: the owner's answers (a pending choice past 24 h reads as expired). */
+  choices?: {
+    choiceId: string;
+    kind: string;
+    status: "pending" | "chosen" | "expired" | "cancelled";
+    chosenKey: string | null;
+    decidedAt: string | null;
+    expiresAt: string;
+    requestKey: string | null;
+  }[];
+  /** add_change (diff artifact, when a diff was sent) / add_artifact. */
+  artifactId?: string | null;
+  /** ack_control: true when the control was still the one acknowledged. */
+  cleared?: boolean;
+  /** read_owner_notes {consumedByRunId, noteIds}: how many notes were recorded as consumed. */
+  consumed?: number;
 };
 
 export type OwnerNote = {
   id: string;
   seq: number;
-  audience: "claude-code" | "codex" | "team";
+  /** A provider id of the registry, or "team". */
+  audience: string;
   body: string;
   createdAt: string;
+  /** 0.10: the note's position in its chat. */
+  chatSeq?: number | null;
+  /** 0.10: the run that consumed it (read_owner_notes with runId). */
+  consumedByRunId?: string | null;
 };
 
 /**
@@ -405,8 +441,32 @@ export async function writeTeamState(
       audience: n.audience,
       body: n.body,
       createdAt: n.created_at,
+      ...(n.chat_seq !== undefined ? { chatSeq: n.chat_seq } : {}),
+      ...(n.consumed_by_run_id !== undefined ? { consumedByRunId: n.consumed_by_run_id } : {}),
     }));
   }
+  // 0.10
+  if (r.event_id !== undefined) extra.eventId = r.event_id;
+  if (r.run_id) extra.runId = r.run_id;
+  if (typeof r.created === "boolean") extra.created = r.created;
+  if (r.status) extra.runStatus = r.status;
+  if (typeof r.updated === "boolean") extra.activityUpdated = r.updated;
+  if (typeof r.verified === "boolean") extra.verified = r.verified;
+  if (r.choice_id) extra.choiceId = r.choice_id;
+  if (r.choices) {
+    extra.choices = r.choices.map((c) => ({
+      choiceId: c.choice_id,
+      kind: c.kind,
+      status: c.status,
+      chosenKey: c.chosen_key,
+      decidedAt: c.decided_at,
+      expiresAt: c.expires_at,
+      requestKey: c.request_key,
+    }));
+  }
+  if (r.artifact_id !== undefined) extra.artifactId = r.artifact_id;
+  if (typeof r.cleared === "boolean") extra.cleared = r.cleared;
+  if (typeof r.consumed === "number") extra.consumed = r.consumed;
   return { ...toTeamStatus(row), op: row.op, ...extra };
 }
 

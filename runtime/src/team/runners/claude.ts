@@ -184,6 +184,7 @@ export class ClaudeTeamRunner implements AgentRunner {
       stdinText: buildClaudePrompt(request),
       timeoutMs,
       signal: request.signal,
+      hooks: request.onProcess,
     });
     const processError = processFailure(request, outcome, "Claude Code", timeoutMs);
     if (processError) return processError;
@@ -242,9 +243,11 @@ export class ClaudeTeamRunner implements AgentRunner {
         failure: "model_mismatch",
       };
     }
+    // From here on the model that ran is the one asked for.
+    const verified: AgentRunResult = { ...base, modelVerified: true };
     if (request.resumeThreadId && threadId !== request.resumeThreadId) {
       return {
-        ...base,
+        ...verified,
         error: "Claude Code answered from a different session than the one resumed.",
         failure: "provider_error",
       };
@@ -253,12 +256,13 @@ export class ClaudeTeamRunner implements AgentRunner {
       // Prefer the answer Claude Code validated against the schema; fall back
       // to parsing the final message only if it did not provide one.
       if (isPlainObject(parsed.structured_output)) {
-        return { ...base, ok: true, structured: parsed.structured_output };
+        return { ...verified, ok: true, structured: parsed.structured_output };
       }
       const structured = parseStructured(text, request.outputSchema);
-      if (!structured.ok) return { ...base, error: structured.error, failure: "provider_error" };
-      return { ...base, ok: true, structured: structured.value };
+      if (!structured.ok)
+        return { ...verified, error: structured.error, failure: "provider_error" };
+      return { ...verified, ok: true, structured: structured.value };
     }
-    return { ...base, ok: true };
+    return { ...verified, ok: true };
   }
 }

@@ -98,7 +98,7 @@ describe("desktop status", () => {
     ).toBe("Claude Code not found");
   });
 
-  it("shows a busy conversation as busy, not as an error", () => {
+  it("never reports a global 'Claude is open' status, even for a busy exact conversation", () => {
     const busy = snapshot({
       workspaces: [
         {
@@ -112,10 +112,29 @@ describe("desktop status", () => {
         },
       ],
     });
-    expect(statusLine(state({ snapshot: busy }))).toMatchObject({
+    const line = statusLine(state({ snapshot: busy }));
+    expect(line).toMatchObject({ title: "ThreadLink Ready", tone: "ready" });
+    expect(JSON.stringify(line)).not.toMatch(/Claude is|in use|currently open/i);
+  });
+
+  it("says how many agents are working or ready instead", () => {
+    const working = snapshot({
+      team: [
+        {
+          jobId: "tljob_1",
+          running: true,
+          agents: [
+            { provider: "claude-code", doing: "Building" },
+            { provider: "codex", doing: null },
+          ],
+        },
+      ],
+    } as never);
+    expect(statusLine(state({ snapshot: working }))).toMatchObject({
+      detail: "1 agent working",
       tone: "busy",
-      detail: "A Claude conversation is in use right now",
     });
+    expect(statusLine(state()).detail).toBe("Execution host online");
   });
 });
 

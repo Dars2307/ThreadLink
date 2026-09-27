@@ -118,7 +118,7 @@ export type HealthView = {
   provider: PlanProvider;
   providerName: string;
   health: Health;
-  /** Fixed words, e.g. "Needs sign-in". */
+  /** Fixed words, e.g. "Needs sign-in"; "Stale" for a Ready check that is too old. */
   text: string;
   /** "Claude Code — Needs sign-in". */
   line: string;
@@ -127,21 +127,110 @@ export type HealthView = {
   checkedAt: string | null;
   /** The fixed sign-in instruction, only when a sign-in is what is needed. */
   instruction: string | null;
+  /** 0.10: the ONE freshness verdict. Only "ready" may be shown as Ready. */
+  fresh: Freshness;
+  /** "checked 23 s ago" / "last checked 2 h ago" / "not checked recently" / null. */
+  when: string | null;
+  /** "Ready · checked 23 s ago" / "Stale · last checked 2 h ago". */
+  status: string;
 };
 
-export function healthView(provider: PlanProvider, health: Health, checkedAt: string | null) {
+// ---------------------------------------------------------------------------
+// Freshness (design 0.10 §8): one calculation, never "Ready" beside stale text.
+// ---------------------------------------------------------------------------
+
+/** A Ready check older than this is Stale. Same rule as the server and the terminal. */
+export const HEALTH_FRESH_MS = 2 * 60 * 60 * 1000;
+
+export type Freshness = "ready" | "stale" | "problem" | "unknown";
+
+/** "23 s ago", "4 min ago", "2 h ago", "3 days ago". */
+export function agoText(iso: string, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 172800) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+
+export function freshnessOf(
+  health: Health,
+  checkedAt: string | null,
+  now = Date.now(),
+): { fresh: Freshness; text: string; when: string | null; tone: HealthTone } {
+  const t = checkedAt ? Date.parse(checkedAt) : Number.NaN;
+  const known = Number.isFinite(t);
+  if (health === "ready") {
+    if (known && now - t <= HEALTH_FRESH_MS) {
+      return {
+        fresh: "ready",
+        text: "Ready",
+        when: `checked ${agoText(checkedAt!, now)}`,
+        tone: "ready",
+      };
+    }
+    return {
+      fresh: "stale",
+      text: "Stale",
+      when: known ? `last checked ${agoText(checkedAt!, now)}` : "not checked recently",
+      tone: "wait",
+    };
+  }
+  return {
+    fresh: health === "unknown" ? "unknown" : "problem",
+    text: HEALTH_TEXT[health],
+    when: known && health !== "unknown" ? `checked ${agoText(checkedAt!, now)}` : null,
+    tone: TONE[health],
+  };
+}
+
+export function healthView(
+  provider: PlanProvider,
+  health: Health,
+  checkedAt: string | null,
+  now = Date.now(),
+) {
   const name = PROVIDER_NAMES[provider];
-  const text = HEALTH_TEXT[health];
+  const f = freshnessOf(health, checkedAt, now);
   return {
     provider,
     providerName: name,
     health,
-    text,
-    line: `${name} — ${text}`,
-    tone: TONE[health],
+    text: f.text,
+    line: `${name} — ${f.text}`,
+    tone: f.tone,
     checkedAt,
     instruction: health === "needs_sign_in" ? SIGN_IN_INSTRUCTION : null,
+    fresh: f.fresh,
+    when: f.when,
+    status: f.when ? `${f.text} · ${f.when}` : f.text,
   } satisfies HealthView;
+}
+
+/**
+ * The global status words (0.10): "1 agent working", "2 agents ready",
+ * "Execution host online" -- never "Claude is open". `working` counts agents
+ * doing something in a running job right now.
+ */
+export function agentsSummary(views: HealthView[], working: number): string {
+  if (working > 0) return `${working} agent${working === 1 ? "" : "s"} working`;
+  const ready = views.filter((v) => v.fresh === "ready").length;
+  if (ready > 0) return `${ready} agent${ready === 1 ? "" : "s"} ready`;
+  return "Execution host online";
+}
+
+/** Distinct providers doing something in a running team job (from the snapshot). */
+export function workingAgents(team: unknown): number {
+  const busy = new Set<string>();
+  for (const job of Array.isArray(team) ? team : []) {
+    const j = obj(job);
+    if (!j || j.running === false) continue;
+    for (const a of Array.isArray(j.agents) ? j.agents : []) {
+      const agent = obj(a);
+      if (agent && typeof agent.provider === "string" && agent.doing) busy.add(agent.provider);
+    }
+  }
+  return busy.size;
 }
 
 /**
@@ -151,7 +240,7 @@ export function healthView(provider: PlanProvider, health: Health, checkedAt: st
  * "Not checked yet" -- except one discovery could not find at all, which is
  * truthfully "Not installed".
  */
-export function healthViews(snapshot: unknown): HealthView[] {
+export function healthViews(snapshot: unknown, now = Date.now()): HealthView[] {
   const snap = obj(snapshot);
   const team = rowsOf(snap?.teamProviders);
   const extra = rowsOf(snap?.providerHealth);
@@ -163,7 +252,7 @@ export function healthViews(snapshot: unknown): HealthView[] {
       (fromTeam ? healthOf(fromTeam) : { health: null, checkedAt: null });
     let health: Health = found.health ?? "unknown";
     if (!found.health && fromTeam?.installed === false) health = "not_installed";
-    return healthView(provider, health, found.checkedAt);
+    return healthView(provider, health, found.checkedAt, now);
   });
 }
 

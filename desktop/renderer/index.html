@@ -99,10 +99,10 @@
         </div>
         <div class="card stack">
           <div class="card-head">
-            <h2>Linked conversations</h2>
-            <button id="home-manage" class="ghost small-btn" type="button">Manage</button>
+            <h2>Recent chats</h2>
+            <button id="home-chats" class="ghost small-btn" type="button">All chats</button>
           </div>
-          <div id="home-conversations" class="list"></div>
+          <div id="home-chat-list" class="list"></div>
         </div>
         <div class="card stack">
           <div class="card-head">
@@ -130,25 +130,81 @@
     <template id="tpl-agents">
       <section class="stack">
         <div class="card stack">
-          <h2>Providers on this computer</h2>
+          <h2>Agents on this computer</h2>
           <p class="muted small">
-            ThreadLink checks each provider with a real signed-in call, not just its status.
+            ThreadLink checks each agent with a real signed-in call, not just its status. Each
+            agent's plan decides which models ThreadLink may use; the ThreadLink plan you pay for is
+            set in the web dashboard.
           </p>
           <div id="agents-health" class="health-list"></div>
         </div>
-        <div class="card stack">
-          <div class="card-head">
-            <h2>Attached conversations</h2>
-            <button id="add-more" class="ghost small-btn" type="button">Attach another…</button>
-          </div>
-          <div id="attached" class="list"></div>
-        </div>
+        <nav id="agent-tabs" class="agent-tabs" aria-label="Agents"></nav>
+        <div id="agent-panel" class="stack"></div>
       </section>
+    </template>
+
+    <template id="tpl-agent-claude">
+      <div class="card stack">
+        <div class="card-head">
+          <h2>Attached conversations</h2>
+          <button id="add-more" class="ghost small-btn" type="button">Attach another…</button>
+        </div>
+        <p class="muted small">
+          How Claude Code runs requests from linked chats on this computer: a background worker, one
+          exact conversation, or a new headless session each time.
+        </p>
+        <div id="attached" class="list"></div>
+      </div>
     </template>
 
     <template id="tpl-chats">
       <section class="stack">
+        <div class="card stack">
+          <div class="card-head">
+            <h2>Your chats</h2>
+            <div class="row">
+              <button id="chats-by-recent" class="ghost small-btn" type="button">Recent</button>
+              <button id="chats-by-project" class="ghost small-btn" type="button">
+                By project
+              </button>
+            </div>
+          </div>
+          <div id="chat-list" class="stack tight"></div>
+        </div>
+        <h2 class="section-title">Running on this computer</h2>
         <div id="chat-groups" class="stack"></div>
+      </section>
+    </template>
+
+    <template id="tpl-chat">
+      <section class="chat-view">
+        <header class="chat-head">
+          <button id="chat-back" class="ghost small-btn" type="button">← Chats</button>
+          <div class="chat-titles">
+            <h2 id="chat-title" class="chat-title">Loading…</h2>
+            <p id="chat-sub" class="muted small"></p>
+          </div>
+          <span id="chat-state" class="badge"></span>
+        </header>
+        <p id="chat-host" class="muted small" hidden></p>
+        <div id="chat-timeline" class="chat-timeline" aria-live="polite">
+          <button id="chat-older" class="ghost small-btn chat-older" type="button" hidden>
+            Load earlier messages
+          </button>
+          <div id="chat-events" class="chat-events"></div>
+          <div id="chat-live" class="chat-live"></div>
+        </div>
+        <p id="chat-problem" class="small danger-text" role="status" hidden></p>
+        <div class="composer">
+          <textarea
+            id="chat-input"
+            rows="2"
+            maxlength="4000"
+            spellcheck="true"
+            placeholder="Message the team (start with @codex or @claude to address one agent)"
+          ></textarea>
+          <button id="chat-send" class="primary" type="button">Send</button>
+        </div>
       </section>
     </template>
 
@@ -190,12 +246,20 @@
 
     <template id="tpl-runtime">
       <section class="stack">
+        <div id="update-card" class="card stack update" hidden>
+          <h2>Update needed</h2>
+          <p id="update-text" class="small"></p>
+          <div class="row">
+            <button id="update-get" class="primary" type="button">Get the update</button>
+          </div>
+        </div>
         <div class="card stack">
-          <h2>This computer</h2>
+          <h2>Execution host</h2>
           <div id="runtime-kv" class="kv"></div>
           <div class="row">
             <button id="pause" class="ghost" type="button">Pause</button>
             <button id="restart" class="ghost" type="button">Restart</button>
+            <button id="open-logs" class="ghost" type="button">Open logs</button>
           </div>
         </div>
         <div class="card stack">
@@ -236,15 +300,13 @@
           </label>
         </div>
         <div class="card stack">
-          <h2>Providers &amp; plans</h2>
+          <h2>Agents &amp; plans</h2>
           <p class="muted small">
-            Your plan is the one you chose in ThreadLink; it decides which models ThreadLink may
-            use. What each app reports about itself is shown beside it.
+            Each agent's plan, health and execution settings are under Agents. The ThreadLink plan
+            you pay for is set in the web dashboard.
           </p>
-          <div id="providers" class="list"></div>
-          <div id="providers-check"></div>
-          <div class="card-head">
-            <p class="muted small">The ThreadLink plan you pay for is set in the web dashboard.</p>
+          <div class="row">
+            <button id="settings-agents" class="ghost small-btn" type="button">Open Agents</button>
             <button id="plan-dashboard" class="ghost small-btn" type="button">
               Open dashboard
             </button>

@@ -12,6 +12,11 @@
  *   - every AZURE_OPENAI_* variable, CODEX_API_KEY, AWS_BEARER_TOKEN_BEDROCK;
  *   - every CLAUDE_CODE_USE_* provider switch (Bedrock, Vertex, Foundry, ...);
  *   - anything ending in _API_KEY or _AUTH_TOKEN;
+ *   - every THREADLINK_* variable: the Runtime's own credential
+ *     (THREADLINK_BRIDGE_TOKEN) and configuration are ThreadLink's, never an
+ *     agent's. (A generic *_TOKEN rule is deliberately not used: it would also
+ *     strip CLAUDE_CODE_OAUTH_TOKEN, the subscription sign-in some users run
+ *     Claude Code with.)
  *   - the variables that tie a process to a *parent* Claude Code session
  *     (when the Runtime itself was started from inside Claude Code), plus
  *     CLAUDE_EFFORT, so that ThreadLink alone decides effort and session.
@@ -26,7 +31,13 @@
 /** A plain environment map (not NodeJS.ProcessEnv, which frameworks augment). */
 export type EnvLike = Record<string, string | undefined>;
 
-const REMOVE_PREFIXES = ["ANTHROPIC_", "OPENAI_", "AZURE_OPENAI_", "CLAUDE_CODE_USE_"] as const;
+const REMOVE_PREFIXES = [
+  "ANTHROPIC_",
+  "OPENAI_",
+  "AZURE_OPENAI_",
+  "CLAUDE_CODE_USE_",
+  "THREADLINK_",
+] as const;
 
 const REMOVE_SUFFIXES = ["_API_KEY", "_AUTH_TOKEN"] as const;
 

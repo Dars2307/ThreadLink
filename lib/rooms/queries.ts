@@ -265,3 +265,36 @@ export async function updateRoomPolicyAs(
   });
   return toRoomView(roomRowSchema.parse(data));
 }
+
+/** 0.10 (section 6): the step kinds a project may set a timeout for, in minutes (2-120). */
+export const STEP_KINDS = [
+  "normalise",
+  "plan",
+  "plan_review",
+  "build",
+  "review",
+  "security_review",
+  "inspection",
+  "verify",
+] as const;
+export type StepKind = (typeof STEP_KINDS)[number];
+export const stepTimeoutsSchema = z
+  .partialRecord(z.enum(STEP_KINDS), z.number().int().min(2).max(120))
+  .refine((v) => Object.keys(v).length <= STEP_KINDS.length, "too many");
+
+/**
+ * Replaces the project's step timeouts ({} = the Runtime's defaults). Only
+ * jobs started afterwards carry them (the carrier's `timeouts`).
+ */
+export async function setRoomStepTimeoutsAs(
+  db: SupabaseClient,
+  rawRoomId: unknown,
+  rawTimeouts: unknown,
+): Promise<Partial<Record<StepKind, number>>> {
+  const timeouts = stepTimeoutsSchema.parse(rawTimeouts);
+  const data = await rpc(db, "set_room_step_timeouts", {
+    p_room_id: roomIdSchema.parse(rawRoomId),
+    p_timeouts: timeouts,
+  });
+  return z.object({ step_timeouts: stepTimeoutsSchema }).passthrough().parse(data).step_timeouts;
+}

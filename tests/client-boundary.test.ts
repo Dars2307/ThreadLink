@@ -147,7 +147,8 @@ describe("client/server boundary", () => {
         /^app\/api\/(connection|session|pairing|tasks|runtime|team)\/(.+\/)?route\.ts$/,
       );
       expect(route.source, route.path).toMatch(
-        /await requireConnection\(request\)|handleClientRequest\(request, /,
+        // handleRuntimeChatRequest (0.10 chat API) = requireConnectionContext + agent-only.
+        /await requireConnection\(request\)|handleClientRequest\(request, |handleRuntimeChatRequest\(request, /,
       );
       expect(route.source, route.path).not.toMatch(
         /createPrivilegedSupabaseClient|supabase\/admin/,

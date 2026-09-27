@@ -43,6 +43,9 @@ export const JOB_STATUSES = [
   "needs_user_decision",
   "failed",
   "cancelled",
+  // 0.10: non-terminal waits (a step was interrupted; paused by the owner).
+  "interrupted",
+  "paused",
 ] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
@@ -88,8 +91,22 @@ export const FINDING_CATEGORIES = [
 ] as const;
 export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
-export const FINDING_STATUSES = ["open", "resolved", "wont_fix"] as const;
+/**
+ * wont_fix is the pre-0.10 name for dismissed (still readable). accepted,
+ * disputed and fixed are still open: they block a PASS like open does.
+ */
+export const FINDING_STATUSES = [
+  "open",
+  "resolved",
+  "wont_fix",
+  "accepted",
+  "disputed",
+  "fixed",
+  "dismissed",
+] as const;
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
+/** The states that still block a PASS (SQL finding_open_states()). */
+export const FINDING_OPEN_STATES = ["open", "accepted", "disputed", "fixed"] as const;
 
 export const MODEL_CLASSES = ["FAST", "BALANCED", "STRONG", "FRONTIER"] as const;
 export type ModelClass = (typeof MODEL_CLASSES)[number];
@@ -196,8 +213,10 @@ export const TEAM_SIZE_LIMITS = {
   evidenceBytes: 32 * 1024,
   decisionJsonBytes: 16 * 1024,
   nodesPerCall: 100,
-  /** HTTP body cap for the runtime write endpoint (largest op + envelope). */
-  writeBodyBytes: 160 * 1024,
+  /** 0.10: artifact and diff text (add_artifact, add_change). */
+  artifactBytes: 512 * 1024,
+  /** HTTP body cap for the runtime write endpoint (largest op + envelope; artifacts are JSON-escaped). */
+  writeBodyBytes: 1152 * 1024,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -302,6 +321,112 @@ const party = z.enum(["claude-code", "codex", "threadlink"]);
 const round = z.number().int().min(0).max(6);
 const providerList = z.array(provider).max(2);
 
+// 0.10 primitives (docs/design/threadlink-0.10.md sections 2-6).
+export const runIdSchema = z.string().regex(/^tlarn_[0-9a-f]{32}$/);
+export const choiceIdSchema = z.string().regex(/^tlchc_[0-9a-f]{32}$/);
+export const artifactIdSchema = z.string().regex(/^tlart_[0-9a-f]{32}$/);
+/** A provider id of the registry (public.agent_providers.id). */
+export const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
+/** "codex:coordinator", "claude-code:reviewer:2". */
+export const PARTICIPANT_KEY_PATTERN = /^[a-z][a-z0-9-]{1,39}:[a-z_]{1,40}(:[0-9]{1,3})?$/;
+/** Idempotency keys (run_key, choice request key). Long keys are hashed server-side. */
+const wireKey = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), "single line");
+export const RUN_STATUS_VALUES = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "interrupted",
+] as const;
+export const RUN_ACTIVITY_VALUES = [
+  "queued",
+  "reading",
+  "planning",
+  "building",
+  "reviewing",
+  "testing",
+  "waiting",
+  "responding",
+  "integrating",
+] as const;
+export const RUN_FAILURES = [
+  "not_authenticated",
+  "quota_exhausted",
+  "timeout",
+  "model_mismatch",
+  "access_mismatch",
+  "cancelled",
+  "crashed",
+  "provider_error",
+] as const;
+export const CHOICE_KIND_VALUES = [
+  "provider_failure",
+  "timeout",
+  "plan_disagreement",
+  "interrupted",
+  "migration",
+  "production_deploy",
+  "destructive_action",
+  "security_action",
+  "paid_usage",
+  "permission_expansion",
+  "secret_change",
+] as const;
+export const REF_KINDS = ["finding", "decision", "node", "artifact", "message", "choice"] as const;
+export const ARTIFACT_KINDS = [
+  "report",
+  "plan",
+  "diff",
+  "test_report",
+  "notes",
+  "export",
+  "user_attachment",
+] as const;
+export const ARTIFACT_MIMES = [
+  "text/plain",
+  "text/markdown",
+  "text/x-diff",
+  "application/json",
+] as const;
+export const JOB_CONTROL_VALUES = [
+  "pause_after_step",
+  "stop_after_review",
+  "stop_before_integration",
+  "stop_now",
+  "cancel_queued",
+  "resume",
+] as const;
+/**
+ * The Runtime's step kinds (runtime StepKind) -> the fixed step words a
+ * choice may show (SQL choice_steps()). Anything else is dropped.
+ */
+export const CHOICE_STEP_WORDS: Record<string, string> = {
+  normalise: "understanding the request",
+  plan: "planning",
+  plan_review: "reviewing the plan",
+  build: "building",
+  fix: "building",
+  review: "reviewing",
+  security_review: "security review",
+  inspection: "inspection",
+  verify: "testing",
+  test: "testing",
+  integrate: "integrating",
+  integration: "integrating",
+};
+const wireRef = z
+  .object({
+    kind: z.enum(REF_KINDS),
+    id: z.string().min(1).max(64),
+  })
+  .strict();
+
 const nodeInput = z
   .object({
     key: nodeKeySchema,
@@ -374,6 +499,16 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         body: boundedText(TEAM_SIZE_LIMITS.bodyBytes),
         /** What the Runtime observed the model to be for this turn (never the requested one). */
         modelObserved: z.string().regex(OBSERVED_MODEL_PATTERN).nullish(),
+        /** 0.10: the run that wrote it (required for an agent from protocol 10). */
+        runId: runIdSchema.nullish(),
+        /**
+         * 0.10: what it replies to. A message (chat row tlcev_ / team message
+         * tlamg_) becomes the reply; a finding, decision, choice, node or
+         * artifact becomes the reference (and a reply to that card).
+         */
+        replyTo: z.union([wireRef, z.string().min(1).max(64)]).nullish(),
+        /** 0.10: what it refers to. The first one is stored. */
+        refs: z.array(wireRef).max(20).optional(),
       })
       .strict(),
   }),
@@ -397,6 +532,10 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         file: z.string().min(1).max(400).nullish(),
         line: z.number().int().min(0).max(10_000_000).nullish(),
         raisedBy: party,
+        /** 0.10: the raising run (required for an agent from protocol 10). */
+        runId: runIdSchema.nullish(),
+        /** 0.10: the participant expected to act on it ("claude-code:builder"). */
+        ownerParticipant: z.string().regex(PARTICIPANT_KEY_PATTERN).nullish(),
       })
       .strict(),
   }),
@@ -409,6 +548,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         round: round.optional(),
         resolution: boundedText(4000).optional(),
         decisionNumber: z.number().int().min(1).max(99_999).optional(),
+        /** 0.10: the run that changed it. */
+        runId: runIdSchema.nullish(),
       })
       .strict(),
   }),
@@ -436,6 +577,9 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
           .optional(),
         basis: z.enum(ARBITRATION_ORDER).optional(),
         needsUser: z.boolean().optional(),
+        /** 0.10: a fixed ThreadLink title, or the agent's own (then runId). */
+        titleSource: z.enum(["threadlink", "agent"]).optional(),
+        runId: runIdSchema.nullish(),
       })
       .strict(),
   }),
@@ -485,6 +629,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
           "integrating",
           "inspecting",
           "cancelled",
+          "interrupted",
+          "paused",
         ]),
         line: oneLine(200).optional(),
       })
@@ -505,11 +651,159 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
   }),
   z.object({
     // The owner's undelivered notes to this job (claim-gated, delivered once).
+    // 0.10: runId = the run that reads them; or {consumedByRunId, noteIds} to
+    // record which run consumed notes already delivered.
     op: z.literal("read_owner_notes"),
     payload: z
-      .object({ limit: z.number().int().min(1).max(20).optional() })
+      .object({
+        limit: z.number().int().min(1).max(20).optional(),
+        runId: runIdSchema.optional(),
+        consumedByRunId: runIdSchema.optional(),
+        noteIds: z
+          .array(z.string().regex(/^tlcev_[0-9a-f]{32}$/))
+          .min(1)
+          .max(20)
+          .optional(),
+      })
+      .strict()
+      .refine(
+        (p) => (p.noteIds === undefined) === (p.consumedByRunId === undefined),
+        "noteIds with consumedByRunId",
+      )
+      .default({}),
+  }),
+  // ---------------------------------------------------------------- 0.10 ops
+  z.object({
+    op: z.literal("run_started"),
+    payload: z
+      .object({
+        runKey: wireKey,
+        provider: z.string().regex(PROVIDER_ID_PATTERN),
+        participantKey: z.string().regex(PARTICIPANT_KEY_PATTERN),
+        role: z.enum(TEAM_ROLES),
+        requestedModel: z.string().regex(MODEL_ID_PATTERN).nullish(),
+        effort: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{1,40}$/)
+          .nullish(),
+        access: z.enum(["read-only", "workspace-write"]).nullish(),
+        nodeKey: nodeKeySchema.nullish(),
+        worktreeLabel: z.string().min(1).max(120).nullish(),
+        timeoutMs: z.number().int().min(1000).max(7_200_000).nullish(),
+        continuity: z.enum(["fresh", "resumed", "forked"]).optional(),
+        resumedFromRunKey: wireKey.nullish(),
+        activity: z.enum(RUN_ACTIVITY_VALUES).optional(),
+      })
+      .strict(),
+  }),
+  z.object({
+    op: z.literal("run_activity"),
+    payload: z.object({ runId: runIdSchema, activity: z.enum(RUN_ACTIVITY_VALUES) }).strict(),
+  }),
+  z.object({
+    op: z.literal("run_finished"),
+    payload: z
+      .object({
+        runId: runIdSchema,
+        status: z.enum(["completed", "failed", "cancelled", "timed_out", "interrupted"]),
+        observedModel: z.string().regex(MODEL_ID_PATTERN).nullish(),
+        modelVerified: z.boolean().optional(),
+        accessVerified: z.boolean().optional(),
+        nativeSessionId: z
+          .string()
+          // Starts alphanumeric; a claude_session id must be a UUID (checked by the database).
+          .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/)
+          .nullish(),
+        nativeSessionKind: z.enum(["claude_session", "codex_thread", "other"]).nullish(),
+        failure: z.enum(RUN_FAILURES).nullish(),
+        exitClean: z.boolean().optional(),
+      })
+      .strict(),
+  }),
+  z.object({
+    op: z.literal("request_choice"),
+    payload: z
+      .object({
+        kind: z.enum(CHOICE_KIND_VALUES),
+        /** Idempotency (the Runtime's own key). `requestKey` is accepted as an alias. */
+        idempotencyKey: wireKey.optional(),
+        requestKey: wireKey.optional(),
+        runId: runIdSchema.nullish(),
+        /** Trusted runtime state only; the server builds the title and labels. */
+        params: z
+          .record(z.string().max(40), z.union([z.string().max(200), z.number(), z.null()]))
+          .refine((v) => Object.keys(v).length <= 20, "too many params")
+          .optional(),
+        /** A subset of the kind's allow-list, as keys or {key}. */
+        options: z
+          .array(z.union([z.string().max(40), z.object({ key: z.string().max(40) }).strict()]))
+          .min(1)
+          .max(6)
+          .optional(),
+      })
+      .strict()
+      .refine(
+        (p) => p.idempotencyKey !== undefined || p.requestKey !== undefined,
+        "idempotencyKey required",
+      ),
+  }),
+  z.object({
+    op: z.literal("read_choices"),
+    payload: z
+      .object({ choiceIds: z.array(choiceIdSchema).max(20).optional() })
       .strict()
       .default({}),
+  }),
+  z.object({
+    op: z.literal("add_change"),
+    payload: z
+      .object({
+        nodeKey: nodeKeySchema.nullish(),
+        runId: runIdSchema,
+        filesChanged: z.number().int().min(0).max(100_000),
+        insertions: z.number().int().min(0).max(100_000_000),
+        deletions: z.number().int().min(0).max(100_000_000),
+        files: z.array(z.string().min(1).max(512)).max(200).optional(),
+        branch: z
+          .string()
+          .regex(/^[A-Za-z0-9._/+-]{1,200}$/)
+          .nullish(),
+        commit: z
+          .string()
+          .regex(/^[0-9a-f]{7,64}$/)
+          .nullish(),
+        tests: z
+          .array(z.object({ command: oneLine(300), ok: z.boolean() }).strict())
+          .max(20)
+          .optional(),
+        /** Optional diff text: stored as a redacted diff artifact. */
+        diff: z
+          .string()
+          .refine((v) => byteLength(v) <= TEAM_SIZE_LIMITS.artifactBytes, "diff too large")
+          .optional(),
+      })
+      .strict(),
+  }),
+  z.object({
+    op: z.literal("add_artifact"),
+    payload: z
+      .object({
+        kind: z.enum(["report", "plan", "diff", "test_report", "notes", "export"]),
+        title: oneLine(200),
+        mime: z.enum(ARTIFACT_MIMES),
+        content: z
+          .string()
+          .refine((v) => v.trim().length > 0, "must not be blank")
+          .refine((v) => byteLength(v) <= TEAM_SIZE_LIMITS.artifactBytes, "content too large"),
+        runId: runIdSchema.nullish(),
+        nodeKey: nodeKeySchema.nullish(),
+        requestKey: wireKey.optional(),
+      })
+      .strict(),
+  }),
+  z.object({
+    op: z.literal("ack_control"),
+    payload: z.object({ control: z.enum(JOB_CONTROL_VALUES) }).strict(),
   }),
 ]);
 export type TeamWriteOp = z.infer<typeof teamWriteOpSchema>;
@@ -566,17 +860,28 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         authorship: input.payload.authorship,
         worktree_branch: input.payload.worktreeBranch,
       });
-    case "add_message":
+    case "add_message": {
+      const p = input.payload;
+      const reply = p.replyTo ?? undefined;
+      const replyIsMessage =
+        typeof reply === "string" || (reply !== undefined && reply.kind === "message");
+      const replyId = typeof reply === "string" ? reply : reply?.id;
+      const ref = !replyIsMessage && reply && typeof reply !== "string" ? reply : p.refs?.[0];
       return compact({
-        node_key: input.payload.node ?? undefined,
-        sender: input.payload.sender,
-        sender_role: input.payload.senderRole,
-        receiver: input.payload.receiver ?? undefined,
-        type: input.payload.type,
-        round: input.payload.round,
-        body: input.payload.body,
-        model_observed: input.payload.modelObserved ?? undefined,
+        node_key: p.node ?? undefined,
+        sender: p.sender,
+        sender_role: p.senderRole,
+        receiver: p.receiver ?? undefined,
+        type: p.type,
+        round: p.round,
+        body: p.body,
+        model_observed: p.modelObserved ?? undefined,
+        run_id: p.runId ?? undefined,
+        reply_to: replyIsMessage ? replyId : undefined,
+        ref_kind: ref?.kind,
+        ref_id: ref?.id,
       });
+    }
     case "add_finding": {
       const p = input.payload;
       const location = p.file ? (p.line ? `${p.file}:${p.line}` : p.file) : undefined;
@@ -590,6 +895,11 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         raised_by: p.raisedBy,
         round: p.round,
         phase: p.phase,
+        run_id: p.runId ?? undefined,
+        owner_participant: p.ownerParticipant ?? undefined,
+        // 0.10: the structured file:line (line 0 means "no line").
+        file_path: p.file ?? undefined,
+        line: p.file && p.line ? p.line : undefined,
       });
     }
     case "set_finding_status":
@@ -599,6 +909,7 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         round: input.payload.round,
         resolution: input.payload.resolution,
         decision_number: input.payload.decisionNumber,
+        run_id: input.payload.runId ?? undefined,
       });
     case "add_decision":
       return compact({
@@ -609,6 +920,8 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         proposals: input.payload.proposals,
         basis: input.payload.basis,
         requires_user: input.payload.needsUser,
+        title_source: input.payload.titleSource,
+        run_id: input.payload.runId ?? undefined,
       });
     case "open_round":
       return compact({
@@ -645,8 +958,175 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         evidence: input.payload.evidence,
       });
     case "read_owner_notes":
-      return compact({ limit: input.payload.limit });
+      return compact({
+        limit: input.payload.limit,
+        run_id: input.payload.consumedByRunId ?? input.payload.runId,
+        note_ids: input.payload.noteIds,
+      });
+    case "run_started": {
+      const p = input.payload;
+      return compact({
+        run_key: wireKeyToSql(p.runKey),
+        provider: p.provider,
+        participant_key: p.participantKey,
+        role: p.role,
+        requested_model: p.requestedModel ?? undefined,
+        effort: p.effort ?? undefined,
+        access: p.access ?? undefined,
+        node_key: p.nodeKey ?? undefined,
+        worktree_label: p.worktreeLabel ?? undefined,
+        timeout_ms: p.timeoutMs ?? undefined,
+        continuity: p.continuity,
+        resumed_from_run_key: p.resumedFromRunKey ? wireKeyToSql(p.resumedFromRunKey) : undefined,
+        activity: p.activity,
+      });
+    }
+    case "run_activity":
+      return { run_id: input.payload.runId, activity: input.payload.activity };
+    case "run_finished": {
+      const p = input.payload;
+      return compact({
+        run_id: p.runId,
+        status: p.status,
+        observed_model: p.observedModel ?? undefined,
+        model_verified: p.modelVerified,
+        access_verified: p.accessVerified,
+        native_session_id: p.nativeSessionId ?? undefined,
+        native_session_kind: p.nativeSessionId ? (p.nativeSessionKind ?? undefined) : undefined,
+        failure: p.failure ?? undefined,
+        exit_clean: p.exitClean,
+      });
+    }
+    case "request_choice": {
+      const p = input.payload;
+      const params = p.params ?? {};
+      const str = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : undefined);
+      // plan_disagreement names the planner and the reviewer.
+      const who = str(params.provider) ?? str(params.planner);
+      const other = str(params.otherProvider) ?? str(params.reviewer);
+      const step = str(params.step);
+      const minutes = params.minutes;
+      return compact({
+        request_key: wireKeyToSql((p.idempotencyKey ?? p.requestKey)!),
+        kind: p.kind,
+        run_id: p.runId ?? undefined,
+        provider: who,
+        other_provider: other,
+        step: step ? (CHOICE_STEP_WORDS[step] ?? undefined) : undefined,
+        minutes:
+          typeof minutes === "number" &&
+          Number.isInteger(minutes) &&
+          minutes >= 1 &&
+          minutes <= 1440
+            ? minutes
+            : undefined,
+        node_key: str(params.unit) ?? str(params.nodeKey),
+        options: p.options?.map((o) => (typeof o === "string" ? o : o.key)),
+      });
+    }
+    case "read_choices":
+      return compact({ choice_ids: input.payload.choiceIds });
+    case "add_change": {
+      const p = input.payload;
+      return compact({
+        node_key: p.nodeKey ?? undefined,
+        run_id: p.runId,
+        files_changed: p.filesChanged,
+        insertions: p.insertions,
+        deletions: p.deletions,
+        files: p.files,
+        branch: p.branch ?? undefined,
+        commit: p.commit ?? undefined,
+        tests: p.tests,
+        diff: p.diff,
+      });
+    }
+    case "add_artifact": {
+      const p = input.payload;
+      return compact({
+        request_key: p.requestKey ? wireKeyToSql(p.requestKey) : undefined,
+        kind: p.kind,
+        title: p.title,
+        mime: p.mime,
+        content: p.content,
+        run_id: p.runId ?? undefined,
+        node_key: p.nodeKey ?? undefined,
+      });
+    }
+    case "ack_control":
+      return { control: input.payload.control };
   }
+}
+
+/** SHA-256 of bytes, as lowercase hex (pure, so this module stays browser-safe). */
+export function sha256Hex(bytes: Uint8Array): string {
+  const K = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ]);
+  const H = new Uint32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ]);
+  const bitLen = bytes.length * 8;
+  const padded = new Uint8Array(Math.ceil((bytes.length + 9) / 64) * 64);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(bitLen / 2 ** 32));
+  view.setUint32(padded.length - 4, bitLen >>> 0);
+  const w = new Uint32Array(64);
+  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15]!, 7) ^ rotr(w[i - 15]!, 18) ^ (w[i - 15]! >>> 3);
+      const s1 = rotr(w[i - 2]!, 17) ^ rotr(w[i - 2]!, 19) ^ (w[i - 2]! >>> 10);
+      w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e!, 6) ^ rotr(e!, 11) ^ rotr(e!, 25);
+      const ch = (e! & f!) ^ (~e! & g!);
+      const t1 = (h! + S1 + ch + K[i]! + w[i]!) >>> 0;
+      const S0 = rotr(a!, 2) ^ rotr(a!, 13) ^ rotr(a!, 22);
+      const maj = (a! & b!) ^ (a! & c!) ^ (b! & c!);
+      const t2 = (S0 + maj) >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d! + t1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (t1 + t2) >>> 0;
+    }
+    H[0] = (H[0]! + a!) >>> 0;
+    H[1] = (H[1]! + b!) >>> 0;
+    H[2] = (H[2]! + c!) >>> 0;
+    H[3] = (H[3]! + d!) >>> 0;
+    H[4] = (H[4]! + e!) >>> 0;
+    H[5] = (H[5]! + f!) >>> 0;
+    H[6] = (H[6]! + g!) >>> 0;
+    H[7] = (H[7]! + h!) >>> 0;
+  }
+  return [...H].map((x) => x.toString(16).padStart(8, "0")).join("");
+}
+
+/**
+ * A Runtime idempotency key as the database stores it ([A-Za-z0-9._:-], at
+ * most 128). Any other key becomes "k:" + the first 32 hex characters of its
+ * SHA-256 (the same rule as runtime/src/team/wire.ts wireKey, so a key the
+ * Runtime already shortened is kept, and a raw one maps to the same value).
+ */
+export function wireKeyToSql(key: string): string {
+  if (/^[A-Za-z0-9._:-]{1,128}$/.test(key)) return key;
+  return `k:${sha256Hex(encoder.encode(key)).slice(0, 32)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,6 +1309,10 @@ export const teamStatusRowSchema = z.object({
   verdict_reason: z.string().nullable().optional(),
   verdict_provider: z.enum(AGENT_PROVIDERS).nullable().optional(),
   retried_from_job_id: z.string().nullable().optional(),
+  // 0.10 (optional: older rows parse).
+  control: z.enum(JOB_CONTROL_VALUES).nullable().optional(),
+  control_requested_at: z.string().nullable().optional(),
+  pending_choices: count.optional(),
   rounds: z.object({
     planning: z.object({ n: z.number(), max: z.number() }),
     review: z.object({ n: z.number(), max: z.number() }),
@@ -884,6 +1368,11 @@ export type TeamStatus = {
   verdictReason?: string | null;
   verdictProvider?: AgentProvider | null;
   retriedFromJobId?: string | null;
+  /** 0.10: the owner's latest control (honour at its boundary, then ack_control). */
+  control?: (typeof JOB_CONTROL_VALUES)[number] | null;
+  controlRequestedAt?: string | null;
+  /** 0.10: choices waiting for the owner. */
+  pendingChoices?: number;
   rounds: { planning: { n: number; max: number }; review: { n: number; max: number } };
   parallelAgents: number;
   planHash: string | null;
@@ -925,6 +1414,9 @@ export function toTeamStatus(r: TeamStatusRow): TeamStatus {
     ...(r.verdict_reason !== undefined ? { verdictReason: r.verdict_reason } : {}),
     ...(r.verdict_provider !== undefined ? { verdictProvider: r.verdict_provider } : {}),
     ...(r.retried_from_job_id !== undefined ? { retriedFromJobId: r.retried_from_job_id } : {}),
+    ...(r.control !== undefined ? { control: r.control } : {}),
+    ...(r.control_requested_at !== undefined ? { controlRequestedAt: r.control_requested_at } : {}),
+    ...(r.pending_choices !== undefined ? { pendingChoices: r.pending_choices } : {}),
     rounds: r.rounds,
     parallelAgents: r.parallel_agents,
     planHash: r.plan_hash,
@@ -964,12 +1456,41 @@ export const teamWriteResultSchema = teamStatusRowSchema.extend({
         z.object({
           id: z.string(),
           seq: z.number(),
-          audience: z.enum(["claude-code", "codex", "team"]),
+          // 0.10: the registry decides (a provider id or "team").
+          audience: z.string().regex(/^(team|[a-z][a-z0-9-]{1,39})$/),
           body: z.string(),
           created_at: z.string(),
+          chat_seq: z.number().nullable().optional(),
+          consumed_by_run_id: z.string().nullable().optional(),
         }),
       )
       .optional(),
+    // 0.10
+    consumed: z.number().optional(),
+    event_id: z.string().nullable().optional(),
+    run_id: z.string().optional(),
+    created: z.boolean().optional(),
+    status: z.string().optional(),
+    updated: z.boolean().optional(),
+    throttled: z.boolean().optional(),
+    finished: z.boolean().optional(),
+    verified: z.boolean().optional(),
+    choice_id: z.string().optional(),
+    choices: z
+      .array(
+        z.object({
+          choice_id: z.string(),
+          kind: z.string(),
+          status: z.enum(["pending", "chosen", "expired", "cancelled"]),
+          chosen_key: z.string().nullable(),
+          decided_at: z.string().nullable(),
+          expires_at: z.string(),
+          request_key: z.string().nullable(),
+        }),
+      )
+      .optional(),
+    artifact_id: z.string().nullable().optional(),
+    cleared: z.boolean().optional(),
   }),
 });
 

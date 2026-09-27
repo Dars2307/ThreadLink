@@ -3,10 +3,12 @@ import { spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { stdin, stdout } from "node:process";
+import { clearLine, cursorTo, createInterface as createLineReader } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 
 import { ApiError, ThreadLinkApi } from "./api.ts";
+import { ChatApiError, chatClientFor, type ChatApi } from "./chat-client.ts";
 import { maskSessionId, NATIVE_SESSION_ID } from "./claude-sessions.ts";
 import type { RuntimeEngine } from "./engine.ts";
 import {
@@ -20,7 +22,19 @@ import {
   canonicalizeBaseUrl,
   validateBaseUrl,
 } from "./index.ts";
+import * as runtimeModule from "./index.ts";
 import { saveConfig } from "./state.ts";
+import { CHAT_USAGE, isChatCommand, parseChatCommand, resolveChat } from "./tui/args.ts";
+import {
+  agentRowsFromLocal,
+  agentRowsFromProfiles,
+  formatAgents,
+  formatStatus,
+  runChats,
+  runNew,
+  type AgentRow,
+} from "./tui/commands.ts";
+import { ChatSession, runChatSession } from "./tui/session.ts";
 
 const USAGE = `ThreadLink Runtime (CLI)
 
@@ -33,6 +47,12 @@ Conversations:
   threadlink sessions        list Claude conversations in this workspace
   threadlink attach [<id>]   attach an existing conversation (or --fresh)
   threadlink detach <n>      stop delivering to attached conversation n
+
+Chats:
+  threadlink chats           your chats (pinned first)
+  threadlink chat "<name>"   open a chat: follow it and send messages (/quit leaves)
+  threadlink new --project P --mode team [--name N]
+  threadlink agents          agents on this computer and their health (--check to re-check)
 
 Links and account:
   threadlink links           link requests waiting for approval
@@ -53,6 +73,10 @@ const { values, positionals } = parseArgs({
     model: { type: "string" },
     label: { type: "string" },
     session: { type: "string" },
+    project: { type: "string" },
+    mode: { type: "string" },
+    name: { type: "string" },
+    check: { type: "boolean", default: false },
     fresh: { type: "boolean", default: false },
     once: { type: "boolean", default: false },
     yes: { type: "boolean", default: false },
@@ -255,6 +279,102 @@ async function runForever(engine: RuntimeEngine): Promise<number> {
   return result === "stopped" ? 0 : 2;
 }
 
+/** RUNTIME_PROTOCOL once the runtime engineer's export lands; null until then. */
+function runtimeProtocol(): number | null {
+  const value = (runtimeModule as unknown as Record<string, unknown>).RUNTIME_PROTOCOL;
+  return typeof value === "number" ? value : null;
+}
+
+/** The server's "this Runtime is too old" flag, under whichever name it uses. */
+function updateRequired(runtime: unknown): boolean {
+  const r = (runtime ?? {}) as Record<string, unknown>;
+  return r.updateRequired === true || r.update_required === true || r.outdated === true;
+}
+
+/** How many distinct agents are doing something in a running team job right now. */
+function workingAgents(team: unknown): number {
+  const busy = new Set<string>();
+  for (const job of Array.isArray(team) ? team : []) {
+    const j = job as { running?: boolean; agents?: { provider?: unknown; doing?: unknown }[] };
+    if (j.running === false) continue;
+    for (const a of j.agents ?? [])
+      if (typeof a.provider === "string" && a.doing) busy.add(a.provider);
+  }
+  return busy.size;
+}
+
+/** Agent health as the server last heard it from this account's Runtime (no probe). */
+async function serverAgents(api: ThreadLinkApi): Promise<AgentRow[]> {
+  try {
+    return agentRowsFromProfiles(await api.providerProfiles());
+  } catch {
+    return [];
+  }
+}
+
+/** The chat client for this computer's stored credential. Never asks for, or prints, a secret. */
+async function chatApi(): Promise<ChatApi> {
+  const client = await chatClientFor(ctx, "terminal").catch(() => null);
+  if (!client) throw new Error("Not signed in on this computer. Run `threadlink setup` first.");
+  return client;
+}
+
+/** Prints above the prompt without eating what the user is typing. */
+function promptSafePrinter(rl: { prompt(preserve?: boolean): void }) {
+  return {
+    print(lines: string[]) {
+      if (tty) {
+        clearLine(stdout, 0);
+        cursorTo(stdout, 0);
+      }
+      stdout.write(`${lines.join("\n")}\n`);
+      if (tty) rl.prompt(true);
+    },
+  };
+}
+
+async function signedInOrExplain(): Promise<ThreadLinkApi> {
+  const api = await signedInApi(ctx);
+  if (!api) throw new Error("Not signed in on this computer. Run `threadlink setup` first.");
+  return api;
+}
+
+async function chatCommand(command: string): Promise<number> {
+  const parsed = parseChatCommand(command, positionals, values);
+  if (!parsed.ok) {
+    say(parsed.error);
+    say();
+    say(CHAT_USAGE);
+    return 1;
+  }
+  const cmd = parsed.value;
+  if (cmd.command === "agents") {
+    const api = await signedInOrExplain();
+    let rows: AgentRow[];
+    if (cmd.check) {
+      say("Checking each agent with a real signed-in call...");
+      rows = agentRowsFromLocal(await engineFor(api).checkProviders());
+    } else {
+      rows = await serverAgents(api);
+    }
+    for (const line of formatAgents(rows)) say(line);
+    return 0;
+  }
+  const client = await chatApi();
+  if (cmd.command === "chats") return runChats(client, say);
+  if (cmd.command === "new") return runNew(client, cmd, say);
+  const found = resolveChat(await client.listChats(), cmd.query);
+  if (!found.ok) {
+    say(found.error);
+    return 1;
+  }
+  const detail = await client.getChat(found.value.chatId).catch(() => found.value);
+  const rl = createLineReader({ input: stdin, output: stdout, terminal: tty, prompt: "> " });
+  const session = new ChatSession(detail, client, promptSafePrinter(rl));
+  await runChatSession(session, rl);
+  return 0;
+}
+
 async function main(): Promise<number> {
   let command = positionals[0];
   if (values.help) {
@@ -298,6 +418,8 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (isChatCommand(command)) return chatCommand(command);
+
   if (command === "logout") {
     await signOut(ctx);
     say("Signed out on this machine. Revoke the Runtime in ThreadLink to disable it everywhere.");
@@ -325,11 +447,20 @@ async function main(): Promise<number> {
     await engine.sync();
     await engine.heartbeat();
     const snap = engine.snapshot();
-    say(
-      `Runtime:   ${runtime.label} (${runtime.platform}, ${runtime.kind})${runtime.paused ? " · paused in ThreadLink" : ""}`,
-    );
-    for (const p of snap.providers)
-      say(`${p.name.padEnd(10)} ${p.available ? `available ${p.version ?? ""}` : "not available"}`);
+    for (const line of formatStatus({
+      runtimeLabel: runtime.label,
+      platform: runtime.platform,
+      kind: runtime.kind,
+      paused: runtime.paused,
+      online: snap.status === "online" || snap.status === "paused",
+      lastHeartbeatAt: snap.lastHeartbeatAt,
+      version: runtimeModule.RUNTIME_VERSION,
+      protocol: runtimeProtocol(),
+      updateRequired: updateRequired(runtime),
+      agents: await serverAgents(api),
+      working: workingAgents(snap.team),
+    }))
+      say(line);
     for (const w of snap.workspaces) {
       say(`Workspace: ${w.name} (${w.path})`);
       w.conversations.forEach((c, i) => say(`  ${i + 1}) ${c.title}${c.busy ? " · in use" : ""}`));
@@ -407,13 +538,17 @@ main().then(
   (code) => process.exit(code),
   (error: unknown) => {
     const message =
-      error instanceof ApiError
-        ? error.kind === "access_denied"
-          ? "The request was denied in the browser."
-          : error.kind === "expired_token"
-            ? "The sign-in code expired. Run the command again."
-            : `ThreadLink request failed (${error.status} ${error.kind})`
-        : String((error as Error)?.message ?? error);
+      error instanceof ChatApiError
+        ? error.status === 401
+          ? "This computer's ThreadLink sign-in has expired. Run `threadlink setup`."
+          : error.message
+        : error instanceof ApiError
+          ? error.kind === "access_denied"
+            ? "The request was denied in the browser."
+            : error.kind === "expired_token"
+              ? "The sign-in code expired. Run the command again."
+              : `ThreadLink request failed (${error.status} ${error.kind})`
+          : String((error as Error)?.message ?? error);
     process.stderr.write(`error: ${message}\n`);
     process.exit(1);
   },

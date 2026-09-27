@@ -359,7 +359,10 @@ describe("chat: rendering is plain text only", () => {
   });
 
   it("offers mention hints and says how new work runs, without a per-message builder", () => {
-    expect(html).toContain("@team stop after this review round");
+    // 0.10: mentions come from the registry's aliases; stopping lives in Controls.
+    expect(html).toContain("@claude");
+    expect(html).toContain("@codex");
+    expect(html).toContain("@team");
     expect(html).toContain("Starts new work in this chat · Team · Claude Code + Codex.");
     expect(html).not.toContain("How to run it");
     expect(html).not.toMatch(/<select/);
@@ -379,8 +382,11 @@ describe("chat: rendering is plain text only", () => {
         healthHint: null,
       }),
     );
-    expect(running).toContain("Your message goes to the running job");
-    expect(running).toContain("Send to running work");
+    expect(running).toContain("Sent as a note to the running work");
+    expect(running).toContain("Send note");
+    // A note never stops anything; controls are separate and explained.
+    expect(running).toContain("Controls");
+    expect(running).toContain("Stop after review");
   });
 
   it("explains how to start without assuming ChatGPT", () => {
@@ -397,7 +403,7 @@ describe("chat: rendering is plain text only", () => {
       }),
     );
     expect(empty).toContain("No messages yet");
-    expect(empty).toContain("@Claude");
+    expect(empty).toContain("@claude");
     // One agent: no @team hints.
     expect(empty).not.toContain("@team");
     expect(empty).toContain("ask your controller (for example ChatGPT)");

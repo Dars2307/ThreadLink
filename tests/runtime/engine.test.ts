@@ -208,6 +208,40 @@ describe("ThreadLink Runtime engine", () => {
     expect(e.snapshot().workspaces[0]!.conversations.map((c) => c.busy)).toEqual([false, true]);
   });
 
+  it("sends RUNTIME_PROTOCOL 10 when it registers and in every heartbeat (0.10 §8)", async () => {
+    const { api } = fakeApi();
+    const e = engine(api, fakeAdapter().adapter);
+    await e.register();
+    await e.heartbeat();
+    expect(api.registerRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ protocol: 10 }));
+    expect(api.runtimeHeartbeat).toHaveBeenLastCalledWith(
+      expect.objectContaining({ protocol: 10 }),
+    );
+  });
+
+  it("classifies team jobs a previous Runtime left behind, once, without running anything", async () => {
+    const { api } = fakeApi();
+    const { JournalStore } = await import("../../runtime/src/team/registry.ts");
+    const journals = new JournalStore(join(dir, "cfg"));
+    const jobId = `tljob_${"f".repeat(32)}`;
+    journals
+      .open(jobId)
+      .stepStarted({ runKey: "k", kind: "build", write: true, provider: "codex", startedAt: "" });
+    const e = engine(api, fakeAdapter().adapter);
+    const reports = e.recoverTeamJobs();
+    expect(reports).toEqual([
+      expect.objectContaining({
+        jobId,
+        classification: "interrupted",
+        runningWriteStep: { kind: "build", provider: "codex" },
+      }),
+    ]);
+    expect(e.recoverTeamJobs()).toBe(reports);
+    expect(e.teamRecovery()).toEqual(reports);
+    expect(e.teamProcesses()).toEqual([]);
+    journals.open(jobId).close();
+  });
+
   it("refuses to attach a conversation that does not exist in the workspace", async () => {
     const { api } = fakeApi();
     const e = engine(api, fakeAdapter().adapter);

@@ -114,6 +114,25 @@ export type JobWorktrees = {
   created: WorktreeRecord[];
 };
 
+/**
+ * Files whose content never leaves this computer in a shared diff: env files,
+ * keys and certificates, package-manager credentials, anything named
+ * credentials or secrets. Git glob pathspecs, at any depth.
+ */
+export const SENSITIVE_PATHSPECS = [
+  "**/.env*",
+  "**/*.pem",
+  "**/*.key",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/*.p12",
+  "**/*.pfx",
+  "**/.npmrc",
+  "**/.pypirc",
+  "**/credentials*",
+  "**/secrets*",
+] as const;
+
 /** Where Team Mode keeps its worktrees, relative to the repository. */
 export const WORKTREE_DIR = join(".threadlink", "worktrees");
 
@@ -287,6 +306,73 @@ export class WorktreeManager {
   async changedFiles(record: WorktreeRecord): Promise<string[]> {
     const out = await this.#git(record.path, ["diff", "--name-only", `${record.base}..HEAD`]);
     return out.split(/\r?\n/).filter(Boolean).sort();
+  }
+
+  /**
+   * The real diffstat of a unit's change against its base, from git: files
+   * changed, lines inserted and deleted (binary files count as changed with
+   * no lines), and the repo-relative file list.
+   */
+  async diffStat(
+    record: WorktreeRecord,
+  ): Promise<{ filesChanged: number; insertions: number; deletions: number; files: string[] }> {
+    const out = await this.#git(record.path, [
+      "diff",
+      "--numstat",
+      "--no-renames",
+      `${record.base}..HEAD`,
+    ]);
+    let insertions = 0;
+    let deletions = 0;
+    const files: string[] = [];
+    for (const line of out.split(/\r?\n/)) {
+      const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+      if (!m) continue;
+      if (m[1] !== "-") insertions += Number(m[1]);
+      if (m[2] !== "-") deletions += Number(m[2]);
+      files.push(m[3]!);
+    }
+    files.sort();
+    return { filesChanged: files.length, insertions, deletions, files };
+  }
+
+  /**
+   * The diff that may leave this computer (a code change card's diff
+   * artifact): files that commonly hold secrets are left out by git itself
+   * (pathspec excludes), and only their names are returned. The caller still
+   * redacts the text before sending it.
+   */
+  async sharedDiff(
+    record: WorktreeRecord,
+    maxBytes = 512 * 1024,
+  ): Promise<{ text: string; truncated: boolean; excluded: string[] }> {
+    const range = `${record.base}..HEAD`;
+    const text = await this.#git(record.path, [
+      "diff",
+      "--no-color",
+      range,
+      "--",
+      ".",
+      ...SENSITIVE_PATHSPECS.map((p) => `:(exclude,glob)${p}`),
+    ]);
+    const excluded = (
+      await this.#git(record.path, [
+        "diff",
+        "--name-only",
+        range,
+        "--",
+        ...SENSITIVE_PATHSPECS.map((p) => `:(glob)${p}`),
+      ])
+    )
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .sort();
+    if (Buffer.byteLength(text) <= maxBytes) return { text, truncated: false, excluded };
+    return {
+      text: Buffer.from(text).subarray(0, maxBytes).toString("utf8"),
+      truncated: true,
+      excluded,
+    };
   }
 
   /**

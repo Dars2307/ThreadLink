@@ -2,24 +2,36 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { ChatMenu, BlockedJob, ChatHeader, ModeControl } from "@/components/dashboard/chats";
-import { ChatView } from "@/components/dashboard/chat-view";
+import { ChatHeaderBar } from "@/components/dashboard/chat/header";
+import { ChatMenu, BlockedJob } from "@/components/dashboard/chats";
+import { ChatView, type ChatArtifact } from "@/components/dashboard/chat-view";
 import { CopyId } from "@/components/dashboard/copy-id";
 import { Shell } from "@/components/dashboard/shell";
 import { JobLog } from "@/components/dashboard/team";
 import { Badge, Card, CardTitle, cx, EmptyState } from "@/components/ui";
+import { formatBytes } from "@/lib/dashboard/attachments";
+import { chatHeader10 } from "@/lib/dashboard/chat-header";
 import {
   blockedCallout,
   CHAT_TAB_LABELS,
   CHAT_TABS,
-  chatHeader,
   chatHref,
   chatTechnical,
   modeControl,
   parseChatTab,
   retryOption,
 } from "@/lib/dashboard/chats";
-import { loadChat, loadChatEvents, loadChatGroups } from "@/lib/dashboard/chats-data";
+import {
+  loadChat,
+  loadChatArtifacts,
+  loadChatChoices,
+  loadChatTimeline,
+  loadChatFindings,
+  loadChatGroups,
+  loadChatRuns,
+  loadHostStatus,
+  loadProviderRegistryRows,
+} from "@/lib/dashboard/chats-data";
 import { loadControllerName, loadNow, loadProjectChoices } from "@/lib/dashboard/data";
 import {
   effortLabel,
@@ -32,6 +44,8 @@ import {
 import { deriveTeamLog, trim } from "@/lib/dashboard/pages";
 import { parseJobParam } from "@/lib/dashboard/project";
 import { providerDisplay, unhealthyAgents } from "@/lib/dashboard/providers-display";
+import { buildRegistry } from "@/lib/dashboard/registry";
+import { parseProvenance, provenanceRows, verificationOf } from "@/lib/dashboard/timeline";
 import { relativeTime } from "@/lib/dashboard/view-model";
 
 export const metadata: Metadata = { title: "Chat · ThreadLink" };
@@ -61,15 +75,72 @@ export default async function ChatPage({
   if (!data) notFound();
   const { chat, settings, jobs, detail, selectedJobId } = data;
 
-  const [initial, controller, rooms, groupList, now] = await Promise.all([
-    tab === "chat" ? loadChatEvents(chat.chatId) : Promise.resolve(null),
+  const [
+    initial,
+    controller,
+    rooms,
+    groupList,
+    now,
+    registryRows,
+    findings,
+    choiceRows,
+    artifactRows,
+    runRows,
+    hostStatus,
+  ] = await Promise.all([
+    tab === "chat" ? loadChatTimeline(chat.chatId) : Promise.resolve(null),
     loadControllerName(),
     loadProjectChoices(),
     loadChatGroups(),
     loadNow(),
+    loadProviderRegistryRows(),
+    tab === "chat" ? loadChatFindings(chat.chatId) : Promise.resolve(null),
+    tab === "chat" ? loadChatChoices(chat.chatId) : Promise.resolve(null),
+    loadChatArtifacts(chat.chatId),
+    tab === "details" ? loadChatRuns(chat.chatId) : Promise.resolve(null),
+    loadHostStatus(chat.chatId),
   ]);
 
-  const header = chatHeader(chat);
+  const registry = buildRegistry(registryRows);
+  // Health from the host-status check (same instant as its checkedAt), else the chat's participants.
+  const participants = chat.participants.map((p) =>
+    p.kind === "agent" && p.provider && hostStatus?.agents[p.provider]
+      ? { ...p, health: hostStatus.agents[p.provider]!.health as typeof p.health }
+      : p,
+  );
+  const checkedAt: Record<string, string | null> = {};
+  for (const [provider, a] of Object.entries(hostStatus?.agents ?? {})) {
+    checkedAt[provider] = a.checkedAt;
+  }
+  const header = chatHeader10(
+    { ...chat, participants },
+    { registry, checkedAt, host: hostStatus?.host ?? null, now },
+  );
+  const findingStates: Record<string, string> = {};
+  const findingRows: Record<string, Record<string, unknown>> = {};
+  for (const f of findings ?? []) {
+    const fid =
+      typeof f.findingId === "string" ? f.findingId : typeof f.id === "string" ? f.id : null;
+    if (!fid) continue;
+    findingRows[fid] = f;
+    if (typeof f.status === "string") findingStates[fid] = f.status;
+  }
+  const choices: Record<string, Record<string, unknown>> = {};
+  for (const c of choiceRows ?? []) {
+    const cid =
+      typeof c.choiceId === "string" ? c.choiceId : typeof c.id === "string" ? c.id : null;
+    if (cid) choices[cid] = c;
+  }
+  const artifacts: ChatArtifact[] | null = artifactRows
+    ? artifactRows.map((a) => ({
+        artifactId: a.artifactId,
+        title: a.title,
+        kind: humanize(a.kind),
+        size: formatBytes(a.bytes),
+        createdAt: a.createdAt,
+      }))
+    : null;
+  const runs = (runRows ?? []).map(parseProvenance).filter((r) => r !== null);
   const control = modeControl(settings, chat.participants);
   const agents = chat.participants.filter((p) => p.kind === "agent" && p.provider);
   const healthHint = unhealthyAgents(chat.participants).find((a) => a.callout)?.callout ?? null;
@@ -104,8 +175,12 @@ export default async function ChatPage({
         />
       </div>
 
-      <ChatHeader header={header} projectHref={projectLink} />
-      <ModeControl chatId={chat.chatId} control={control} />
+      <ChatHeaderBar
+        header={header}
+        chatId={chat.chatId}
+        control={control}
+        projectHref={projectLink}
+      />
 
       {blocked && detail && selectedJobId ? (
         <BlockedJob text={blocked} retry={retry} jobId={selectedJobId} />
@@ -147,6 +222,12 @@ export default async function ChatPage({
           archived={chat.archived}
           hasProject={chat.roomId !== null}
           healthHint={healthHint}
+          registryRows={registryRows}
+          findingStates={findingStates}
+          findings={findingRows}
+          choices={choices}
+          artifacts={artifacts}
+          hostOffline={header.offlineNote}
         />
       ) : null}
 
@@ -219,17 +300,41 @@ export default async function ChatPage({
         </div>
       ) : null}
 
-      {tab === "details" ? <ChatDetails chat={chat} jobs={jobs} detail={detail} now={now} /> : null}
+      {tab === "details" ? (
+        <ChatDetails
+          chat={chat}
+          jobs={jobs}
+          detail={detail}
+          now={now}
+          runs={runs.map((r) => ({
+            key: r.runId,
+            title: `${registry.byId.get(r.provider)?.name ?? providerDisplay(r.provider, r.providerName).name}${r.role ? ` · ${roleLabel(r.role)}` : ""}`,
+            verification: verificationOf(r),
+            rows: provenanceRows(r, registry),
+            runId: r.runId,
+          }))}
+        />
+      ) : null}
     </Shell>
   );
 }
+
+type RunLine = {
+  key: string;
+  title: string;
+  runId: string;
+  verification: ReturnType<typeof verificationOf>;
+  rows: ReturnType<typeof provenanceRows>;
+};
 
 function ChatDetails({
   chat,
   jobs,
   detail,
   now,
+  runs,
 }: {
+  runs: RunLine[];
   chat: NonNullable<Awaited<ReturnType<typeof loadChat>>>["chat"];
   jobs: NonNullable<Awaited<ReturnType<typeof loadChat>>>["jobs"];
   detail: NonNullable<Awaited<ReturnType<typeof loadChat>>>["detail"];
@@ -264,6 +369,64 @@ function ChatDetails({
                 <span className="text-muted text-xs">
                   {m.outcome} · {m.why}
                 </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card labelledBy="runs-title">
+        <CardTitle
+          id="runs-title"
+          description="Every agent run in this chat: provider, role, models, worktree, access and how well it was verified."
+        >
+          Runs
+        </CardTitle>
+        {runs.length === 0 ? (
+          <p className="text-muted text-sm">
+            Open Details on any agent message in the chat to see where it came from: provider,
+            models, worktree, access and verification.
+          </p>
+        ) : (
+          <ul className="divide-border flex flex-col divide-y">
+            {runs.slice(0, 50).map((r) => (
+              <li key={r.key} className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{r.title}</span>
+                  <Badge
+                    tone={
+                      r.verification.state === "verified"
+                        ? "success"
+                        : r.verification.state === "partial"
+                          ? "warning"
+                          : "neutral"
+                    }
+                  >
+                    {r.verification.state === "verified" ? "✓ Verified" : r.verification.label}
+                  </Badge>
+                </div>
+                <details className="text-sm">
+                  <summary className="text-muted cursor-pointer text-xs">Run details</summary>
+                  <dl className="grid gap-x-6 gap-y-1 pt-2 text-xs sm:grid-cols-[auto_1fr]">
+                    {r.rows.map((x) => (
+                      <div key={x.key} className="contents">
+                        <dt className="text-muted">{x.label}</dt>
+                        <dd className="min-w-0 break-words">{x.value}</dd>
+                      </div>
+                    ))}
+                    <dt className="text-muted">Run ID</dt>
+                    <dd className="min-w-0">
+                      <CopyId value={r.runId} label="Run ID" />
+                    </dd>
+                  </dl>
+                  {r.verification.notes.length ? (
+                    <ul className="text-muted list-disc pt-2 pl-5 text-xs">
+                      {r.verification.notes.map((n, i) => (
+                        <li key={i}>{n}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </details>
               </li>
             ))}
           </ul>

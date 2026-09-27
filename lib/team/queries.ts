@@ -10,6 +10,7 @@ import {
   decisionLabel,
   FINDING_CATEGORIES,
   FINDING_SEVERITIES,
+  FINDING_OPEN_STATES,
   FINDING_STATUSES,
   JOB_MODES,
   JOB_STATUSES,
@@ -51,6 +52,8 @@ export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   needs_user_decision: "Needs your decision",
   failed: "Failed",
   cancelled: "Cancelled",
+  interrupted: "Interrupted",
+  paused: "Paused",
 };
 
 export const NODE_STATUS_LABELS: Record<NodeStatus, string> = {
@@ -327,7 +330,8 @@ export async function getJobDetailFor(
   const u = z.array(usageRow).parse(usage.data);
   assertOwned(user, [...n, ...f, ...d, ...u]);
 
-  const open = f.filter((x) => x.status === "open");
+  // 0.10: accepted, disputed and fixed are still open (they block a PASS).
+  const open = f.filter((x) => (FINDING_OPEN_STATES as readonly string[]).includes(x.status));
   const name = (p: string | null) =>
     p === null ? null : (PROVIDER_NAMES[p as AgentProvider] ?? "ThreadLink");
   return {

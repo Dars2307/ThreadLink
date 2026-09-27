@@ -8,7 +8,8 @@
 // FAKE_CT_MODE: ok | side_model | wrong_model | no_model_usage | quota | unauth |
 //               oauth_refresh | oauth_stderr |
 //               denials | structured | structured_fenced | structured_bad | hang | garbage
-// FAKE_CT_AUTH: max (default) | none
+// FAKE_CT_AUTH: max (default) | none | apikey
+// FAKE_CT_MODE also: wrong_session (answers from a different session than resumed)
 // FAKE_PID_FILE: in hang mode, "<pid> <grandchildPid>" is written here.
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -42,15 +43,16 @@ if (argv[0] === "--version") {
 if (argv[0] === "auth" && argv[1] === "status") {
   const auth = process.env.FAKE_CT_AUTH ?? "max";
   const loggedIn = auth !== "none";
+  const apiKey = auth === "apikey";
   process.stdout.write(
     JSON.stringify({
       loggedIn,
-      authMethod: loggedIn ? "claude.ai" : "none",
+      authMethod: apiKey ? "api_key" : loggedIn ? "claude.ai" : "none",
       apiProvider: "firstParty",
       email: "secret.person@example.com",
       orgId: "org-SECRET-0000",
       orgName: "Secret Org Name",
-      subscriptionType: loggedIn ? auth : null,
+      subscriptionType: loggedIn && !apiKey ? auth : null,
     }),
   );
   process.exit(loggedIn ? 0 : 1);
@@ -130,7 +132,10 @@ process.stdin.on("end", () => {
       subtype: isError ? "error_during_execution" : "success",
       is_error: isError,
       result,
-      session_id: resumeId ?? "22222222-3333-4444-8555-666666666666",
+      session_id:
+        mode === "wrong_session"
+          ? "99999999-3333-4444-8555-666666666666"
+          : (resumeId ?? "22222222-3333-4444-8555-666666666666"),
       modelUsage,
       permission_denials: mode === "denials" ? [{ tool_name: "Bash" }, { tool_name: "Edit" }] : [],
       usage: { input_tokens: 100, output_tokens: 42 },

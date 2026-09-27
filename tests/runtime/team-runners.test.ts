@@ -378,7 +378,7 @@ describe("Claude team runner", { timeout: 30_000 }, () => {
     const controller = new AbortController();
     const pending = runner([], "hang").run(request({ signal: controller.signal }));
     setTimeout(() => controller.abort(), 500);
-    expect(await pending).toMatchObject({ ok: false, failure: "timeout" });
+    expect(await pending).toMatchObject({ ok: false, failure: "cancelled" });
   });
 
   it("rejects unsafe requests before spawning anything", async () => {

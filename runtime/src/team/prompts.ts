@@ -20,7 +20,7 @@
 
 import { randomBytes } from "node:crypto";
 
-import type { TeamRole } from "./types.ts";
+import { AGENT_PROVIDERS, type AgentProvider, type TeamRole } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Shared pieces
@@ -83,6 +83,51 @@ function specText(spec: TeamSpec): string {
   ].join("\n\n");
 }
 
+/**
+ * docs/design/threadlink-0.10.md §3. Every structured answer carries a
+ * `teamMessage`: the one thing from a run that is posted in the chat as that
+ * agent's message. It is asked for as a note to teammates, never as reasoning,
+ * and ThreadLink never writes one on an agent's behalf.
+ */
+export const TEAM_MESSAGE_MAX = 1_200;
+
+const TEAM_MESSAGE_RULE =
+  "`teamMessage` is a short message (a few sentences, under 1200 characters) to your teammates " +
+  "and the project owner about what you propose, found or changed. It is posted in the team chat " +
+  "under your name. It is not your private reasoning: do not describe your thought process, and " +
+  "never include credentials or secrets.";
+
+const teamMessageField = { type: "string" } as const;
+
+/** What an agent is shown of the team's work so far: only what bears on its task (scoped context). */
+export type PromptContext = {
+  /** Decisions so far, in ThreadLink's fixed words. */
+  decisions?: string[];
+  /** The teammates' messages this task responds to (e.g. the plan and its review). */
+  messages?: { from: string; role: string; type: string; body: string }[];
+};
+
+/** The scoped team context of a prompt, delimited as data. Empty when there is nothing to show. */
+export function contextSection(context: PromptContext | undefined): string[] {
+  if (!context) return [];
+  const parts: string[] = [];
+  if (context.decisions?.length) {
+    parts.push(`Decisions so far:\n${context.decisions.map((d) => `- ${d}`).join("\n")}`);
+  }
+  if (context.messages?.length) {
+    parts.push(
+      `Messages this task responds to:\n${context.messages
+        .map((m) => `${m.from} (${m.role}, ${m.type}): ${m.body}`)
+        .join("\n\n")}`,
+    );
+  }
+  if (!parts.length) return [];
+  return [block("TEAM CONTEXT", parts.join("\n\n"))];
+}
+
+/** A finding as it is shown to the agent that must act on it, with ThreadLink's reference. */
+export type RefFinding = Finding & { ref: string; status?: string };
+
 function roleLine(role: TeamRole, provider: string): string {
   return `You are the ${role.replace(/_/g, " ")} on a ThreadLink engineering team, working as ${provider}.`;
 }
@@ -97,6 +142,7 @@ export const SPEC_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
+    "teamMessage",
     "goal",
     "requirements",
     "constraints",
@@ -109,6 +155,7 @@ export const SPEC_SCHEMA = {
     "definitionOfDone",
   ],
   properties: {
+    teamMessage: teamMessageField,
     goal: { type: "string" },
     requirements: stringList,
     constraints: stringList,
@@ -147,98 +194,152 @@ export const FINDING_SCHEMA = {
   },
 } as const;
 
-export const PLAN_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["summary", "nodes", "risks"],
-  properties: {
-    summary: { type: "string" },
-    nodes: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "key",
-          "title",
-          "scope",
-          "files",
-          "dependsOn",
-          "suggestedOwner",
-          "rationale",
-          "complexity",
-          "risk",
-        ],
-        properties: {
-          key: { type: "string" },
-          title: { type: "string" },
-          scope: { type: "string" },
-          files: stringList,
-          dependsOn: stringList,
-          suggestedOwner: { type: "string", enum: ["claude-code", "codex"] },
-          rationale: { type: "string" },
-          complexity: { type: "string", enum: ["trivial", "low", "medium", "high"] },
-          risk: {
-            type: "object",
-            additionalProperties: false,
-            required: ["security", "database", "architecture", "deployment"],
-            properties: {
-              security: { type: "boolean" },
-              database: { type: "boolean" },
-              architecture: { type: "boolean" },
-              deployment: { type: "boolean" },
+/** The plan schema for a job whose builders are `owners` (provider ids). */
+export function planSchema(owners: readonly string[] = AGENT_PROVIDERS) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["teamMessage", "summary", "nodes", "risks"],
+    properties: {
+      teamMessage: teamMessageField,
+      summary: { type: "string" },
+      nodes: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "key",
+            "title",
+            "scope",
+            "files",
+            "dependsOn",
+            "suggestedOwner",
+            "rationale",
+            "complexity",
+            "risk",
+          ],
+          properties: {
+            key: { type: "string" },
+            title: { type: "string" },
+            scope: { type: "string" },
+            files: stringList,
+            dependsOn: stringList,
+            suggestedOwner: { type: "string", enum: [...owners] },
+            rationale: { type: "string" },
+            complexity: { type: "string", enum: ["trivial", "low", "medium", "high"] },
+            risk: {
+              type: "object",
+              additionalProperties: false,
+              required: ["security", "database", "architecture", "deployment"],
+              properties: {
+                security: { type: "boolean" },
+                database: { type: "boolean" },
+                architecture: { type: "boolean" },
+                deployment: { type: "boolean" },
+              },
             },
           },
         },
       },
+      risks: stringList,
     },
-    risks: stringList,
-  },
-} as const;
+  } as const;
+}
+
+export const PLAN_SCHEMA = planSchema();
 
 /** A review of a plan or of code. APPROVED is invalid while a blocking or important finding stands. */
-export const REVIEW_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdict", "summary", "findings", "ownershipObjections"],
-  properties: {
-    verdict: { type: "string", enum: ["APPROVED", "REVISE", "BLOCKED"] },
-    summary: { type: "string" },
-    findings: { type: "array", items: FINDING_SCHEMA },
-    /** For plan reviews: "I should own X because Y". Empty for code reviews. */
-    ownershipObjections: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["nodeKey", "proposedOwner", "reason"],
-        properties: {
-          nodeKey: { type: "string" },
-          proposedOwner: { type: "string", enum: ["claude-code", "codex"] },
-          reason: { type: "string" },
+export function reviewSchema(owners: readonly string[] = AGENT_PROVIDERS) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "teamMessage",
+      "verdict",
+      "summary",
+      "findings",
+      "priorFindings",
+      "ownershipObjections",
+    ],
+    properties: {
+      teamMessage: teamMessageField,
+      verdict: { type: "string", enum: ["APPROVED", "REVISE", "BLOCKED"] },
+      summary: { type: "string" },
+      findings: { type: "array", items: FINDING_SCHEMA },
+      /** For re-reviews: what became of each earlier finding, by its reference. Empty otherwise. */
+      priorFindings: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ref", "status"],
+          properties: {
+            ref: { type: "string" },
+            status: { type: "string", enum: ["resolved", "open", "dismissed"] },
+          },
+        },
+      },
+      /** For plan reviews: "I should own X because Y". Empty for code reviews. */
+      ownershipObjections: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["nodeKey", "proposedOwner", "reason"],
+          properties: {
+            nodeKey: { type: "string" },
+            proposedOwner: { type: "string", enum: [...owners] },
+            reason: { type: "string" },
+          },
         },
       },
     },
-  },
-} as const;
+  } as const;
+}
+
+export const REVIEW_SCHEMA = reviewSchema();
 
 export const BUILD_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "filesChanged", "testsRun", "openQuestions"],
+  required: [
+    "teamMessage",
+    "summary",
+    "filesChanged",
+    "testsRun",
+    "openQuestions",
+    "findingResponses",
+  ],
   properties: {
+    teamMessage: teamMessageField,
     summary: { type: "string" },
     filesChanged: stringList,
     testsRun: stringList,
     openQuestions: stringList,
+    /** When fixing: the answer to each finding, by its reference. Empty otherwise. */
+    findingResponses: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ref", "response", "note"],
+        properties: {
+          ref: { type: "string" },
+          response: { type: "string", enum: ["fixed", "disputed"] },
+          note: { type: "string" },
+        },
+      },
+    },
   },
 } as const;
 
 export const INSPECTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["verdict", "summary", "findings", "requirementsMet", "uncertainty"],
+  required: ["teamMessage", "verdict", "summary", "findings", "requirementsMet", "uncertainty"],
   properties: {
+    teamMessage: teamMessageField,
     verdict: { type: "string", enum: ["PASS", "NEEDS_FIX", "BLOCKED", "NEEDS_USER_DECISION"] },
     summary: { type: "string" },
     findings: { type: "array", items: FINDING_SCHEMA },
@@ -285,13 +386,18 @@ export type PlannedNode = {
   scope: string;
   files: string[];
   dependsOn: string[];
-  suggestedOwner: "claude-code" | "codex";
+  suggestedOwner: AgentProvider;
   rationale: string;
   complexity: "trivial" | "low" | "medium" | "high";
   risk: { security: boolean; database: boolean; architecture: boolean; deployment: boolean };
 };
 
-export type Plan = { summary: string; nodes: PlannedNode[]; risks: string[] };
+export type Plan = {
+  summary: string;
+  nodes: PlannedNode[];
+  risks: string[];
+  teamMessage?: string;
+};
 
 export type Review = {
   verdict: "APPROVED" | "REVISE" | "BLOCKED";
@@ -299,9 +405,11 @@ export type Review = {
   findings: Finding[];
   ownershipObjections: {
     nodeKey: string;
-    proposedOwner: "claude-code" | "codex";
+    proposedOwner: AgentProvider;
     reason: string;
   }[];
+  priorFindings?: { ref: string; status: "resolved" | "open" | "dismissed" }[];
+  teamMessage?: string;
 };
 
 export type BuildReport = {
@@ -309,6 +417,8 @@ export type BuildReport = {
   filesChanged: string[];
   testsRun: string[];
   openQuestions: string[];
+  findingResponses?: { ref: string; response: "fixed" | "disputed"; note: string }[];
+  teamMessage?: string;
 };
 
 export type Inspection = {
@@ -317,7 +427,26 @@ export type Inspection = {
   findings: Finding[];
   requirementsMet: { requirement: string; met: boolean; evidence: string }[];
   uncertainty: string[];
+  teamMessage?: string;
 };
+
+/**
+ * The agent's own team message from a structured answer: trimmed, bounded,
+ * never empty. When a run did not give one, its own `summary` (also written
+ * by that agent in that run) is used; when neither exists, null -- nothing is
+ * ever written for it.
+ */
+export function teamMessageOf(structured: unknown): string | null {
+  if (!structured || typeof structured !== "object") return null;
+  const s = structured as { teamMessage?: unknown; summary?: unknown };
+  for (const candidate of [s.teamMessage, s.summary]) {
+    if (typeof candidate !== "string") continue;
+    const text = candidate.trim();
+    if (!text) continue;
+    return text.length <= TEAM_MESSAGE_MAX ? text : `${text.slice(0, TEAM_MESSAGE_MAX - 1)}…`;
+  }
+  return null;
+}
 
 /** Only these reopen a round. Style and preference never do. */
 export const isSubstantive = (f: Finding) =>
@@ -352,6 +481,7 @@ export function normalisePrompt(goal: string, supplied: Partial<TeamSpec>): stri
     INJECTION_RULE,
     block("OWNER REQUEST", goal),
     block("FIELDS ALREADY SUPPLIED", JSON.stringify(supplied, null, 2)),
+    TEAM_MESSAGE_RULE,
     "Answer with JSON matching the schema.",
   ].join("\n\n");
 }
@@ -360,11 +490,17 @@ export function planPrompt(
   spec: TeamSpec,
   provider: string,
   previous?: { plan: Plan; review: Review },
+  builders: readonly { id: string; name: string }[] = AGENT_PROVIDERS.map((id) => ({
+    id,
+    name: id,
+  })),
+  context?: PromptContext,
 ): string {
+  const who = builders.map((b) => `${b.id} (${b.name})`).join(", ");
   return [
     roleLine("planner", provider),
-    "Propose how to deliver the specification below as a small set of units of work that two " +
-      "agents (claude-code and codex) can build, some in parallel. Each unit needs a short key " +
+    "Propose how to deliver the specification below as a small set of units of work that the " +
+      `team's builders -- ${who} -- can build, some in parallel. Each unit needs a short key ` +
       "(lowercase letters, digits, hyphens), the files or directories it will touch, what it " +
       "depends on, and who should own it and why. Keep units independent where you can: units " +
       "that touch the same files will be run one after another, not together.",
@@ -380,11 +516,18 @@ export function planPrompt(
           "Address every blocking and important finding. Ignore style preferences.",
         ]
       : []),
+    ...contextSection(context),
+    TEAM_MESSAGE_RULE,
     "Do not change any files. Answer with JSON matching the schema.",
   ].join("\n\n");
 }
 
-export function planReviewPrompt(spec: TeamSpec, plan: Plan, provider: string): string {
+export function planReviewPrompt(
+  spec: TeamSpec,
+  plan: Plan,
+  provider: string,
+  context?: PromptContext,
+): string {
   return [
     roleLine("reviewer", provider),
     "Review the plan below against the specification. Raise a finding only for something that " +
@@ -396,6 +539,9 @@ export function planReviewPrompt(spec: TeamSpec, plan: Plan, provider: string): 
     PROJECT_RULES,
     block("SPECIFICATION", specText(spec)),
     block("PLAN", JSON.stringify(plan, null, 2)),
+    ...contextSection(context),
+    "`priorFindings` is empty for a plan review.",
+    TEAM_MESSAGE_RULE,
     "Do not change any files. Answer with JSON matching the schema.",
   ].join("\n\n");
 }
@@ -404,7 +550,8 @@ export function buildPrompt(
   spec: TeamSpec,
   node: PlannedNode,
   provider: string,
-  fixing?: Finding[],
+  fixing?: RefFinding[],
+  context?: PromptContext,
 ): string {
   return [
     roleLine("builder", provider),
@@ -426,9 +573,12 @@ export function buildPrompt(
       ? [
           block("FINDINGS TO FIX", JSON.stringify(fixing, null, 2)),
           "Fix every finding above. If you believe one is wrong, do not change the code for it; " +
-            "explain why in openQuestions.",
+            "explain why in openQuestions. In `findingResponses`, answer every finding by its " +
+            "`ref`: `fixed` if you changed the code for it, `disputed` if you did not, with a short note.",
         ]
-      : []),
+      : ["`findingResponses` is empty: there are no findings to answer yet."]),
+    ...contextSection(context),
+    TEAM_MESSAGE_RULE,
     "When you are done, answer with JSON matching the schema.",
   ].join("\n\n");
 }
@@ -439,6 +589,8 @@ export function codeReviewPrompt(
   diff: { text: string; truncated: boolean },
   provider: string,
   otherUnits: (PlannedNode & { owner: string })[] = [],
+  prior: RefFinding[] = [],
+  context?: PromptContext,
 ): string {
   return [
     roleLine("reviewer", provider),
@@ -478,6 +630,17 @@ export function codeReviewPrompt(
     PROJECT_RULES,
     block("SPECIFICATION", specText(spec)),
     block("DIFF", diff.text),
+    ...(prior.length
+      ? [
+          block("EARLIER FINDINGS", JSON.stringify(prior, null, 2)),
+          "These findings were raised in an earlier review of this unit. In `priorFindings`, give " +
+            "each one's `ref` a status: `resolved` if the change now addresses it, `open` if it " +
+            "still stands, `dismissed` if on reflection it was not a real problem. Do not repeat " +
+            "an earlier finding in `findings`.",
+        ]
+      : ["`priorFindings` is empty: this is the first review of this unit."]),
+    ...contextSection(context),
+    TEAM_MESSAGE_RULE,
     "Answer with JSON matching the schema.",
   ].join("\n\n");
 }
@@ -487,6 +650,7 @@ export function inspectionPrompt(
   diff: { text: string; truncated: boolean },
   testEvidence: string,
   provider: string,
+  context?: PromptContext,
 ): string {
   return [
     roleLine("reviewer", provider),
@@ -503,6 +667,8 @@ export function inspectionPrompt(
     block("SPECIFICATION", specText(spec)),
     block("TEST RESULTS (run by ThreadLink, not by an agent)", testEvidence),
     block("INTEGRATED DIFF", diff.text),
+    ...contextSection(context),
+    TEAM_MESSAGE_RULE,
     "Answer with JSON matching the schema.",
   ].join("\n\n");
 }

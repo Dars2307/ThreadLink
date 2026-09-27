@@ -26,13 +26,37 @@
  * Owner notes reach each agent's next prompt, delimited; an owner's stop
  * request ends the job at the next round boundary.
  *
+ * 0.10 (docs/design/threadlink-0.10.md): every agent execution is a recorded
+ * run (run_started / run_activity / run_finished) with its provenance; every
+ * agent chat message is that run's own `teamMessage`, never text ThreadLink
+ * composes for it, and replies point at what they answer. Findings move
+ * through open / fixed / disputed / resolved / dismissed; a provider failure
+ * or timeout becomes the owner's choice instead of a substitution; owner
+ * controls are honoured at their boundary; a job journal lets a crashed
+ * Runtime tell a finished job from an interrupted one. Provider differences
+ * come from the capability registry (capabilities.ts), never from a switch on
+ * a provider id here.
+ *
  * Everything it depends on is injected, so each rule can be tested directly.
  */
 
 import type { VerdictReason } from "./verdict-reasons.ts";
 import { createHash } from "node:crypto";
 
+import {
+  ActivityReporter,
+  phaseActivity,
+  WRITE_STEPS,
+  type ActivityClock,
+  type RunActivity,
+  type StepKind,
+} from "./activity.ts";
+import { capabilitiesOf, type ProviderCapabilities } from "./capabilities.ts";
 import type { ProviderHealth } from "./health.ts";
+import type { JobJournal, ProcessRegistry } from "./registry.ts";
+import { finalReportMarkdown, type ReportFinding } from "./report.ts";
+import type { ProcessHooks } from "./runner.ts";
+import { increasedTimeoutMs, stepTimeoutMs } from "./timeouts.ts";
 import {
   assignRoles,
   PROVIDER_NAME,
@@ -47,8 +71,6 @@ import type { TeamJobDefinition } from "./job.ts";
 import {
   BUILD_SCHEMA,
   INSPECTION_SCHEMA,
-  PLAN_SCHEMA,
-  REVIEW_SCHEMA,
   SPEC_SCHEMA,
   buildPrompt,
   codeReviewPrompt,
@@ -58,12 +80,17 @@ import {
   normalisePrompt,
   planPrompt,
   planReviewPrompt,
+  planSchema,
+  reviewSchema,
+  teamMessageOf,
   withOwnerNotes,
   type BuildReport,
   type Finding,
   type Inspection,
   type Plan,
   type PlannedNode,
+  type PromptContext,
+  type RefFinding,
   type Review,
   type TeamSpec,
 } from "./prompts.ts";
@@ -77,12 +104,38 @@ import {
   type TeamRole,
 } from "./types.ts";
 import {
-  modelObserved,
+  ackControlPayload,
+  artifactPayload,
+  changePayload,
+  decisionPayload,
+  findingPayload,
+  findingStatusPayload,
+  messagePayload,
+  notesConsumedPayload,
+  OPS_0_10,
+  parseChoiceId,
+  parseChoices,
+  parseControl,
+  parseDecisionNumber,
+  parseFindingId,
+  parseMessageId,
   parseOwnerNotes,
+  parseRunId,
   READ_OWNER_NOTES_OP,
+  readChoicesPayload,
+  requestChoicePayload,
+  runActivityPayload,
+  runFinishedPayload,
+  runStartedPayload,
+  isInterruptedRefusal,
   setFinalPayload,
-  stopRequested,
+  threadlinkDecisionTitle,
+  type FindingLifecycle,
+  type JobControl,
   type OwnerNote,
+  type RunEndStatus,
+  type RunFailureCategory,
+  type WireRef,
 } from "./wire.ts";
 import type { WorktreeManager, WorktreeRecord } from "./worktrees.ts";
 
@@ -105,6 +158,10 @@ export type AgentRunRequest = {
   resumeThreadId?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Real activity signals (activity.ts). Runners without an event stream never call it. */
+  onActivity?: (activity: RunActivity) => void;
+  /** The process this run started (process registry). */
+  onProcess?: ProcessHooks;
 };
 
 export type AgentRunResult = {
@@ -116,6 +173,8 @@ export type AgentRunResult = {
   observedModel: string | null;
   observedEffort: string | null;
   accessVerified: boolean;
+  /** Set by the runner only after its own observed-vs-requested model check passed. */
+  modelVerified?: boolean;
   permissionDenials: number;
   error?: string;
   failure?:
@@ -125,6 +184,7 @@ export type AgentRunResult = {
     | "not_authenticated"
     | "not_installed"
     | "timeout"
+    | "cancelled"
     | "provider_error";
 };
 
@@ -210,7 +270,9 @@ export type TeamOp =
   | "record_usage"
   | "set_final"
   /** Collects the owner's undelivered notes; the server marks them delivered. */
-  | typeof READ_OWNER_NOTES_OP;
+  | typeof READ_OWNER_NOTES_OP
+  // 0.10 (wire.ts OPS_0_10)
+  | (typeof OPS_0_10)[keyof typeof OPS_0_10];
 
 /**
  * Provider health, as the Runtime last observed it with a real authenticated
@@ -237,14 +299,42 @@ export type OrchestratorDeps = {
   route(request: RouteRequest): RouteResult;
   graph: GraphPort;
   worktrees: WorktreeManager;
-  verify(cwd: string, commands: string[]): Promise<VerifyResult[]>;
+  verify(
+    cwd: string,
+    commands: string[],
+    options?: { timeoutMs?: number },
+  ): Promise<VerifyResult[]>;
   sink: StateSink;
   /** Called whenever the concise state changes, for the desktop app's feed. */
   onProgress?(progress: TeamProgress): void;
   /** A provider ran out of included usage; remembered so the next job does not retry it. */
   onExhausted?(provider: AgentProvider, model: string): void;
   signal?: AbortSignal;
+  /** Overrides every step's timeout (tests). Otherwise: per step kind, timeouts.ts. */
   timeoutMs?: number;
+  /** The provider capability registry (capabilities.ts). Injectable for tests. */
+  capabilities?: (provider: AgentProvider) => ProviderCapabilities | null;
+  /** Crash-recovery journal for this job (registry.ts). */
+  journal?: JobJournal;
+  /** The processes this Runtime started (registry.ts); stop_now kills only these. */
+  processes?: ProcessRegistry;
+  /** Clock for waiting on the owner (choices, pause). */
+  clock?: { now(): number; sleep(ms: number, signal: AbortSignal): Promise<void> };
+  /** How often to ask whether the owner decided (default 15 s). */
+  choicePollMs?: number;
+  /** How long to wait for a decision before the job ends NEEDS_FIX (default 24 h). */
+  choiceWaitMs?: number;
+  /** How often a running step asks for the owner's control (default 15 s; 0 = never). */
+  controlPollMs?: number;
+  /** Activity rate limiting (tests). */
+  activityClock?: ActivityClock;
+  activityMinIntervalMs?: number;
+  /**
+   * Which start of this job this is on this computer (crash recovery). Worktree
+   * branches and run keys carry it, so a restarted job never collides with, or
+   * is mistaken for, the runs of the one before.
+   */
+  attempt?: number;
 };
 
 export type TeamProgress = {
@@ -313,6 +403,18 @@ export type Evidence = {
 // Internal state
 // ---------------------------------------------------------------------------
 
+/** A finding this job raised, with ThreadLink's reference for it and where it stands. */
+type TrackedFinding = {
+  /** "F1", "F2", ...: how agents refer to it. */
+  ref: string;
+  /** The server's id, when it gave one. */
+  id: string | null;
+  finding: Finding;
+  status: FindingLifecycle;
+  unit: string | null;
+  raisedBy: AgentProvider | "threadlink";
+};
+
 type NodeState = {
   plan: PlannedNode;
   owner: AgentProvider;
@@ -320,12 +422,12 @@ type NodeState = {
   reviewer: AgentProvider | null;
   status: NodeStatus;
   worktree: WorktreeRecord | null;
-  threadId: string | null;
   failures: number;
   authoredBy: Set<AgentProvider>;
   reviewedBy: Set<AgentProvider>;
   commits: string[];
-  openFindings: (Finding & { id: string | null })[];
+  /** Substantive findings still standing against this unit (open, fixed-but-unconfirmed, disputed). */
+  openFindings: TrackedFinding[];
   /**
    * The owner answered findings by changing nothing: it disagrees with them.
    * If the budget runs out that way, the two agents disagree, and that is a
@@ -333,6 +435,70 @@ type NodeState = {
    */
   disputed: boolean;
 };
+
+/** One agent run as the orchestrator knows it once it has finished. */
+type CallResult = AgentRunResult & {
+  structured: unknown;
+  /** Who actually ran it (the owner may have chosen another agent after a failure). */
+  provider: AgentProvider;
+  role: TeamRole;
+  participantKey: string;
+  /** The server's run id, when it gave one. */
+  runId: string | null;
+};
+
+type CallOptions = {
+  step: StepKind;
+  /** The unit of work, when the step is about one. */
+  unit: string | null;
+  round: number;
+  cwd: string;
+  /** The worktree the run happens in, so its effect can be checked. */
+  worktree?: WorktreeRecord;
+  /** Built per provider: after a failure the owner may choose another agent. */
+  prompt: (provider: AgentProvider) => string;
+  access: RunAccess;
+  outputSchema: object;
+  /**
+   * Continuity (§2): runs sharing a session key may resume the same
+   * participant's native session. Absent: always a fresh session.
+   */
+  session?: string;
+  /** Agents that may not take this step if the owner asks for another one. */
+  exclude?: AgentProvider[];
+  route: {
+    complexity: PlannedNode["complexity"];
+    risk: PlannedNode["risk"];
+    previousFailures?: number;
+    disputedFindings?: number;
+  };
+};
+
+/** A logged chat message, for scoped context. */
+type LoggedMessage = {
+  id: string | null;
+  from: AgentProvider;
+  role: TeamRole;
+  type: string;
+  body: string;
+  unit: string | null;
+};
+
+/**
+ * The server refused to start a write step because an earlier attempt of
+ * this job ran one and the owner has not answered yet (§6). The executor
+ * turns it into the owner's `interrupted` choice; it is never a verdict.
+ */
+export class InterruptedRefusal extends Error {
+  readonly step: StepKind;
+  readonly provider: AgentProvider;
+  constructor(step: StepKind, provider: AgentProvider) {
+    super("The server is waiting for the owner to resume an interrupted job.");
+    this.name = "InterruptedRefusal";
+    this.step = step;
+    this.provider = provider;
+  }
+}
 
 /** A run that must stop the whole job, with the verdict it earns. */
 class Stop extends Error {
@@ -357,7 +523,7 @@ class Stop extends Error {
 
 /** Why a provider that is not ready stops a job before any agent runs. */
 function healthStop(provider: AgentProvider, health: ProviderHealth): Stop {
-  const name = PROVIDER_NAME[provider];
+  const name = providerName(provider);
   switch (health) {
     case "needs_sign_in":
       return new Stop(
@@ -397,9 +563,61 @@ function healthStop(provider: AgentProvider, health: ProviderHealth): Stop {
   }
 }
 
+/** A provider's name for people: the registry's display name, never a guess. */
+function providerName(provider: string): string {
+  return (
+    (PROVIDER_NAME as Record<string, string>)[provider] ??
+    capabilitiesOf(provider)?.displayName ??
+    provider
+  );
+}
+
 const NO_RISK = { security: false, database: false, architecture: false, deployment: false };
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+const REVIEW_STEPS: ReadonlySet<StepKind> = new Set([
+  "plan_review",
+  "review",
+  "security_review",
+  "inspection",
+]);
+
+const MINUTE = 60_000;
+
+const realClock = {
+  now: () => Date.now(),
+  sleep: (ms: number, signal: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve();
+      const t = setTimeout(resolve, ms);
+      signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(t);
+          resolve();
+        },
+        { once: true },
+      );
+    }),
+};
+
+/** The run's end state and failure category, from the runner's fixed failure codes. */
+function runEnd(result: AgentRunResult): { status: RunEndStatus; failure: RunFailureCategory } {
+  switch (result.failure) {
+    case "timeout":
+      return { status: "timed_out", failure: "timeout" };
+    case "cancelled":
+      return { status: "cancelled", failure: "cancelled" };
+    case "quota_exhausted":
+    case "not_authenticated":
+    case "model_mismatch":
+    case "access_mismatch":
+      return { status: "failed", failure: result.failure };
+    default:
+      return { status: "failed", failure: "provider_error" };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Orchestrator
@@ -433,14 +651,23 @@ export class TeamOrchestrator {
   /** Note ids already queued, so a note the server sends twice is delivered once. */
   readonly #seenNotes = new Set<string>();
   #notesUnavailable = false;
-  /** The owner asked the job to stop: the current round finishes, nothing new starts. */
+  /** Nothing new starts: the current round finishes, then the job ends (cancel_queued, 0.9 stop). */
   #stopRequested = false;
+  /** Why the owner's stop ended the job, in fixed words. */
+  #stopWhy = "";
+  /** stop_now: every running agent of this job was killed. */
+  #stopNow = false;
+  /** The owner's current control, as the server last reported it. */
+  #control: JobControl | null = null;
+  #controlAt: string | null = null;
   #planningRoundsDone = 0;
   #buildRoundsDone = 0;
   /** Who takes which role (roles.ts), decided before any agent runs. */
   #roles: RoleAssignment | null = null;
   /** The agents of this job: the chat's participants, or the room's agents. */
   #participants: AgentProvider[] = [];
+  /** Preflight health, for choosing whom the owner may pick instead. */
+  #health = new Map<AgentProvider, ProviderHealth>();
   /** Solo and pair: who builds, and who reviews (null in solo). Set from #roles. */
   #builderHolder: AgentProvider | null = null;
   #reviewer: AgentProvider | null = null;
@@ -450,6 +677,24 @@ export class TeamOrchestrator {
   /** Set only after a plan was persisted with its approvals. */
   #planApproved = false;
   #finalReason: VerdictReason | null = null;
+  /** Every finding this job raised, in order (report, lifecycle). */
+  readonly #findings: TrackedFinding[] = [];
+  /** Messages posted, for scoped context. */
+  readonly #messages: LoggedMessage[] = [];
+  /** Decisions so far, in ThreadLink's fixed words, for scoped context. */
+  readonly #decisionLog: string[] = [];
+  /** Native sessions per participant and session key (continuity, §2). */
+  readonly #sessions = new Map<
+    string,
+    { sessionId: string; runKey: string; chatId: string | null }
+  >();
+  /** Run keys used, so every run has its own. */
+  readonly #runKeys = new Set<string>();
+  /** read_choices is not available on this server: no control polling during runs. */
+  #choicesUnavailable = false;
+  #lastControlPoll = 0;
+  /** Who did the final inspection, for the report. */
+  #inspector: AgentProvider | null = null;
 
   constructor(job: TeamJobDefinition, deps: OrchestratorDeps) {
     this.#job = job;
@@ -470,6 +715,7 @@ export class TeamOrchestrator {
       // ready, checked with a real call if the last check is stale. A provider
       // that is not ready ends the job here; nobody else takes its place.
       const health = await this.#preflight(needs.required, needs.candidates);
+      this.#health = health;
       this.#roles = this.#assignRoles(needs.candidates, health);
       if (this.#mode !== "team") {
         this.#builderHolder = this.#roles.builders[0]!;
@@ -496,7 +742,7 @@ export class TeamOrchestrator {
         },
         false,
       );
-      set = await worktrees.begin(workspace, shortJob(this.#job.jobId));
+      set = await worktrees.begin(workspace, this.#worktreeJob());
       this.#evidence.base = set.base;
       this.#evidence.baseExcludedUncommittedChanges = set.dirty;
       if (set.dirty) {
@@ -510,6 +756,8 @@ export class TeamOrchestrator {
       await this.#finish(outcome.verdict, outcome.summary, outcome.reason);
       return outcome;
     } catch (error) {
+      // Not a verdict: the executor asks the owner (resume / stop).
+      if (error instanceof InterruptedRefusal) throw error;
       this.#noteUndelivered();
       const verdict = error instanceof Stop ? error.verdict : "BLOCKED";
       const reason: VerdictReason = error instanceof Stop ? error.reason : "unexpected_error";
@@ -544,7 +792,7 @@ export class TeamOrchestrator {
       if (!room.has(p)) {
         throw new Stop(
           "NEEDS_USER_DECISION",
-          `${PROVIDER_NAME[p]} is part of this chat but not of its project, so it cannot work here. Add it to the project, or remove it from the chat.`,
+          `${providerName(p)} is part of this chat but not of its project, so it cannot work here. Add it to the project, or remove it from the chat.`,
           "agent_not_in_project",
           p,
         );
@@ -566,7 +814,7 @@ export class TeamOrchestrator {
       throw new Stop(
         "NEEDS_USER_DECISION",
         missing.length
-          ? `${missing.map((p) => PROVIDER_NAME[p]).join(" and ")} ${missing.length > 1 ? "are" : "is"} not part of this room, so the work cannot be cross-reviewed. Add another agent, or run this as a single-agent task.`
+          ? `${missing.map((p) => providerName(p)).join(" and ")} ${missing.length > 1 ? "are" : "is"} not part of this room, so the work cannot be cross-reviewed. Add another agent, or run this as a single-agent task.`
           : "Team needs two different agents, so that nobody reviews their own work. Add another agent, or run this as a single-agent task.",
         "agent_not_in_project",
       );
@@ -598,8 +846,8 @@ export class TeamOrchestrator {
       throw new Stop(
         "NEEDS_USER_DECISION",
         reviewer === builder
-          ? `${PROVIDER_NAME[reviewer]} cannot review its own work. Choose another reviewer.`
-          : `${PROVIDER_NAME[reviewer]} is not part of this room, so it cannot review. Add it to the room, or run this as Solo.`,
+          ? `${providerName(reviewer)} cannot review its own work. Choose another reviewer.`
+          : `${providerName(reviewer)} is not part of this room, so it cannot review. Add it to the room, or run this as Solo.`,
         "agent_not_in_project",
         reviewer,
       );
@@ -607,11 +855,11 @@ export class TeamOrchestrator {
     const others = participants.filter((p) => p !== builder);
     if (others.length === 0 || participants.length < 2) {
       const missing = AGENT_PROVIDERS.filter((p) => !room.has(p));
-      const whose = builder ? `${PROVIDER_NAME[builder]}'s` : "the";
+      const whose = builder ? `${providerName(builder)}'s` : "the";
       throw new Stop(
         "NEEDS_USER_DECISION",
         missing.length
-          ? `${missing.map((p) => PROVIDER_NAME[p]).join(" or ")} is not part of this room, so it cannot review ${whose} work. Add it to the room, or run this as Solo.`
+          ? `${missing.map((p) => providerName(p)).join(" or ")} is not part of this room, so it cannot review ${whose} work. Add it to the room, or run this as Solo.`
           : `There is no other agent in this chat to review ${whose} work. Add one, or run this as Solo.`,
         "agent_not_in_project",
       );
@@ -703,7 +951,7 @@ export class TeamOrchestrator {
     if (!reviewer) {
       throw new Stop(
         "NEEDS_USER_DECISION",
-        `There is no other agent to review ${PROVIDER_NAME[author]}'s work.`,
+        `There is no other agent to review ${providerName(author)}'s work.`,
         "agent_not_in_project",
       );
     }
@@ -713,6 +961,16 @@ export class TeamOrchestrator {
   #roleOf(role: "coordinator" | "planner" | "integrator"): AgentProvider {
     if (!this.#roles) throw new Error("Roles were used before they were assigned.");
     return this.#roles[role];
+  }
+
+  #caps(provider: AgentProvider): ProviderCapabilities | null {
+    return (this.#d.capabilities ?? capabilitiesOf)(provider);
+  }
+
+  /** Worktree names for this start of the job: a restarted job never reuses a branch. */
+  #worktreeJob(): string {
+    const attempt = this.#d.attempt ?? 1;
+    return attempt > 1 ? `${shortJob(this.#job.jobId)}-r${attempt}` : shortJob(this.#job.jobId);
   }
 
   // -------------------------------------------------------------------------
@@ -754,8 +1012,8 @@ export class TeamOrchestrator {
     const plan: Plan = {
       summary:
         reviewer === null
-          ? `One unit of work, built by ${PROVIDER_NAME[builder]}.`
-          : `One unit of work, built by ${PROVIDER_NAME[builder]} and reviewed by ${PROVIDER_NAME[reviewer]}.`,
+          ? `One unit of work, built by ${providerName(builder)}.`
+          : `One unit of work, built by ${providerName(builder)} and reviewed by ${providerName(reviewer)}.`,
       nodes: [
         {
           key: "work",
@@ -766,8 +1024,8 @@ export class TeamOrchestrator {
           suggestedOwner: builder,
           rationale:
             reviewer === null
-              ? `The owner asked ${PROVIDER_NAME[builder]} to do this on its own.`
-              : `The owner asked ${PROVIDER_NAME[builder]} to build this and ${PROVIDER_NAME[reviewer]} to review it.`,
+              ? `The owner asked ${providerName(builder)} to do this on its own.`
+              : `The owner asked ${providerName(builder)} to build this and ${providerName(reviewer)} to review it.`,
           complexity: "medium",
           risk: { ...NO_RISK },
         },
@@ -780,15 +1038,8 @@ export class TeamOrchestrator {
     // pair, approves the work itself -- and that approval is what gates a PASS.
     await this.#write("set_plan", { plan: redactDeep(plan), planHash, approvedBy: [builder] });
     this.#planApproved = true;
-    await this.#decision(
-      "Plan recorded",
-      reviewer === null
-        ? `Solo: ${PROVIDER_NAME[builder]} builds the request as one unit of work. There is no reviewer; ThreadLink runs the tests.`
-        : `Builder + Reviewer: ${PROVIDER_NAME[builder]} builds the request as one unit of work and ${PROVIDER_NAME[reviewer]} reviews it.`,
-      [builder],
-      { planHash, mode: this.#mode },
-      false,
-    );
+    // No "plan" decision in the chat: a one-unit job has nothing to decide.
+    // Its roles are already the "Roles chosen" decision.
     await this.#checkStop();
 
     await this.#assign(plan, [builder]);
@@ -802,12 +1053,12 @@ export class TeamOrchestrator {
     const unit = [...this.#nodes.values()][0]!;
     const parts: string[] = [];
     if (!unit.commits.length) {
-      parts.push(`${PROVIDER_NAME[builder]} finished without changing any files.`);
-      this.#evidence.uncertainty.push(`${PROVIDER_NAME[builder]} made no changes.`);
+      parts.push(`${providerName(builder)} finished without changing any files.`);
+      this.#evidence.uncertainty.push(`${providerName(builder)} made no changes.`);
     } else if (reviewer === null) {
-      parts.push(`Built by ${PROVIDER_NAME[builder]}. Nobody else reviewed it (Solo).`);
+      parts.push(`Built by ${providerName(builder)}. Nobody else reviewed it (Solo).`);
     } else {
-      parts.push(`Built by ${PROVIDER_NAME[builder]} and approved by ${PROVIDER_NAME[reviewer]}.`);
+      parts.push(`Built by ${providerName(builder)} and approved by ${providerName(reviewer)}.`);
     }
     if (this.#job.verifyCommands.length) {
       parts.push("ThreadLink ran your tests on the result and they passed.");
@@ -849,15 +1100,16 @@ export class TeamOrchestrator {
   }
 
   // -------------------------------------------------------------------------
-  // Owner notes and stop requests
+  // Owner notes, controls and stop requests
   // -------------------------------------------------------------------------
 
   /**
    * Collects notes the owner sent since the last look and queues each for the
-   * agent(s) it is addressed to. The server marks them delivered when read, so
-   * they are held here until that agent's next turn. A failure to collect is
-   * not fatal -- the owner is told their notes may not have arrived -- because
-   * a stop request is also seen on every other write.
+   * agent(s) it is addressed to. The server marks them queued when read and
+   * seen when a run consumes them (§5), so they are held here until that
+   * agent's next turn. A failure to collect is not fatal -- the owner is told
+   * their notes may not have arrived -- because controls are also seen on
+   * every other write.
    */
   async #collectNotes(): Promise<void> {
     if (this.#notesUnavailable) return;
@@ -871,6 +1123,10 @@ export class TeamOrchestrator {
       );
       return;
     }
+    this.#queueNotes(answer);
+  }
+
+  #queueNotes(answer: unknown): void {
     const agents: AgentProvider[] =
       this.#mode === "team"
         ? this.#participants
@@ -898,25 +1154,135 @@ export class TeamOrchestrator {
       if (!notes.length) continue;
       const many = notes.length > 1;
       this.#evidence.uncertainty.push(
-        `${notes.length} note${many ? "s" : ""} you sent arrived after ${PROVIDER_NAME[provider]} had finished its part, so it did not see ${many ? "them" : "it"}.`,
+        `${notes.length} note${many ? "s" : ""} you sent arrived after ${providerName(provider)} had finished its part, so it did not see ${many ? "them" : "it"}.`,
       );
     }
     this.#notes.clear();
   }
 
+  /**
+   * The owner's control (§5), from any write answer. stop_now takes effect at
+   * once: every provider process this job started is killed (only those).
+   * The others are honoured at their boundary.
+   */
+  #applyControl(answer: unknown): void {
+    const parsed = parseControl(answer);
+    if (!parsed) return;
+    if (parsed.control === this.#control && parsed.requestedAt === this.#controlAt) return;
+    this.#control = parsed.control;
+    this.#controlAt = parsed.requestedAt;
+    switch (parsed.control) {
+      case "stop_now":
+        if (this.#stopNow) return;
+        this.#stopNow = true;
+        this.#stopWhy = "Stopped by you. The agents that were working were stopped.";
+        this.#abort.abort();
+        void this.#d.processes
+          ?.killJob(this.#job.jobId)
+          .catch(() => 0)
+          .then(() => this.#ackControl("stop_now"));
+        if (!this.#d.processes) void this.#ackControl("stop_now");
+        return;
+      case "cancel_queued":
+        if (!this.#stopRequested) {
+          this.#stopRequested = true;
+          this.#stopWhy = "";
+          void this.#ackControl("cancel_queued");
+        }
+        return;
+      case "resume":
+        this.#control = null;
+        void this.#ackControl("resume");
+        return;
+      default:
+        return;
+    }
+  }
+
   /** At a round boundary: stop here if the owner asked. */
   async #checkStop(): Promise<void> {
     await this.#collectNotes();
+    if (this.#stopNow) throw this.#stopped();
     if (this.#stopRequested) throw this.#stopped();
   }
 
   #stopped(): Stop {
+    if (this.#stopWhy) return new Stop("NEEDS_USER_DECISION", this.#stopWhy, "stopped_by_owner");
     const round = this.#buildRoundsDone || this.#planningRoundsDone;
     return new Stop(
       "NEEDS_USER_DECISION",
       `Stopped by you after round ${round}.`,
       "stopped_by_owner",
     );
+  }
+
+  /**
+   * After every agent step: stop_now ends the job; stop_after_review ends it
+   * once a review has finished (the review's findings are recorded first:
+   * nothing new starts); pause_after_step waits here for resume.
+   */
+  async #afterStep(step: StepKind): Promise<void> {
+    if (this.#stopNow) throw this.#stopped();
+    if (this.#control === "stop_after_review" && REVIEW_STEPS.has(step) && !this.#stopRequested) {
+      this.#stopRequested = true;
+      this.#stopWhy = "Stopped by you after the review.";
+      await this.#ackControl("stop_after_review");
+    }
+    if (this.#control === "pause_after_step") await this.#waitWhilePaused();
+  }
+
+  /** Paused by the owner: nothing new starts until they resume or stop. Bounded like a choice. */
+  async #waitWhilePaused(): Promise<void> {
+    const clock = this.#d.clock ?? realClock;
+    const deadline = clock.now() + (this.#d.choiceWaitMs ?? 24 * 60 * MINUTE);
+    const phase = this.#phase;
+    await this.#ackControl("pause_after_step");
+    await this.#write("set_status", { status: "paused", line: "Paused by you" }).catch(
+      () => undefined,
+    );
+    this.#progress("Paused by you");
+    while (this.#control === "pause_after_step") {
+      if (this.#stopNow) throw this.#stopped();
+      if (clock.now() >= deadline) {
+        throw new Stop(
+          "NEEDS_USER_DECISION",
+          "The job was paused for 24 hours without being resumed, so it ended here.",
+          "stopped_by_owner",
+        );
+      }
+      await clock.sleep(this.#d.choicePollMs ?? 15_000, this.#abort.signal);
+      if (this.#abort.signal.aborted && !this.#stopNow) throw this.#stopped();
+      await this.#pollControl(true);
+    }
+    if (this.#stopNow) throw this.#stopped();
+    await this.#setStatus(phase, "Resumed");
+  }
+
+  /** Tells the server a control was honoured at its boundary (best effort). */
+  async #ackControl(control: JobControl): Promise<void> {
+    try {
+      await this.#d.sink(OPS_0_10.ackControl, ackControlPayload(control));
+    } catch {
+      /* the control still took effect here; the server just keeps showing it */
+    }
+  }
+
+  /**
+   * Asks the server for the job's state (through read_choices, which carries
+   * it), at most once per controlPollMs unless `force`. A server without
+   * read_choices is remembered and not asked again.
+   */
+  async #pollControl(force = false): Promise<void> {
+    if (this.#choicesUnavailable) return;
+    const clock = this.#d.clock ?? realClock;
+    const every = this.#d.controlPollMs ?? 15_000;
+    if (!force && (every <= 0 || clock.now() - this.#lastControlPoll < every)) return;
+    this.#lastControlPoll = clock.now();
+    try {
+      await this.#write(OPS_0_10.readChoices, readChoicesPayload([]));
+    } catch {
+      this.#choicesUnavailable = true;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -927,21 +1293,25 @@ export class TeamOrchestrator {
     const coordinator = this.#roleOf("coordinator");
     this.#doing.set(coordinator, "Turning the request into a specification");
     const result = await this.#call(coordinator, "coordinator", {
+      step: "normalise",
+      unit: null,
+      round: 0,
       cwd: workspace.path,
       worktree: workspace,
-      prompt: normalisePrompt(this.#job.goal, this.#job.spec),
+      prompt: () => normalisePrompt(this.#job.goal, this.#job.spec),
       access: "read-only",
       outputSchema: SPEC_SCHEMA,
       route: { complexity: "low", risk: NO_RISK },
     });
-    const produced = result.structured as TeamSpec;
+    const restated = stripMessage(result.structured as TeamSpec & { teamMessage?: string });
     // The owner's own words win over any restatement of them.
-    const spec: TeamSpec = { ...produced, goal: this.#job.goal };
+    const spec: TeamSpec = { ...restated, goal: this.#job.goal };
     for (const [field, value] of Object.entries(this.#job.spec)) {
       if (Array.isArray(value) && value.length) (spec as Record<string, unknown>)[field] = value;
     }
     await this.#write("set_spec", { spec: redactDeep(spec) });
     this.#specDone = true;
+    await this.#message(result, this.#roleOf("planner"), "proposal", 0);
     this.#doing.delete(coordinator);
     return spec;
   }
@@ -954,22 +1324,45 @@ export class TeamOrchestrator {
     await this.#setStatus("planning", "Planning the work");
     const planner = this.#roleOf("planner");
     const reviewer = this.#reviewerFor(planner);
+    const builders = this.#roles?.builders ?? this.#participants;
     let previous: { plan: Plan; review: Review } | undefined;
+    /** The last review message, which a revision answers. */
+    let reviewMessage: LoggedMessage | null = null;
+    let rounds = this.#job.budgets.maxPlanningRounds;
 
-    for (let round = 1; round <= this.#job.budgets.maxPlanningRounds; round++) {
+    for (let round = 1; round <= rounds; round++) {
       if (round > 1) await this.#checkStop();
       await this.#write("open_round", { kind: "planning", round });
       this.#doing.set(planner, "Proposing a plan");
       const proposal = await this.#call(planner, "planner", {
+        step: "plan",
+        unit: null,
+        round,
         cwd: workspace.path,
         worktree: workspace,
-        prompt: planPrompt(spec, PROVIDER_NAME[planner], previous),
+        prompt: (p) =>
+          planPrompt(
+            spec,
+            providerName(p),
+            previous,
+            builders.map((id) => ({ id, name: providerName(id) })),
+            this.#context(reviewMessage ? [reviewMessage] : []),
+          ),
         access: "read-only",
-        outputSchema: PLAN_SCHEMA,
+        outputSchema: planSchema(builders),
+        // Planning revisions continue the planner's own session (§2).
+        session: "plan",
+        exclude: [reviewer],
         route: { complexity: "high", risk: { ...NO_RISK, architecture: true } },
       });
-      const plan = normalisePlan(proposal.structured as Plan);
-      await this.#message(planner, reviewer, "proposal", round, plan.summary, proposal);
+      const plan = normalisePlan(stripMessage(proposal.structured as Plan));
+      const proposalMessage = await this.#message(
+        proposal,
+        reviewer,
+        round === 1 ? "proposal" : "response",
+        round,
+        { replyTo: reviewMessage?.id ? { kind: "message", id: reviewMessage.id } : null },
+      );
 
       // A plan that is not a valid graph is a blocking problem the planner has
       // to fix, not something to repair quietly on its behalf.
@@ -983,7 +1376,7 @@ export class TeamOrchestrator {
           file: null,
           line: null,
         };
-        await this.#finding(null, round, "planning", finding, "threadlink");
+        await this.#finding(null, round, "planning", finding, "threadlink", null);
         this.#planningRoundsDone = round;
         previous = {
           plan,
@@ -994,29 +1387,37 @@ export class TeamOrchestrator {
             ownershipObjections: [],
           },
         };
+        reviewMessage = null;
         continue;
       }
 
       this.#doing.set(reviewer, "Reviewing the plan");
       const reviewed = await this.#call(reviewer, "reviewer", {
+        step: "plan_review",
+        unit: null,
+        round,
         cwd: workspace.path,
         worktree: workspace,
-        prompt: planReviewPrompt(spec, plan, PROVIDER_NAME[reviewer]),
+        prompt: (p) =>
+          planReviewPrompt(
+            spec,
+            plan,
+            providerName(p),
+            this.#context(proposalMessage ? [proposalMessage] : []),
+          ),
         access: "read-only",
-        outputSchema: REVIEW_SCHEMA,
+        outputSchema: reviewSchema(builders),
+        exclude: [planner],
         route: { complexity: "high", risk: { ...NO_RISK, architecture: true } },
       });
       const review = reviewed.structured as Review;
-      await this.#message(reviewer, planner, "review", round, review.summary, reviewed);
-      for (const f of review.findings) await this.#finding(null, round, "planning", f, reviewer);
-      for (const o of review.ownershipObjections) {
-        await this.#message(
-          reviewer,
-          planner,
-          "proposal",
-          round,
-          `${PROVIDER_NAME[o.proposedOwner]} should own ${o.nodeKey}: ${o.reason}`,
-          reviewed,
+      reviewMessage = await this.#message(reviewed, planner, "review", round, {
+        replyTo: proposalMessage?.id ? { kind: "message", id: proposalMessage.id } : null,
+      });
+      const raised: TrackedFinding[] = [];
+      for (const f of review.findings ?? []) {
+        raised.push(
+          await this.#finding(null, round, "planning", f, reviewed.provider, reviewed.runId),
         );
       }
       this.#planningRoundsDone = round;
@@ -1028,14 +1429,25 @@ export class TeamOrchestrator {
         await this.#write("set_plan", {
           plan: redactDeep(plan),
           planHash,
-          approvedBy: [planner, reviewer],
+          approvedBy: [planner, reviewed.provider],
           round,
         });
         this.#planApproved = true;
+        // Objections from earlier rounds were answered by the plan the reviewer approved.
+        for (const f of this.#findings) {
+          if (
+            f.unit === null &&
+            f.status === "open" &&
+            !raised.includes(f) &&
+            isSubstantive(f.finding)
+          ) {
+            await this.#setFindingStatus(f, "resolved", reviewed.runId, round);
+          }
+        }
         await this.#decision(
           "Plan agreed",
           `Agreed after ${round} planning round${round === 1 ? "" : "s"}.`,
-          [planner, reviewer],
+          [planner, reviewed.provider],
           { planHash, units: plan.nodes.map((n) => n.key) },
           false,
         );
@@ -1044,11 +1456,15 @@ export class TeamOrchestrator {
       if (verdict === "BLOCKED") {
         throw new Stop(
           "BLOCKED",
-          `${PROVIDER_NAME[reviewer]} judged the plan cannot proceed: ${redactText(review.summary, 400)}`,
+          `${providerName(reviewed.provider)} judged the plan cannot proceed: ${redactText(review.summary, 400)}`,
           "plan_blocked",
         );
       }
-      previous = { plan, review };
+      previous = { plan, review: stripMessage(review) };
+      // Budget spent with objections open: the owner decides (§4), not the models.
+      if (round === rounds && (await this.#planDisagreement(planner, reviewer, rounds))) {
+        rounds++;
+      }
     }
 
     // Still disputed after the budget: that is for the owner, not the models.
@@ -1056,14 +1472,38 @@ export class TeamOrchestrator {
       "Plan not agreed",
       "The planning budget ran out with substantive objections still open.",
       [],
-      { rounds: this.#job.budgets.maxPlanningRounds },
+      { rounds },
       true,
     );
     throw new Stop(
       "NEEDS_USER_DECISION",
-      `${PROVIDER_NAME[planner]} and ${PROVIDER_NAME[reviewer]} did not agree a plan within ${this.#job.budgets.maxPlanningRounds} rounds. The open objections are in the team log.`,
+      `${providerName(planner)} and ${providerName(reviewer)} did not agree a plan within ${rounds} rounds. The open objections are in the team log.`,
       "agents_disagree",
     );
+  }
+
+  /** A plan still disputed when the budget runs out: the owner may allow one more round. */
+  async #planDisagreement(
+    planner: AgentProvider,
+    reviewer: AgentProvider,
+    rounds: number,
+  ): Promise<boolean> {
+    const choice = await this.#ask(
+      "plan_disagreement",
+      { planner, reviewer, rounds },
+      ["extra_round", "stop"],
+      `plan:disagreement:${rounds}`,
+    );
+    if (choice === null || choice === "stop") return false;
+    if (choice === "expired") {
+      throw new Stop(
+        "NEEDS_USER_DECISION",
+        `${providerName(planner)} and ${providerName(reviewer)} did not agree a plan, and no decision was made within 24 hours.`,
+        "agents_disagree",
+      );
+    }
+    await this.#setStatus("planning", "Planning the work");
+    return choice === "extra_round";
   }
 
   #graphError(plan: Plan): string | null {
@@ -1097,8 +1537,8 @@ export class TeamOrchestrator {
           );
         }
         await this.#decision(
-          `${node.title} given to ${PROVIDER_NAME[given]}`,
-          `The plan suggested ${PROVIDER_NAME[owner] ?? "an agent"}, which is not building in this job.`,
+          "Unit reassigned",
+          `${node.title} was given to ${providerName(given)}. The plan suggested ${providerName(owner) || "an agent"}, which is not building in this job.`,
           [],
           { unit: node.key, suggested: owner, owner: given },
           false,
@@ -1114,7 +1554,6 @@ export class TeamOrchestrator {
         reviewer: this.#mode === "solo" ? null : this.#reviewerFor(owner),
         status: "pending",
         worktree: null,
-        threadId: null,
         failures: 0,
         authoredBy: new Set([owner]),
         reviewedBy: new Set(),
@@ -1139,20 +1578,23 @@ export class TeamOrchestrator {
     for (const s of this.#d.graph.serialisations(plan.nodes.map(toGraphNode))) {
       this.#deps.get(s.after)?.push(s.before);
       await this.#decision(
-        `Run ${s.after} after ${s.before}`,
-        s.reason,
+        "Units run one after the other",
+        `${s.after} runs after ${s.before}: ${s.reason}`,
         [],
         { before: s.before, after: s.after },
         false,
       );
     }
-    await this.#decision(
-      "Ownership committed",
-      plan.nodes.map((n) => `${n.key}: ${PROVIDER_NAME[n.suggestedOwner]}`).join("; "),
-      committedBy,
-      { owners: Object.fromEntries(plan.nodes.map((n) => [n.key, n.suggestedOwner])) },
-      false,
-    );
+    // Solo and pair have one unit: "work split into units" would be noise.
+    if (this.#mode === "team") {
+      await this.#decision(
+        "Ownership committed",
+        plan.nodes.map((n) => `${n.key}: ${providerName(n.suggestedOwner)}`).join("; "),
+        committedBy,
+        { owners: Object.fromEntries(plan.nodes.map((n) => [n.key, n.suggestedOwner])) },
+        false,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1200,7 +1642,7 @@ export class TeamOrchestrator {
       }
     }
 
-    if (this.#stopRequested) throw this.#stopped();
+    if (this.#stopRequested || this.#stopNow) throw this.#stopped();
     await this.#checkStop();
 
     const failed = [...this.#nodes.values()].filter((n) => n.status === "failed");
@@ -1208,12 +1650,12 @@ export class TeamOrchestrator {
     if (disputed.length) {
       for (const n of disputed) {
         await this.#decision(
-          `${PROVIDER_NAME[n.owner]} and ${n.reviewer ? PROVIDER_NAME[n.reviewer] : "the reviewer"} disagree about ${n.plan.title}`,
-          `${PROVIDER_NAME[n.owner]} declined to change it in response to the review, and the review budget ran out. Open findings: ${
-            n.openFindings.map((f) => f.summary).join("; ") || "none recorded"
+          "Agents disagree",
+          `${providerName(n.owner)} and ${n.reviewer ? providerName(n.reviewer) : "the reviewer"} disagree about ${n.plan.title}. ${providerName(n.owner)} declined to change it in response to the review, and the review budget ran out. Open findings: ${
+            n.openFindings.map((f) => f.finding.summary).join("; ") || "none recorded"
           }.`,
           [],
-          { unit: n.plan.key, findings: n.openFindings.map((f) => f.summary) },
+          { unit: n.plan.key, findings: n.openFindings.map((f) => f.finding.summary) },
           true,
         );
       }
@@ -1250,14 +1692,17 @@ export class TeamOrchestrator {
       node,
     );
     await this.#nodeStatus(node, "running");
-    let fixing: Finding[] | undefined;
+    let fixing: TrackedFinding[] | undefined;
+    /** The review the builder is answering, and the builder's last message (which a re-review answers). */
+    let reviewMessage: LoggedMessage | null = null;
+    let buildMessage: LoggedMessage | null = null;
 
     for (let round = 0; round <= this.#job.budgets.maxReviewRounds; round++) {
       if (round > 0) {
         // A round boundary. If the owner asked to stop, this unit ends here,
         // as it stands; #build then ends the job.
         await this.#collectNotes();
-        if (this.#stopRequested) return;
+        if (this.#stopRequested || this.#stopNow) return;
         this.#reviewRound = Math.max(this.#reviewRound, round);
         await this.#write("open_round", { kind: "review", round, node: node.plan.key });
       }
@@ -1268,25 +1713,43 @@ export class TeamOrchestrator {
         fixing ? `Fixing ${node.plan.title}` : `Building ${node.plan.title}`,
       );
       this.#progress(
-        `${PROVIDER_NAME[node.owner]} — ${fixing ? "fixing" : "building"} ${node.plan.title}`,
+        `${providerName(node.owner)} — ${fixing ? "fixing" : "building"} ${node.plan.title}`,
       );
+      const toFix: RefFinding[] | undefined = fixing?.map((f) => ({
+        ...f.finding,
+        ref: f.ref,
+        status: f.status,
+      }));
       const built = await this.#call(node.owner, "builder", {
+        step: "build",
+        unit: node.plan.key,
+        round,
         cwd: node.worktree.path,
-        prompt: buildPrompt(spec, node.plan, PROVIDER_NAME[node.owner], fixing),
+        worktree: node.worktree,
+        prompt: (p) =>
+          buildPrompt(
+            spec,
+            node.plan,
+            providerName(p),
+            toFix,
+            this.#context(reviewMessage ? [reviewMessage] : []),
+          ),
         access: "workspace-write",
         outputSchema: BUILD_SCHEMA,
-        resumeThreadId: node.threadId ?? undefined,
+        // Fix rounds continue the builder's own session for this unit (§2).
+        session: `unit:${node.plan.key}`,
+        exclude: node.reviewer ? [node.reviewer] : [],
         route: {
           complexity: node.plan.complexity,
           risk: node.plan.risk,
           previousFailures: node.failures,
         },
       });
-      node.threadId = built.threadId ?? node.threadId;
+      node.authoredBy.add(built.provider);
       const report = built.structured as BuildReport;
       const commit = await this.#d.worktrees.commit(node.worktree, `${node.plan.title}`, {
-        authoredBy: [...node.authoredBy].map((p) => PROVIDER_NAME[p]),
-        reviewedBy: [...node.reviewedBy].map((p) => PROVIDER_NAME[p]),
+        authoredBy: [...node.authoredBy].map((p) => providerName(p)),
+        reviewedBy: [...node.reviewedBy].map((p) => providerName(p)),
         job: this.#job.jobId,
         task: node.plan.key,
       });
@@ -1315,23 +1778,52 @@ export class TeamOrchestrator {
         );
         if (reverted) node.commits.push(reverted);
         await this.#decision(
-          `Out-of-scope changes undone in ${node.plan.title}`,
-          `${PROVIDER_NAME[node.owner]} changed ${stray.join(", ")}, which the plan did not give this unit. Those changes were undone.`,
+          "Out-of-scope changes undone",
+          `${providerName(built.provider)} changed ${stray.join(", ")}, which the plan did not give ${node.plan.title}. Those changes were undone.`,
           [],
           { unit: node.plan.key, files: stray },
           false,
         );
       }
-      await this.#message(
-        node.owner,
+
+      // The builder's answer to each finding it was asked to fix (§4).
+      if (fixing?.length) {
+        const responses = new Map(
+          (report.findingResponses ?? [])
+            .filter((r) => r && typeof r.ref === "string")
+            .map((r) => [r.ref, r.response]),
+        );
+        for (const f of fixing) {
+          const response = responses.get(f.ref);
+          if (response === "fixed" && commit)
+            await this.#setFindingStatus(f, "fixed", built.runId, round);
+          else if (response === "disputed" || (!commit && response !== "fixed")) {
+            await this.#setFindingStatus(f, "disputed", built.runId, round);
+          }
+        }
+        if (fixing.every((f) => f.status === "disputed")) node.disputed = true;
+      }
+
+      buildMessage = await this.#message(
+        built,
         node.reviewer ?? "threadlink",
         // The builder's own report is worth reading in the chat: a completion,
         // not a technical handoff.
         fixing ? "response" : "completion",
         round,
-        report.summary,
-        built,
+        {
+          node: node.plan.key,
+          replyTo: fixing?.[0]?.id
+            ? { kind: "finding", id: fixing[0].id }
+            : reviewMessage?.id
+              ? { kind: "message", id: reviewMessage.id }
+              : null,
+          refs: (fixing ?? [])
+            .filter((f) => f.id)
+            .map((f) => ({ kind: "finding" as const, id: f.id! })),
+        },
       );
+      if (commit) await this.#recordChange(node, built);
 
       // Solo has no reviewer. In Team Mode the room may turn cross-review off;
       // a pair exists to be reviewed, so it never skips it.
@@ -1344,27 +1836,41 @@ export class TeamOrchestrator {
         this.#doing.delete(node.owner);
         return;
       }
+      if (this.#stopNow) return;
 
       // Review, by the other provider, read-only, on exactly this code.
       await this.#nodeStatus(node, "in_review");
       const fingerprint = await this.#d.worktrees.fingerprint(node.worktree);
       const diff = await this.#d.worktrees.diff(node.worktree);
-      this.#doing.set(reviewer, `Reviewing ${PROVIDER_NAME[node.owner]}'s ${node.plan.title}`);
-      this.#progress(`${PROVIDER_NAME[reviewer]} — reviewing ${node.plan.title}`);
+      this.#doing.set(reviewer, `Reviewing ${providerName(node.owner)}'s ${node.plan.title}`);
+      this.#progress(`${providerName(reviewer)} — reviewing ${node.plan.title}`);
+      const prior: RefFinding[] = node.openFindings.map((f) => ({
+        ...f.finding,
+        ref: f.ref,
+        status: f.status,
+      }));
       const reviewed = await this.#call(reviewer, "reviewer", {
+        step: "review",
+        unit: node.plan.key,
+        round,
         cwd: node.worktree.path,
         worktree: node.worktree,
-        prompt: codeReviewPrompt(
-          spec,
-          node.plan,
-          diff,
-          PROVIDER_NAME[reviewer],
-          [...this.#nodes.values()]
-            .filter((other) => other !== node)
-            .map((other) => ({ ...other.plan, owner: PROVIDER_NAME[other.owner] })),
-        ),
+        prompt: (p) =>
+          codeReviewPrompt(
+            spec,
+            node.plan,
+            diff,
+            providerName(p),
+            [...this.#nodes.values()]
+              .filter((other) => other !== node)
+              .map((other) => ({ ...other.plan, owner: providerName(other.owner) })),
+            prior,
+            this.#context(buildMessage ? [buildMessage] : []),
+          ),
         access: "read-only",
-        outputSchema: REVIEW_SCHEMA,
+        outputSchema: reviewSchema(this.#roles?.builders ?? this.#participants),
+        // Reviews are always fresh: an independent look (§2).
+        exclude: [...node.authoredBy],
         route: {
           complexity: node.plan.complexity,
           risk: node.plan.risk,
@@ -1379,20 +1885,64 @@ export class TeamOrchestrator {
           "changed_during_review",
         );
       }
-      node.reviewedBy.add(reviewer);
+      node.reviewedBy.add(reviewed.provider);
       const review = reviewed.structured as Review;
-      await this.#message(reviewer, node.owner, "review", round, review.summary, reviewed);
+      reviewMessage = await this.#message(reviewed, node.owner, "review", round, {
+        node: node.plan.key,
+        replyTo: buildMessage?.id ? { kind: "message", id: buildMessage.id } : null,
+      });
 
-      // Findings from the previous round that this review no longer raises are resolved.
-      for (const old of node.openFindings) await this.#resolveFinding(old, round);
-      node.openFindings = [];
-      for (const f of review.findings) {
-        const id = await this.#finding(node.plan.key, round, "review", f, reviewer);
-        if (isSubstantive(f)) node.openFindings.push({ ...f, id });
+      // Earlier findings: what the reviewer says became of each. One it no
+      // longer mentions is resolved (it is not raised again); one it says is
+      // still open stays open, and a disputed one stays disputed.
+      const verdicts = new Map(
+        (review.priorFindings ?? [])
+          .filter((p) => p && typeof p.ref === "string")
+          .map((p) => [p.ref, p.status]),
+      );
+      const kept: TrackedFinding[] = [];
+      for (const old of node.openFindings) {
+        const said = verdicts.get(old.ref);
+        if (said === "open") {
+          if (old.status === "fixed")
+            await this.#setFindingStatus(old, "open", reviewed.runId, round);
+          kept.push(old);
+        } else if (said === "dismissed") {
+          // The reviewer withdrew its own finding. A blocking or important one
+          // is only dismissed with a recorded decision (the server insists).
+          const serious =
+            old.finding.severity === "blocking" || old.finding.severity === "important";
+          const decisionNumber = serious
+            ? await this.#decision(
+                "Finding dismissed",
+                `${providerName(reviewed.provider)} withdrew finding ${old.ref} on re-review.`,
+                [reviewed.provider],
+                { unit: node.plan.key, finding: old.ref },
+                false,
+              )
+            : null;
+          await this.#setFindingStatus(old, "dismissed", reviewed.runId, round, decisionNumber);
+        } else {
+          await this.#setFindingStatus(old, "resolved", reviewed.runId, round);
+        }
+      }
+      node.openFindings = kept;
+      for (const f of review.findings ?? []) {
+        const tracked = await this.#finding(
+          node.plan.key,
+          round,
+          "review",
+          f,
+          reviewed.provider,
+          reviewed.runId,
+          node.owner,
+        );
+        if (isSubstantive(f)) node.openFindings.push(tracked);
       }
       this.#buildRoundsDone = Math.max(this.#buildRoundsDone, round + 1);
 
-      if (effectiveVerdict(review) === "APPROVED") {
+      const stillOpen = kept.some((f) => isSubstantive(f.finding));
+      if (effectiveVerdict(review) === "APPROVED" && !stillOpen) {
         await this.#nodeStatus(node, "approved");
         this.#doing.delete(node.owner);
         this.#doing.delete(reviewer);
@@ -1410,6 +1960,44 @@ export class TeamOrchestrator {
 
     // Budget spent with substantive findings still open. Reported, never waved through.
     await this.#nodeStatus(node, "failed");
+  }
+
+  /**
+   * A code change card (§4): the unit's real diffstat from git and its diff
+   * (stored by the server as the diff artifact), tied to the builder's run.
+   * A change is only ever attributed to a recorded run: without one, no card.
+   */
+  async #recordChange(node: NodeState, built: CallResult): Promise<void> {
+    if (!built.runId) return;
+    const record = node.worktree!;
+    const stat = await this.#d.worktrees.diffStat(record);
+    const head = await this.#d.worktrees.head(record);
+    // Files that commonly hold secrets are left out of the shared diff by git
+    // itself and named only; the rest is redacted before it is sent.
+    const diff = await this.#d.worktrees.sharedDiff(record, 500 * 1024);
+    const hidden = diff.excluded.length
+      ? `${diff.excluded.length} file${diff.excluded.length === 1 ? "" : "s"} not shown: ${diff.excluded
+          .slice(0, 20)
+          .map((f) => redactText(f, 200))
+          .join(", ")}\n\n`
+      : "";
+    await this.#write(
+      OPS_0_10.addChange,
+      changePayload({
+        nodeKey: node.plan.key,
+        runId: built.runId,
+        filesChanged: stat.filesChanged,
+        insertions: stat.insertions,
+        deletions: stat.deletions,
+        files: stat.files.map((f) => redactText(f, 400)),
+        branch: record.branch,
+        commit: head,
+        // ThreadLink runs the owner's tests at integration, not per unit; an
+        // agent's own claim about tests is not evidence.
+        tests: [],
+        diff: hidden + redactText(diff.text, 600_000),
+      }),
+    );
   }
 
   /**
@@ -1436,8 +2024,8 @@ export class TeamOrchestrator {
       );
       if (!result.ok) {
         await this.#decision(
-          `${node.plan.title} cannot start from ${dep.plan.title}`,
-          `Their changes conflict in ${result.conflicts.join(", ") || "unknown files"}.`,
+          "Unit cannot start from its dependency",
+          `${node.plan.title} and ${dep.plan.title} conflict in ${result.conflicts.join(", ") || "unknown files"}.`,
           [],
           { unit: node.plan.key, dependency: key, conflicts: result.conflicts },
           true,
@@ -1462,6 +2050,14 @@ export class TeamOrchestrator {
     set: Awaited<ReturnType<WorktreeManager["begin"]>>,
     integrator: AgentProvider = this.#roleOf("integrator"),
   ): Promise<{ record: WorktreeRecord; integrator: AgentProvider }> {
+    if (this.#control === "stop_before_integration") {
+      await this.#ackControl("stop_before_integration");
+      throw new Stop(
+        "NEEDS_USER_DECISION",
+        "Stopped by you before integration. Each unit's work is on its own branch.",
+        "stopped_by_owner",
+      );
+    }
     await this.#setStatus("integrating", "Integrating");
     const record = await this.#d.worktrees.create(set, "integration");
     this.#evidence.integrationBranch = record.branch;
@@ -1483,8 +2079,8 @@ export class TeamOrchestrator {
       if (!merged.ok) {
         // Resolving a conflict is a decision about intent. Not ours to guess.
         await this.#decision(
-          `Conflict integrating ${node.plan.title}`,
-          `Conflicts in ${merged.conflicts.join(", ") || "unknown files"}.`,
+          "Merge conflict",
+          `${node.plan.title} conflicts in ${merged.conflicts.join(", ") || "unknown files"}.`,
           [],
           { conflicts: merged.conflicts },
           true,
@@ -1505,7 +2101,9 @@ export class TeamOrchestrator {
 
   async #runTests(record: WorktreeRecord, when: string): Promise<void> {
     if (!this.#job.verifyCommands.length) return;
-    const results = await this.#d.verify(record.path, this.#job.verifyCommands);
+    const results = await this.#d.verify(record.path, this.#job.verifyCommands, {
+      timeoutMs: this.#timeout("verify"),
+    });
     this.#evidence.tests = results.map((r) => ({ ...r, output: redactText(r.output, 4_000) }));
     const failed = results.filter((r) => !r.ok);
     if (failed.length) {
@@ -1544,21 +2142,28 @@ export class TeamOrchestrator {
     this.#doing.set(inspector, "Inspecting the whole change");
     const diff = await this.#d.worktrees.diff(integration.record, 400_000);
     const inspected = await this.#call(inspector, "security_reviewer", {
+      step: "inspection",
+      unit: null,
+      round: this.#reviewRound,
       cwd: integration.record.path,
       worktree: integration.record,
-      prompt: inspectionPrompt(
-        spec,
-        diff,
-        testEvidence(this.#evidence.tests),
-        PROVIDER_NAME[inspector],
-      ),
+      prompt: (p) =>
+        inspectionPrompt(
+          spec,
+          diff,
+          testEvidence(this.#evidence.tests),
+          providerName(p),
+          this.#context([]),
+        ),
       access: "read-only",
       outputSchema: INSPECTION_SCHEMA,
+      exclude: [integration.integrator],
       route: {
         complexity: "high",
         risk: { security: true, database: false, architecture: true, deployment: false },
       },
     });
+    this.#inspector = inspected.provider;
     if ((await this.#d.worktrees.fingerprint(integration.record)) !== fingerprint) {
       throw new Stop(
         "BLOCKED",
@@ -1567,8 +2172,16 @@ export class TeamOrchestrator {
       );
     }
     const inspection = inspected.structured as Inspection;
+    await this.#message(inspected, integration.integrator, "review", this.#reviewRound);
     for (const f of inspection.findings) {
-      await this.#finding(null, this.#reviewRound, "inspection", f, inspector);
+      await this.#finding(
+        null,
+        this.#reviewRound,
+        "inspection",
+        f,
+        inspected.provider,
+        inspected.runId,
+      );
     }
     this.#evidence.uncertainty.push(...inspection.uncertainty.map((u) => redactText(u, 500)));
 
@@ -1607,30 +2220,78 @@ export class TeamOrchestrator {
   // Agent calls
   // -------------------------------------------------------------------------
 
-  async #call(
+  #timeout(step: StepKind): number {
+    return this.#d.timeoutMs ?? stepTimeoutMs(step, this.#job.timeouts ?? {});
+  }
+
+  /**
+   * Runs one step with an agent, as recorded runs. A failure that is not about
+   * safety (usage, sign-in, a provider error, a timeout) becomes the owner's
+   * choice -- retry, another agent, more time, or stop -- and the job waits
+   * for it. Nothing is ever retried on another provider unless the owner
+   * chose that. Without a server that takes choices, the job stops, as before.
+   */
+  async #call(provider: AgentProvider, role: TeamRole, options: CallOptions): Promise<CallResult> {
+    let current = provider;
+    let timeoutMs = this.#timeout(options.step);
+    let signInRetried = false;
+    for (let attempt = 1; ; attempt++) {
+      const result = await this.#runOnce(current, role, options, timeoutMs);
+      if (result.ok) {
+        await this.#afterStep(options.step);
+        return result;
+      }
+      if (this.#stopNow) throw this.#stopped();
+      if (this.#abort.signal.aborted) {
+        throw new Stop("BLOCKED", `${providerName(current)} was stopped.`, "agent_failed");
+      }
+      this.#noteFailure(current, result);
+      // A sign-in failure can be a one-off token refresh failure. Probe the
+      // SAME provider now; only if it answers ready is the call repeated once.
+      if (result.failure === "not_authenticated" && !signInRetried && this.#d.health?.confirm) {
+        signInRetried = true;
+        const now = await this.#d.health.confirm(current).catch(() => "unknown" as const);
+        if (now === "ready") continue;
+      }
+      const decision = await this.#decideOnFailure(
+        current,
+        role,
+        options,
+        result,
+        timeoutMs,
+        attempt,
+      );
+      if (!decision) throw this.#failureStop(current, result);
+      if (decision.action === "retry") continue;
+      if (decision.action === "other") {
+        current = decision.provider;
+        continue;
+      }
+      if (decision.action === "increase") {
+        timeoutMs = decision.timeoutMs;
+        continue;
+      }
+      throw new Stop(
+        "NEEDS_USER_DECISION",
+        `Stopped by you after ${providerName(current)} could not finish.`,
+        "stopped_by_owner",
+        current,
+      );
+    }
+  }
+
+  /** One agent run: run_started, the run, run_finished, usage. */
+  async #runOnce(
     provider: AgentProvider,
     role: TeamRole,
-    options: {
-      cwd: string;
-      /** The worktree the run happens in, so its effect can be checked. */
-      worktree?: WorktreeRecord;
-      prompt: string;
-      access: RunAccess;
-      outputSchema: object;
-      resumeThreadId?: string;
-      route: {
-        complexity: PlannedNode["complexity"];
-        risk: PlannedNode["risk"];
-        previousFailures?: number;
-        disputedFindings?: number;
-      };
-    },
-  ): Promise<AgentRunResult & { structured: unknown }> {
+    options: CallOptions,
+    timeoutMs: number,
+  ): Promise<CallResult> {
     const runner = this.#d.runners[provider];
     if (!runner) {
       throw new Stop(
         "BLOCKED",
-        `${PROVIDER_NAME[provider]} is not available. It was not replaced.`,
+        `${providerName(provider)} is not available. It was not replaced.`,
         "agent_unavailable",
         provider,
       );
@@ -1645,23 +2306,98 @@ export class TeamOrchestrator {
     });
     if (!route.ok) {
       await this.#decision(
-        `${PROVIDER_NAME[provider]} has no model to use`,
-        route.reason,
+        "No model to use",
+        `${providerName(provider)}: ${route.reason}`,
         [],
         { options: route.options },
         true,
       );
       throw new Stop("NEEDS_USER_DECISION", route.reason, "no_suitable_model");
     }
+    const caps = this.#caps(provider);
+    const participantKey = `${provider}:${role}`;
 
     // Anything the owner has said to this agent since its last turn goes into
     // this one, delimited and redacted (prompts.ts, withOwnerNotes).
     await this.#collectNotes();
     const notes = this.#takeNotes(provider);
-    const prompt = withOwnerNotes(options.prompt, notes, (text) => redactText(text, 4_000));
+    const prompt = withOwnerNotes(options.prompt(provider), notes, (text) =>
+      redactText(text, 4_000),
+    );
 
-    const run = () =>
-      runner.run({
+    // Continuity (§2): only this participant's own session for the same key
+    // in this job, and only when the provider can resume. Never across chats.
+    const sessionKey = options.session ? `${participantKey}|${options.session}` : null;
+    const previous = sessionKey ? this.#sessions.get(sessionKey) : undefined;
+    const resume =
+      previous && caps?.nativeSession.resume && previous.chatId === (this.#job.chatId ?? null)
+        ? previous
+        : undefined;
+
+    const runKey = this.#runKey(options, participantKey);
+    const write = options.access === "workspace-write" || WRITE_STEPS.has(options.step);
+    this.#d.journal?.stepStarted({
+      runKey,
+      kind: options.step,
+      write,
+      provider,
+      startedAt: new Date().toISOString(),
+    });
+    let started: Record<string, unknown>;
+    try {
+      started = await this.#write(
+        OPS_0_10.runStarted,
+        runStartedPayload({
+          runKey,
+          provider,
+          participantKey,
+          role,
+          requestedModel: route.model,
+          effort: route.effort,
+          access: options.access,
+          nodeKey: options.unit,
+          worktreeLabel: options.worktree
+            ? redactText(`${this.#job.roomName} / ${options.worktree.key}`, 120)
+            : null,
+          timeoutMs,
+          continuity: resume ? "resumed" : "fresh",
+          resumedFromRunKey: resume?.runKey ?? null,
+          activity: phaseActivity(options.step),
+        }),
+      );
+    } catch (error) {
+      // Nothing started: the journal must not remember a running step.
+      this.#d.journal?.stepFinished(runKey, false);
+      // A re-claimed job whose earlier attempt ran a write step: the server
+      // refuses new write runs until the owner answers (§6). That is an
+      // interruption for the owner, never a failure to work around.
+      if (write && isInterruptedRefusal(error))
+        throw new InterruptedRefusal(options.step, provider);
+      throw error;
+    }
+    const runId = parseRunId(started);
+    if (notes.length && runId) await this.#consumeNotes(runId, notes);
+
+    // Live activity from real signals only: the run's phase now, and the
+    // provider's own events if its capabilities say it streams them.
+    const reporter = runId
+      ? new ActivityReporter(
+          async (activity) => {
+            await this.#write(OPS_0_10.runActivity, runActivityPayload(runId, activity));
+          },
+          { clock: this.#d.activityClock, minIntervalMs: this.#d.activityMinIntervalMs },
+        )
+      : null;
+    // run_started carried the phase activity; provider events follow, rate-limited.
+    reporter?.primed();
+    const poll =
+      (this.#d.controlPollMs ?? 15_000) > 0
+        ? setInterval(() => void this.#pollControl(), this.#d.controlPollMs ?? 15_000)
+        : null;
+
+    let result: AgentRunResult;
+    try {
+      result = await runner.run({
         provider,
         role,
         cwd: options.cwd,
@@ -1670,32 +2406,117 @@ export class TeamOrchestrator {
         effort: route.effort ?? undefined,
         access: options.access,
         outputSchema: options.outputSchema,
-        resumeThreadId: options.resumeThreadId,
-        timeoutMs: this.#d.timeoutMs,
+        resumeThreadId: resume?.sessionId,
+        timeoutMs,
         signal: this.#abort.signal,
+        onActivity: caps?.activity === "events" && reporter ? (a) => reporter.signal(a) : undefined,
+        onProcess: this.#d.processes
+          ? {
+              started: (child) =>
+                this.#d.processes!.started(
+                  {
+                    pid: child.pid!,
+                    provider,
+                    runId,
+                    jobId: this.#job.jobId,
+                    startedAt: new Date().toISOString(),
+                  },
+                  child,
+                ),
+              exited: (pid) => this.#d.processes!.exited(pid),
+            }
+          : undefined,
       });
-    let result = await run();
-    // A sign-in failure can be a one-off token refresh failure. Probe the SAME
-    // provider now; only if it answers ready is the call repeated once. A
-    // confirmed sign-out stops the job below. No other provider is ever tried.
-    if (!result.ok && result.failure === "not_authenticated" && this.#d.health?.confirm) {
-      const now = await this.#d.health.confirm(provider).catch(() => "unknown" as const);
-      if (now === "ready") {
-        await this.#write("record_usage", {
-          provider,
-          role,
-          requestedModel: route.model,
-          observedModel: result.observedModel,
-          effort: result.observedEffort ?? route.effort,
-          modelClass: route.modelClass,
-          reason: route.reason,
-          escalatedFrom: route.escalatedFrom ?? null,
-          escalationReason: route.escalationReason ?? null,
-          outcome: "not_authenticated",
-        }).catch(() => undefined);
-        result = await run();
+    } catch (error) {
+      // A runner that throws is a crash, recorded as one; the job then stops.
+      if (runId) {
+        await this.#write(
+          OPS_0_10.runFinished,
+          runFinishedPayload({
+            runId,
+            status: "failed",
+            observedModel: null,
+            modelVerified: false,
+            accessVerified: false,
+            nativeSessionId: null,
+            nativeSessionKind: null,
+            failure: "crashed",
+            exitClean: false,
+          }),
+        ).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      if (poll) clearInterval(poll);
+      await reporter?.stop();
+    }
+
+    // What ThreadLink can verify about the run, before anything is used.
+    const verifies =
+      Boolean(runner.verifiesAccess) || caps?.accessVerification === "provider_reported";
+    let accessProblem: Stop | null = null;
+    let clean: boolean | null = null;
+    if (result.ok) {
+      if (verifies && !result.accessVerified) {
+        accessProblem = new Stop(
+          "BLOCKED",
+          `${providerName(provider)} could not confirm it ran with ${options.access} access, so its work was not used.`,
+          "access_mismatch",
+        );
+      } else if (options.access === "read-only") {
+        clean = options.worktree ? await this.#d.worktrees.isClean(options.worktree) : false;
+        if (!options.worktree) {
+          accessProblem = new Stop(
+            "BLOCKED",
+            "A read-only run had no workspace ThreadLink could check afterwards.",
+            "access_mismatch",
+          );
+        } else if (!clean) {
+          accessProblem = new Stop(
+            "BLOCKED",
+            `${providerName(provider)} changed files during a read-only ${
+              options.worktree.key === "planning" ? "planning" : "review"
+            } step, so its work was not used.`,
+            "access_mismatch",
+          );
+        }
       }
     }
+    const accessVerified = verifies
+      ? result.accessVerified && clean !== false
+      : options.access === "read-only" && clean === true;
+    // Only the runner can say the model was verified: it compared the two.
+    const modelVerified = result.modelVerified === true && Boolean(result.observedModel);
+    const unstructured =
+      result.ok &&
+      !accessProblem &&
+      (result.structured === undefined || result.structured === null);
+    const completed = result.ok && !accessProblem && !unstructured;
+    const end = completed
+      ? null
+      : accessProblem
+        ? ({ status: "failed", failure: "access_mismatch" } as const)
+        : unstructured
+          ? ({ status: "failed", failure: "provider_error" } as const)
+          : runEnd(result);
+
+    if (runId) {
+      await this.#write(
+        OPS_0_10.runFinished,
+        runFinishedPayload({
+          runId,
+          status: end?.status ?? "completed",
+          observedModel: result.observedModel,
+          modelVerified,
+          accessVerified,
+          nativeSessionId: caps?.nativeSession.exposed ? result.threadId : null,
+          nativeSessionKind: caps?.nativeSession.kind ?? null,
+          failure: end?.failure ?? null,
+          exitClean: result.ok,
+        }),
+      );
+    }
+    this.#d.journal?.stepFinished(runKey, completed && !write);
 
     await this.#write("record_usage", {
       provider,
@@ -1707,80 +2528,238 @@ export class TeamOrchestrator {
       reason: route.reason,
       escalatedFrom: route.escalatedFrom ?? null,
       escalationReason: route.escalationReason ?? null,
-      outcome: result.ok ? "ok" : (result.failure ?? "provider_error"),
+      outcome: result.ok
+        ? "ok"
+        : result.failure === "cancelled"
+          ? "provider_error"
+          : (result.failure ?? "provider_error"),
     });
 
-    if (!result.ok) throw this.#failure(provider, result);
-    await this.#verifyAccess(provider, runner, options, result);
-    if (result.structured === undefined || result.structured === null) {
+    if (sessionKey && result.threadId && caps?.nativeSession.exposed) {
+      this.#sessions.set(sessionKey, {
+        sessionId: result.threadId,
+        runKey,
+        chatId: this.#job.chatId ?? null,
+      });
+    }
+    if (accessProblem) throw accessProblem;
+    if (unstructured) {
       throw new Stop(
         "BLOCKED",
-        `${PROVIDER_NAME[provider]} did not answer in the required format, so its answer was not guessed at.`,
+        `${providerName(provider)} did not answer in the required format, so its answer was not guessed at.`,
         "agent_failed",
       );
     }
-    return result as AgentRunResult & { structured: unknown };
+    return { ...result, structured: result.structured, provider, role, participantKey, runId };
   }
 
-  /**
-   * Checks the run did not have more access than it asked for, using the
-   * strongest evidence available:
-   *
-   *   - a provider that reports its sandbox must report the one we asked for;
-   *   - a read-only run must leave its worktree exactly as it found it, which
-   *     ThreadLink checks itself and does not take on trust from either
-   *     provider.
-   *
-   * A write run by a provider that cannot report its sandbox (Claude Code) is
-   * limited by its permission mode, not by a sandbox. That is recorded, and the
-   * docs and UI say so; worktrees are isolation for git, not a security boundary.
-   */
-  async #verifyAccess(
-    provider: AgentProvider,
-    runner: AgentRunner,
-    options: { access: RunAccess; worktree?: WorktreeRecord },
-    result: AgentRunResult,
-  ): Promise<void> {
-    if (runner.verifiesAccess && !result.accessVerified) {
-      throw new Stop(
-        "BLOCKED",
-        `${PROVIDER_NAME[provider]} could not confirm it ran with ${options.access} access, so its work was not used.`,
-        "access_mismatch",
+  /** The unit a choice names: none in solo/pair, whose single unit is the whole job. */
+  #choiceUnit(unit: string | null): string | null {
+    return this.#mode === "team" ? unit : null;
+  }
+
+  /** A unique, deterministic key per run: job, start, step, unit, round, participant. */
+  #runKey(options: CallOptions, participantKey: string): string {
+    const base = [
+      this.#worktreeJob(),
+      options.step,
+      options.unit ?? "job",
+      `r${options.round}`,
+      participantKey,
+    ].join(":");
+    for (let n = 1; ; n++) {
+      const key = `${base}:a${n}`;
+      if (!this.#runKeys.has(key)) {
+        this.#runKeys.add(key);
+        return key;
+      }
+    }
+  }
+
+  /** Tells the server which run consumed which owner notes (§5 delivery: seen). */
+  async #consumeNotes(runId: string, notes: OwnerNote[]): Promise<void> {
+    const payload = notesConsumedPayload(
+      runId,
+      notes.map((n) => n.id),
+    );
+    if (!payload) return;
+    try {
+      const answer = await this.#write(READ_OWNER_NOTES_OP, payload);
+      this.#queueNotes(answer);
+    } catch {
+      this.#evidence.uncertainty.push(
+        "ThreadLink could not record which agent saw your notes, so their delivery state may be out of date.",
       );
     }
-    if (options.access === "read-only") {
-      if (!options.worktree) {
-        throw new Stop(
-          "BLOCKED",
-          "A read-only run had no workspace ThreadLink could check afterwards.",
-          "access_mismatch",
-        );
-      }
-      if (!(await this.#d.worktrees.isClean(options.worktree))) {
-        throw new Stop(
-          "BLOCKED",
-          `${PROVIDER_NAME[provider]} changed files during a read-only ${
-            options.worktree.key === "planning" ? "planning" : "review"
-          } step, so its work was not used.`,
-          "access_mismatch",
-        );
-      }
-    }
   }
 
-  /** Every provider failure stops the job. None of them is answered by switching provider. */
-  #failure(provider: AgentProvider, result: AgentRunResult): Stop {
-    const name = PROVIDER_NAME[provider];
-    // Health learns from every failed run at once: an auth failure marks the
-    // provider "needs sign-in" and is reported now, not at the next check.
+  /** Health and usage learn from every failed run at once. */
+  #noteFailure(provider: AgentProvider, result: AgentRunResult): void {
     try {
-      this.#d.health?.noteFailure?.(provider, result.failure ?? "provider_error");
+      if (result.failure !== "cancelled") {
+        this.#d.health?.noteFailure?.(provider, result.failure ?? "provider_error");
+      }
     } catch {
       /* health reporting must never change how the job ends */
     }
+    if (result.failure === "quota_exhausted")
+      this.#d.onExhausted?.(provider, result.requestedModel);
+  }
+
+  /**
+   * The owner's choice after a failed run (§4, §6), or null when this failure
+   * is not one to ask about (model or sandbox mismatch, not installed: those
+   * stop the job) or the server takes no choices.
+   */
+  async #decideOnFailure(
+    provider: AgentProvider,
+    role: TeamRole,
+    options: CallOptions,
+    result: AgentRunResult,
+    timeoutMs: number,
+    attempt: number,
+  ): Promise<
+    | { action: "retry" }
+    | { action: "other"; provider: AgentProvider }
+    | { action: "increase"; timeoutMs: number }
+    | { action: "stop" }
+    | null
+  > {
+    const failure = result.failure ?? "provider_error";
+    if (!["quota_exhausted", "not_authenticated", "provider_error", "timeout"].includes(failure)) {
+      return null;
+    }
+    const excluded = new Set<AgentProvider>([provider, ...(options.exclude ?? [])]);
+    const other =
+      this.#participants.find(
+        (p) =>
+          !excluded.has(p) &&
+          this.#d.runners[p] !== undefined &&
+          (this.#health.get(p) ?? "ready") === "ready",
+      ) ?? null;
+    const key = `${this.#worktreeJob()}:${options.step}:${options.unit ?? "job"}:r${options.round}:${provider}:${role}:c${attempt}`;
+    if (failure === "timeout") {
+      const more = increasedTimeoutMs(timeoutMs);
+      const choice = await this.#ask(
+        "timeout",
+        {
+          provider,
+          otherProvider: other,
+          role,
+          step: options.step,
+          unit: this.#choiceUnit(options.unit),
+          minutes: Math.round(timeoutMs / MINUTE),
+        },
+        [
+          "retry",
+          ...(other ? (["retry_other"] as const) : []),
+          ...(more ? (["increase_timeout"] as const) : []),
+          "stop",
+        ],
+        key,
+        (result as Partial<CallResult>).runId ?? null,
+      );
+      if (choice === null) return null;
+      if (choice === "expired") {
+        throw new Stop(
+          "NEEDS_FIX",
+          `${providerName(provider)} timed out after ${Math.round(timeoutMs / MINUTE)} min and no decision was made within 24 hours.`,
+          "agent_timed_out",
+          provider,
+        );
+      }
+      if (choice === "retry") return { action: "retry" };
+      if (choice === "retry_other" && other) return { action: "other", provider: other };
+      if (choice === "increase_timeout" && more) return { action: "increase", timeoutMs: more };
+      return { action: "stop" };
+    }
+    const choice = await this.#ask(
+      "provider_failure",
+      {
+        provider,
+        otherProvider: other,
+        role,
+        step: options.step,
+        unit: this.#choiceUnit(options.unit),
+        failure,
+      },
+      ["retry", ...(other ? (["use_other"] as const) : []), "stop"],
+      key,
+      (result as Partial<CallResult>).runId ?? null,
+    );
+    if (choice === null) return null;
+    if (choice === "expired") {
+      throw new Stop(
+        "NEEDS_FIX",
+        `${providerName(provider)} could not continue and no decision was made within 24 hours.`,
+        "agent_failed",
+        provider,
+      );
+    }
+    if (choice === "retry") return { action: "retry" };
+    if (choice === "use_other" && other) return { action: "other", provider: other };
+    return { action: "stop" };
+  }
+
+  /**
+   * Creates a choice for the owner and waits for it (§4): the key they chose,
+   * "expired" after the wait, or null when the server takes no choices (the
+   * caller then stops, as it did before choices existed).
+   */
+  async #ask<K extends "provider_failure" | "timeout" | "plan_disagreement">(
+    kind: K,
+    params: Record<string, string | number | null>,
+    options: readonly string[],
+    idempotencyKey: string,
+    runId: string | null = null,
+  ): Promise<string | "expired" | null> {
+    let choiceId: string | null;
+    try {
+      choiceId = parseChoiceId(
+        await this.#write(
+          OPS_0_10.requestChoice,
+          requestChoicePayload(kind, params, options as never, idempotencyKey, runId),
+        ),
+      );
+    } catch {
+      return null;
+    }
+    if (!choiceId) return null;
+    this.#progress("Waiting for your decision");
+    const clock = this.#d.clock ?? realClock;
+    const deadline = clock.now() + (this.#d.choiceWaitMs ?? 24 * 60 * MINUTE);
+    for (;;) {
+      if (this.#stopNow) throw this.#stopped();
+      const answer = await this.#write(OPS_0_10.readChoices, readChoicesPayload([choiceId]));
+      const state = parseChoices(answer).find((c) => c.id === choiceId);
+      if (this.#stopNow) throw this.#stopped();
+      if (state?.status === "chosen") {
+        const chosen =
+          state.chosenKey && options.includes(state.chosenKey) ? state.chosenKey : "stop";
+        // The job goes back to the phase it was in.
+        if (chosen !== "stop") await this.#setStatus(this.#phase, "Continuing after your decision");
+        return chosen;
+      }
+      if (state?.status === "expired") return "expired";
+      if (state?.status === "cancelled") return "stop";
+      if (clock.now() >= deadline) return "expired";
+      await clock.sleep(this.#d.choicePollMs ?? 15_000, this.#abort.signal);
+      if (this.#abort.signal.aborted) {
+        if (this.#stopNow) throw this.#stopped();
+        throw new Stop(
+          "BLOCKED",
+          "The job was stopped while waiting for your decision.",
+          "agent_failed",
+        );
+      }
+    }
+  }
+
+  /** Every provider failure that is not the owner's choice stops the job. None is answered by switching provider. */
+  #failureStop(provider: AgentProvider, result: AgentRunResult): Stop {
+    const name = providerName(provider);
     switch (result.failure) {
       case "quota_exhausted":
-        this.#d.onExhausted?.(provider, result.requestedModel);
         return new Stop(
           "NEEDS_USER_DECISION",
           `${name} usage is exhausted. ThreadLink is waiting rather than switching agents or paying for more. You can wait for the reset, continue with the other agent only, or choose a smaller model.`,
@@ -1830,14 +2809,15 @@ export class TeamOrchestrator {
 
   async #write(op: TeamOp, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const answer = (await this.#d.sink(op, payload)) ?? {};
-    // Every answer carries the job's state, including an owner's stop request.
-    if (stopRequested(answer)) this.#stopRequested = true;
+    // Every answer carries the job's state, including the owner's control.
+    this.#applyControl(answer);
     return answer;
   }
 
   async #setStatus(status: string, line: string): Promise<void> {
     this.#status = status;
     this.#phase = status;
+    this.#d.journal?.phase(status);
     await this.#write("set_status", { status, line });
     this.#progress(line);
   }
@@ -1848,36 +2828,60 @@ export class TeamOrchestrator {
     this.#progress(`${node.plan.title}: ${status.replace(/_/g, " ")}`);
   }
 
+  /**
+   * Posts a run's own `teamMessage` as that agent's chat message (§3), tied to
+   * the run, replying to what it answers. Never composes text for an agent:
+   * a run with no message of its own posts nothing.
+   */
   async #message(
-    from: AgentProvider | "threadlink",
+    run: CallResult,
     to: AgentProvider | "threadlink",
     type: string,
     round: number,
-    body: string,
-    /** The run this message reports on, for the model it was observed to use. */
-    run?: Pick<AgentRunResult, "observedModel">,
-  ): Promise<void> {
-    const model = modelObserved(run?.observedModel);
-    // The role the sender spoke in, so the chat can say "Codex (builder)".
-    const role =
-      from === "threadlink"
-        ? undefined
-        : type === "review"
-          ? "reviewer"
-          : type === "proposal"
-            ? "planner"
-            : ["handoff", "response", "completion"].includes(type)
-              ? "builder"
-              : undefined;
-    await this.#write("add_message", {
-      sender: from,
-      ...(role ? { senderRole: role } : {}),
-      receiver: to,
+    options: { node?: string | null; replyTo?: WireRef | null; refs?: WireRef[] } = {},
+  ): Promise<LoggedMessage | null> {
+    const body = teamMessageOf(run.structured);
+    if (!body) return null;
+    const redacted = redactText(body);
+    const answer = await this.#write(
+      "add_message",
+      messagePayload({
+        sender: run.provider,
+        senderRole: run.role,
+        receiver: to,
+        node: options.node ?? null,
+        type,
+        round,
+        body: redacted,
+        modelObserved: run.observedModel,
+        runId: run.runId,
+        replyTo: options.replyTo ?? null,
+        refs: options.refs ?? [],
+      }),
+    );
+    const logged: LoggedMessage = {
+      id: parseMessageId(answer),
+      from: run.provider,
+      role: run.role,
       type,
-      round,
-      body: redactText(body),
-      ...(model ? { modelObserved: model } : {}),
-    });
+      body: redacted,
+      unit: options.node ?? null,
+    };
+    this.#messages.push(logged);
+    return logged;
+  }
+
+  /** Scoped context for a prompt: decisions so far and the messages this step answers. */
+  #context(messages: LoggedMessage[]): PromptContext {
+    return {
+      decisions: this.#decisionLog.slice(-20),
+      messages: messages.map((m) => ({
+        from: providerName(m.from),
+        role: m.role,
+        type: m.type,
+        body: m.body,
+      })),
+    };
   }
 
   async #finding(
@@ -1886,43 +2890,90 @@ export class TeamOrchestrator {
     phase: "planning" | "review" | "inspection",
     f: Finding,
     raisedBy: AgentProvider | "threadlink",
-  ): Promise<string | null> {
-    const answer = await this.#write("add_finding", {
-      node,
-      round,
-      phase,
-      severity: f.severity,
-      category: f.category,
-      summary: redactText(f.summary, 200),
-      detail: redactText(f.detail),
-      file: f.file,
-      line: f.line,
+    runId: string | null,
+    owner: AgentProvider | null = null,
+  ): Promise<TrackedFinding> {
+    const answer = await this.#write(
+      "add_finding",
+      findingPayload(
+        {
+          node,
+          round,
+          phase,
+          severity: f.severity,
+          category: f.category,
+          summary: redactText(f.summary, 200),
+          detail: redactText(f.detail),
+          file: f.file,
+          line: f.line,
+          raisedBy,
+        },
+        { runId, ownerParticipant: owner ? `${owner}:builder` : null },
+      ),
+    );
+    const tracked: TrackedFinding = {
+      ref: `F${this.#findings.length + 1}`,
+      id: parseFindingId(answer),
+      finding: f,
+      status: "open",
+      unit: node,
       raisedBy,
-    });
-    return typeof answer.findingId === "string" ? answer.findingId : null;
+    };
+    this.#findings.push(tracked);
+    return tracked;
   }
 
-  async #resolveFinding(f: { id: string | null }, round: number): Promise<void> {
+  async #setFindingStatus(
+    f: TrackedFinding,
+    status: FindingLifecycle,
+    runId: string | null,
+    round: number,
+    decisionNumber: number | null = null,
+  ): Promise<void> {
+    if (f.status === status) return;
+    f.status = status;
     if (!f.id) return;
-    await this.#write("set_finding_status", { findingId: f.id, status: "resolved", round });
+    await this.#write(
+      "set_finding_status",
+      findingStatusPayload({ findingId: f.id, status, runId, round, decisionNumber }),
+    );
   }
 
+  /**
+   * A decision in ThreadLink's own words (§4, title_source "threadlink"). The
+   * server accepts only its fixed titles (wire.ts THREADLINK_DECISION_TITLES);
+   * a decision with no fixed title is not sent -- it is kept in the job's
+   * evidence instead, so nothing is lost and no title is bent to fit.
+   */
   async #decision(
     topic: string,
     resolution: string,
     approvedBy: AgentProvider[],
     evidence: Record<string, unknown>,
     needsUser: boolean,
-  ): Promise<void> {
+  ): Promise<number | null> {
+    this.#decisionLog.push(redactText(`${topic}: ${resolution}`, 400));
+    const title = threadlinkDecisionTitle(topic);
+    if (!title) {
+      this.#evidence.uncertainty.push(redactText(`${topic}: ${resolution}`, 500));
+      return null;
+    }
     // A question for the owner has no resolution yet: sending one would make
     // the server count it as settled. The explanation travels as evidence.
-    await this.#write("add_decision", {
-      topic: redactText(topic, 200),
-      ...(needsUser ? {} : { resolution: redactText(resolution, 2_000) }),
-      approvedBy,
-      evidence: redactDeep(needsUser ? { ...evidence, question: resolution } : evidence),
-      needsUser,
-    });
+    const answer = await this.#write(
+      "add_decision",
+      decisionPayload(
+        {
+          topic: title,
+          ...(needsUser ? {} : { resolution: redactText(resolution, 2_000) }),
+          approvedBy,
+          evidence: redactDeep(needsUser ? { ...evidence, question: resolution } : evidence),
+          needsUser,
+        },
+        { titleSource: "threadlink" },
+      ),
+    );
+    return parseDecisionNumber(answer);
   }
 
   async #finish(
@@ -1935,17 +2986,83 @@ export class TeamOrchestrator {
     this.#finalReason = reason && verdict !== "PASS" ? reason : null;
     this.#status = verdict === "PASS" ? "completed" : verdict.toLowerCase();
     this.#doing.clear();
+    // The report is a convenience: a failure to store it never holds up the verdict.
     await this.#write(
-      "set_final",
-      setFinalPayload({
-        verdict,
-        summary: redactText(summary, 2_000),
-        reason: this.#finalReason ?? undefined,
-        provider: verdict === "PASS" ? null : provider,
-        evidence: this.#evidence,
+      OPS_0_10.addArtifact,
+      artifactPayload({
+        kind: "report",
+        title: "Final report",
+        mime: "text/markdown",
+        content: this.#report(verdict, summary),
+        runId: null,
+        requestKey: `${this.#worktreeJob()}:final-report`,
       }),
-    );
+    ).catch(() => {
+      this.#evidence.uncertainty.push("ThreadLink could not store the final report for this job.");
+    });
+    const payload = setFinalPayload({
+      verdict,
+      summary: redactText(summary, 2_000),
+      reason: this.#finalReason ?? undefined,
+      provider: verdict === "PASS" ? null : provider,
+      evidence: this.#evidence,
+    });
+    this.#d.journal?.finalComputed(JSON.parse(JSON.stringify(payload)));
+    await this.#write("set_final", payload);
+    this.#d.journal?.finalSynced(null);
     this.#progress(`${verdict}: ${summarize(summary) ?? verdict}`);
+  }
+
+  /** The final report (§4), from job data only. */
+  #report(verdict: JobVerdict, summary: string): string {
+    const roles = new Map<AgentProvider, Set<string>>();
+    const add = (p: AgentProvider | null | undefined, r: string) => {
+      if (!p) return;
+      roles.set(p, (roles.get(p) ?? new Set()).add(r));
+    };
+    if (this.#roles && this.#mode === "team") {
+      add(this.#roles.coordinator, "coordinator");
+      add(this.#roles.planner, "planner");
+      add(this.#roles.integrator, "integrator");
+    }
+    for (const n of this.#nodes.values()) {
+      for (const p of n.authoredBy) add(p, "builder");
+      for (const p of n.reviewedBy) add(p, "reviewer");
+    }
+    add(this.#inspector, "final inspector");
+    const findings: ReportFinding[] = this.#findings.map((f) => ({
+      severity: f.finding.severity,
+      status: f.status,
+      title: f.finding.summary,
+      unit: f.unit,
+      raisedBy: f.raisedBy === "threadlink" ? "ThreadLink" : providerName(f.raisedBy),
+    }));
+    return finalReportMarkdown({
+      room: this.#job.roomName,
+      verdict,
+      summary,
+      reason: this.#finalReason,
+      mode: this.#mode,
+      units: [...this.#nodes.values()].map((n) => ({
+        key: n.plan.key,
+        title: n.plan.title,
+        owner: [...n.authoredBy].map((p) => providerName(p)).join(" + "),
+        reviewer: n.reviewedBy.size
+          ? [...n.reviewedBy].map((p) => providerName(p)).join(", ")
+          : null,
+        status: n.status,
+      })),
+      findings,
+      tests: this.#evidence.tests.map((t) => ({
+        command: t.command,
+        ok: t.ok,
+        exitCode: t.exitCode,
+      })),
+      agents: [...roles].map(([p, r]) => ({ name: providerName(p), roles: [...r] })),
+      finalVerifier: this.#inspector ? providerName(this.#inspector) : null,
+      integrationBranch: this.#evidence.integrationBranch,
+      uncertainty: this.#evidence.uncertainty,
+    });
   }
 
   #progress(line: string): void {
@@ -1978,6 +3095,14 @@ export class TeamOrchestrator {
       }),
     });
   }
+}
+
+/** A structured answer without its teamMessage (which is posted, not stored as data). */
+function stripMessage<T extends { teamMessage?: string }>(value: T): T {
+  if (!value || typeof value !== "object") return value;
+  const rest = { ...value };
+  delete rest.teamMessage;
+  return rest;
 }
 
 // ---------------------------------------------------------------------------

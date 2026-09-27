@@ -199,6 +199,7 @@ describe("what a linked conversation says", () => {
   it("names the mode and says Ready for a background worker", async () => {
     mount(appState([conversation({ mode: "worker" })]));
     await settle();
+    await navTo("Agents");
     const text = document.getElementById("view")?.textContent ?? "";
     expect(text).toContain("Background worker");
     expect(text).toContain("Ready");
@@ -210,17 +211,22 @@ describe("what a linked conversation says", () => {
     // not a problem, and saying otherwise is what sent them round in circles.
     mount(appState([conversation({ mode: "worker", busy: true })]));
     await settle();
+    await navTo("Agents");
     const text = document.getElementById("view")?.textContent ?? "";
     expect(text).toContain("Ready");
-    expect(text).not.toContain("Claude is currently open");
+    expect(text).not.toMatch(/Claude is currently open|open in Claude Code/i);
   });
 
-  it("says plainly when an exact conversation is open", async () => {
+  it("says plainly, on that binding only, when an exact conversation is open", async () => {
     mount(appState([conversation({ mode: "resume", busy: true })]));
     await settle();
+    // Never a global status: Home and the status pill say nothing about it.
+    expect(document.getElementById("view")?.textContent).not.toMatch(/Claude is|open in Claude/i);
+    expect(document.getElementById("status-title")?.textContent).not.toMatch(/Claude/);
+    await navTo("Agents");
     const text = document.getElementById("view")?.textContent ?? "";
     expect(text).toContain("Exact conversation");
-    expect(text).toContain("Claude is currently open");
+    expect(text).toContain("Waiting: open in Claude Code");
   });
 });
 
@@ -437,13 +443,13 @@ describe("the attach screen under overlapping renders", () => {
     // listConversations reports the source conversation as busy; that only
     // blocks exact mode, so it must not be shown as a problem in worker mode.
     await openAttach();
-    expect(document.getElementById("view")?.textContent).not.toContain("Claude is currently open");
+    expect(document.getElementById("view")?.textContent).not.toContain("Open in Claude Code now");
 
     const exact = modeOption("Exact conversation")!.querySelector("input") as HTMLInputElement;
     exact.checked = true;
     exact.dispatchEvent(new Event("change"));
     await settle();
-    expect(document.getElementById("view")?.textContent).toContain("Claude is currently open");
+    expect(document.getElementById("view")?.textContent).toContain("Open in Claude Code now");
   });
 });
 
@@ -500,6 +506,7 @@ describe("mode wording is truthful", () => {
       ]),
     );
     await settle();
+    await navTo("Agents");
     const text = document.getElementById("view")?.textContent ?? "";
     expect(text).toContain("New headless session");
     expect(text).not.toContain("New conversation each time");

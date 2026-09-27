@@ -14,13 +14,16 @@ import {
   shell,
   Tray,
 } from "electron";
+import * as runtimeModule from "threadlink";
 import {
   canonicalBaseUrl,
   canonicalizeBaseUrl,
+  chatClientFor,
   createEngine,
   defaultConfigDir,
   loadConfig,
   migrateBaseUrl,
+  RUNTIME_VERSION,
   RuntimeEngine,
   runtimeContext,
   saveConfig,
@@ -29,14 +32,30 @@ import {
   signOut,
   ThreadLinkApi,
   validateBaseUrl,
+  type ChatApi,
   type EngineEvent,
   type EngineSnapshot,
 } from "threadlink";
 
 import { applyAutoStart, autoStartEnabled } from "./autostart.js";
-import { checkAgain, CheckLimiter, healthBackend, healthViews } from "./health.js";
+import { ChatService } from "./chats.js";
+import {
+  agentsSummary,
+  checkAgain,
+  CheckLimiter,
+  healthBackend,
+  healthViews,
+  workingAgents,
+} from "./health.js";
 import { NotificationRouter, type NotificationChannel } from "./notifications.js";
-import { messageFor, statusLine, trayIconPixels, trayMenu, type AppState } from "./model.js";
+import {
+  hostView,
+  messageFor,
+  statusLine,
+  trayIconPixels,
+  trayMenu,
+  type AppState,
+} from "./model.js";
 import { loadPlans, planBackend, savePlan, type PlanProfile } from "./plans.js";
 import { PhaseMemory, workView } from "./progress.js";
 import { loadSettings, saveSettings } from "./settings.js";
@@ -108,7 +127,18 @@ function derive() {
   phases.observe(state.snapshot?.team);
   state.health = healthViews(state.snapshot);
   state.work = workView(state.snapshot?.team ?? [], phases);
+  state.agentsLine = agentsSummary(state.health, workingAgents(state.snapshot?.team));
+  state.host = hostView(state.snapshot, {
+    version: RUNTIME_VERSION,
+    protocol: runtimeProtocol(),
+  });
   return state;
+}
+
+/** RUNTIME_PROTOCOL from the embedded Runtime, once it exports one; null before. */
+function runtimeProtocol(): number | null {
+  const value = (runtimeModule as unknown as Record<string, unknown>).RUNTIME_PROTOCOL;
+  return typeof value === "number" ? value : null;
 }
 
 function broadcast() {
@@ -304,6 +334,7 @@ async function connect(): Promise<void> {
   api = await signedInApi(ctx).catch(() => null);
   state.baseUrl = (await loadConfig(ctx.configDir)).baseUrl ?? DEFAULT_URL;
   state.signedIn = Boolean(api);
+  chatClient = null;
   broadcast();
   if (api) await startEngine();
 }
@@ -327,6 +358,19 @@ const planCache: { profiles: PlanProfile[] | null } = { profiles: null };
 
 /** One provider re-probe per 30 s, enforced here, not only by the button. */
 const healthLimiter = new CheckLimiter();
+
+/**
+ * The chat API client for this computer's stored Runtime credential. Built
+ * once per sign-in (loading the credential can spawn a DPAPI helper) and
+ * dropped on sign-out. The credential never leaves main.
+ */
+let chatClient: Promise<ChatApi | null> | null = null;
+function chatApi(): Promise<ChatApi | null> {
+  if (!state.signedIn) return Promise.resolve(null);
+  chatClient ??= chatClientFor(ctx, "desktop").catch(() => null);
+  return chatClient;
+}
+const chats = new ChatService(chatApi);
 
 /** Provider profiles from the server, merged with what this computer detected. */
 const readPlans = () =>
@@ -389,6 +433,7 @@ function handlers() {
     abort?.abort();
     await signOut(ctx);
     api = null;
+    chatClient = null;
     planCache.profiles = null;
     state.signedIn = false;
     state.snapshot = null;
@@ -528,6 +573,23 @@ function handlers() {
     }
   });
 
+  // ------------------------------------------------------------------ chats
+  // Each validates its arguments against an allow-listed shape and is
+  // rate-limited in ChatService; answers are views (plain text) or fixed codes.
+  ipcMain.handle("chats:list", (_e, groupBy: unknown) => chats.sections(groupBy));
+  ipcMain.handle("chat:open", (_e, chatId: unknown) => chats.open(chatId));
+  ipcMain.handle("chat:events", (_e, chatId: unknown, page: unknown) => chats.events(chatId, page));
+  ipcMain.handle("chat:send", (_e, chatId: unknown, body: unknown, key: unknown) =>
+    chats.send(chatId, body, key),
+  );
+  ipcMain.handle("chat:read", (_e, chatId: unknown, seq: unknown) => chats.read(chatId, seq));
+  ipcMain.handle("open:logs", async () => {
+    const dir = app.getPath("logs");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(dir, { recursive: true }).catch(() => {});
+    await shell.openPath(dir);
+  });
+
   ipcMain.handle("runtime:pause", (_e, paused: unknown) => setPaused(paused === true));
   ipcMain.handle("runtime:restart", () => restartEngine());
   ipcMain.handle("open:dashboard", () => openDashboard());
@@ -576,6 +638,12 @@ if (!app.requestSingleInstanceLock()) {
         quit();
       }, 2500);
     }
+
+    // Freshness words ("checked 23 s ago", Ready -> Stale) move with time, not
+    // only with snapshots: refresh them while the window is on screen.
+    setInterval(() => {
+      if (win?.isVisible()) broadcast();
+    }, 30_000).unref();
 
     // Wake from sleep / network change: nudge the engine to reconnect now.
     powerMonitor.on("resume", () => engine?.wake());

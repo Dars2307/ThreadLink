@@ -39,7 +39,16 @@ import {
   type ProbeFn,
   type ProviderHealth,
 } from "./team/health.ts";
+import { capabilityFlags } from "./team/capabilities.ts";
 import { TEAM_TASK_TYPE, TeamExecutor } from "./team/executor.ts";
+import {
+  classifyRecovery,
+  JournalStore,
+  ProcessRegistry,
+  type ProcessEntry,
+  type RecoveryReport,
+} from "./team/registry.ts";
+import { RUNTIME_PROTOCOL } from "./team/wire.ts";
 import type { TeamProgress } from "./team/orchestrator.ts";
 import {
   detectCursor,
@@ -466,6 +475,16 @@ export class RuntimeEngine {
   readonly #health: ProviderHealthMonitor | null;
   /** Team job progress by job id, in insertion order; capped. */
   #team = new Map<string, TeamProgress>();
+  /** 0.10: provider processes this Runtime started (stop_now kills only these). */
+  readonly #processes: ProcessRegistry;
+  /** 0.10: per-job journals for crash recovery. */
+  readonly #journals: JournalStore;
+  /** Team jobs running in this process now. */
+  readonly #activeJobs = new Set<string>();
+  /** What a previous Runtime left behind, classified at start. */
+  #recovery: RecoveryReport[] = [];
+  #staleProcesses: ProcessEntry[] = [];
+  #recovered = false;
   /** `${taskId}:${event}` already mirrored, so a retry cannot post it twice. */
   #mirrored = new Set<string>();
   #pending: PendingLink[] = [];
@@ -499,6 +518,56 @@ export class RuntimeEngine {
             onChange: (changed) => void this.#healthChanged(changed),
           })
         : null;
+    this.#processes = new ProcessRegistry(this.#o.configDir);
+    this.#journals = new JournalStore(this.#o.configDir);
+  }
+
+  // -------------------------------------------------------------------------
+  // Crash recovery (docs/design/threadlink-0.10.md §6)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Classifies every team job a previous Runtime on this computer left
+   * behind: completed_unsynced, resumable or interrupted (registry.ts). Runs
+   * once, at start. Nothing is re-run here and no process is touched: the
+   * job's carrier task is redelivered by the server once its lease expires,
+   * and the team executor acts on the classification then, with a fresh claim.
+   * Journals of jobs whose verdict reached the server more than a week ago
+   * are removed. Never throws.
+   */
+  recoverTeamJobs(): RecoveryReport[] {
+    if (this.#recovered) return this.#recovery;
+    this.#recovered = true;
+    try {
+      this.#staleProcesses = this.#processes.takeStale();
+      const weekAgo = Date.now() - 7 * 24 * 60 * 60_000;
+      const reports: RecoveryReport[] = [];
+      for (const journal of this.#journals.list()) {
+        const report = classifyRecovery(journal, this.#staleProcesses);
+        if (report.classification === "completed" && Date.parse(journal.updatedAt) < weekAgo) {
+          this.#journals.open(journal.jobId, journal).close();
+          continue;
+        }
+        if (report.classification !== "completed") reports.push(report);
+      }
+      this.#recovery = reports;
+      for (const r of reports) {
+        this.#o.log?.(`team job ${r.jobId} left by a previous run: ${r.classification}`);
+      }
+    } catch (error) {
+      this.#o.log?.(`team recovery could not read its journals: ${String(error)}`);
+    }
+    return this.#recovery;
+  }
+
+  /** The recovery classification made at start (for the desktop app and CLI). */
+  teamRecovery(): RecoveryReport[] {
+    return [...this.#recovery];
+  }
+
+  /** Provider processes this Runtime started and that are running now (never others). */
+  teamProcesses(): ProcessEntry[] {
+    return this.#processes.list();
   }
 
   // -------------------------------------------------------------------------
@@ -635,6 +704,7 @@ export class RuntimeEngine {
       platform: this.#o.identity.platform,
       kind: this.#o.identity.kind,
       version: this.#o.version,
+      protocol: RUNTIME_PROTOCOL,
     });
     this.#runtime = runtime;
     await saveConfig(this.#o.configDir, { runtimeId: runtime.runtimeId });
@@ -753,7 +823,8 @@ export class RuntimeEngine {
         detectedPlan: p.detectedPlan,
         models: p.models.map((m) => ({ id: m.id, displayName: m.displayName })),
         currentModel: p.currentModel,
-        capabilities: p.capabilities,
+        // Discovery's verified capabilities plus the adapter registry's (§10), as booleans.
+        capabilities: { ...p.capabilities, ...capabilityFlags(p.provider) },
         usage: { remaining: "unknown" },
         detectedAt: new Date().toISOString(),
         ...(h ? { health: h.health, healthCheckedAt: h.checkedAt, healthDetail: h.detail } : {}),
@@ -1156,6 +1227,7 @@ export class RuntimeEngine {
     const previous = this.#runtime;
     const runtime = await this.#o.api.runtimeHeartbeat({
       version: this.#o.version,
+      protocol: RUNTIME_PROTOCOL,
       capabilities: this.#capabilities,
       busySessionIds,
     });
@@ -1194,6 +1266,7 @@ export class RuntimeEngine {
    */
   #teamExecutor(ws: WorkspaceState, c: AttachedConversation): Executor {
     if (this.#o.teamExecutor) return this.#o.teamExecutor(ws.workspace, c.sessionId!);
+    this.recoverTeamJobs();
     return new TeamExecutor({
       workspace: ws.workspace,
       sessionId: c.sessionId!,
@@ -1202,6 +1275,10 @@ export class RuntimeEngine {
       health: this.#health ?? undefined,
       write: (jobId, sessionId, claimRef, op, payload) =>
         this.#o.api.teamWrite(jobId, sessionId, claimRef, op, payload),
+      journals: this.#journals,
+      processes: this.#processes,
+      staleProcesses: this.#staleProcesses,
+      activeJobs: this.#activeJobs,
       onProgress: (progress) => {
         this.#team.delete(progress.jobId);
         this.#team.set(progress.jobId, progress);
@@ -1358,6 +1435,7 @@ export class RuntimeEngine {
     let ready = false;
     try {
       this.#setStatus("starting");
+      this.recoverTeamJobs();
       while (!signal.aborted) {
         let delay: number;
         try {

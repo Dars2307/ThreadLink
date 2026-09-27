@@ -28,6 +28,11 @@ const runtimeRowSchema = z.object({
   restart_requested_at: z.string().nullable(),
   status: z.string(),
   last_seen_at: z.string().nullable(),
+  // 0.10 (optional: a database before the 0.10 migration does not send them).
+  protocol: z.number().int().optional(),
+  protocol_reported: z.boolean().optional(),
+  min_protocol: z.number().int().optional(),
+  update_required: z.boolean().optional(),
 });
 
 export type RuntimeView = {
@@ -39,6 +44,12 @@ export type RuntimeView = {
   restartRequestedAt: string | null;
   settings: Record<string, boolean>;
   status: string;
+  /** 0.10: the protocol the server judges this Runtime by (reported, or its minor version). */
+  protocol?: number;
+  /** 0.10: the current protocol (RUNTIME_PROTOCOL); older Runtimes should update. */
+  minProtocol?: number;
+  /** 0.10: true when this Runtime is older than the current protocol ("needs an update"). */
+  updateRequired?: boolean;
 };
 
 const toView = (r: z.infer<typeof runtimeRowSchema>): RuntimeView => ({
@@ -50,9 +61,17 @@ const toView = (r: z.infer<typeof runtimeRowSchema>): RuntimeView => ({
   restartRequestedAt: r.restart_requested_at,
   settings: r.settings,
   status: r.status,
+  ...(r.protocol !== undefined ? { protocol: r.protocol } : {}),
+  ...(r.min_protocol !== undefined ? { minProtocol: r.min_protocol } : {}),
+  ...(r.update_required !== undefined ? { updateRequired: r.update_required } : {}),
 });
 
 const VERSION = z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/);
+/**
+ * 0.10: RUNTIME_PROTOCOL (docs/design/threadlink-0.10.md section 8). Optional:
+ * a Runtime that does not send it is judged by its version (0.9.x = 9).
+ */
+const PROTOCOL = z.number().int().min(1).max(1000);
 
 const registerSchema = z
   .object({
@@ -60,6 +79,7 @@ const registerSchema = z
     platform: z.enum(["windows", "macos", "linux", "other"]),
     kind: z.enum(["desktop", "cli", "remote"]),
     version: VERSION,
+    protocol: PROTOCOL.optional(),
   })
   .strict();
 
@@ -74,6 +94,7 @@ export async function registerRuntime(db: ClientDatabase, hash: string, raw: unk
       p_platform: i.platform,
       p_kind: i.kind,
       p_version: i.version,
+      ...(i.protocol !== undefined ? { p_protocol: i.protocol } : {}),
     },
     (d) => runtimeRowSchema.parse(d),
   );
@@ -85,6 +106,7 @@ const heartbeatSchema = z
     version: VERSION,
     capabilities: z.record(z.string().max(40), z.string().max(20)),
     busySessionIds: z.array(z.string().regex(idPattern("sessionBinding"))).max(200),
+    protocol: PROTOCOL.optional(),
   })
   .strict();
 
@@ -98,6 +120,7 @@ export async function runtimeHeartbeat(db: ClientDatabase, hash: string, raw: un
       p_version: i.version,
       p_capabilities: i.capabilities,
       p_busy_session_ids: i.busySessionIds,
+      ...(i.protocol !== undefined ? { p_protocol: i.protocol } : {}),
     },
     (d) => runtimeRowSchema.parse(d),
   );

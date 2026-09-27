@@ -115,8 +115,20 @@ describe("the server's enums are the Runtime's enums", () => {
     ["ARBITRATION_ORDER", model.ARBITRATION_ORDER, runtimeTypes.ARBITRATION_ORDER],
   ] as const;
 
-  it.each(pairs)("%s", (_name, server, runtime) => {
-    expect([...server]).toEqual([...runtime]);
+  // 0.10 additions the server accepts first (a Runtime that does not know them
+  // yet never sends them). Once the Runtime lists them too, equality holds again.
+  const SERVER_FIRST: Record<string, readonly string[]> = {
+    JOB_STATUSES: ["interrupted", "paused"],
+    FINDING_STATUSES: ["accepted", "disputed", "fixed", "dismissed"],
+  };
+  it.each(pairs)("%s", (name, server, runtime) => {
+    const extra = SERVER_FIRST[name] ?? [];
+    const runtimeHasAll = extra.every((x) => (runtime as readonly string[]).includes(x));
+    if (runtimeHasAll) {
+      expect([...server]).toEqual([...runtime]);
+    } else {
+      expect([...runtime]).toEqual([...server].filter((x) => !extra.includes(x)));
+    }
   });
 
   it("budgets", () => {
@@ -124,14 +136,24 @@ describe("the server's enums are the Runtime's enums", () => {
   });
 
   // The migration's vocabulary functions and CHECK lists must say the same.
-  const sql = readFileSync(
-    fileURLToPath(new URL("../supabase/migrations/20260925000100_team_mode.sql", import.meta.url)),
-    "utf8",
+  // A later migration may re-state a list (as a superset): the LAST definition
+  // in migration order is the one in force.
+  const migrations = [
+    "20260925000100_team_mode.sql",
+    "20260926000100_collaboration_chat.sql",
+    "20260927000100_chat_first.sql",
+    "20260927000200_threadlink_0_10.sql",
+  ].map((f) =>
+    readFileSync(fileURLToPath(new URL(`../supabase/migrations/${f}`, import.meta.url)), "utf8"),
   );
   const sqlList = (fn: string) => {
-    const m = new RegExp(
+    const re = new RegExp(
       `function threadlink_private\\.${fn}\\(\\) returns text\\[\\][\\s\\S]*?select array\\[([\\s\\S]*?)\\]`,
-    ).exec(sql);
+    );
+    const m = [...migrations]
+      .reverse()
+      .map((sql) => re.exec(sql))
+      .find((x) => x !== null);
     if (!m) throw new Error(`no ${fn} in migration`);
     return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
   };
@@ -315,6 +337,9 @@ describe("runtime write operations (the Runtime's shapes)", () => {
       raised_by: "codex",
       round: 1,
       phase: "review",
+      // 0.10: the structured file:line as well.
+      file_path: "a.ts",
+      line: 7,
     });
     const nodes = teamWriteOpSchema.parse({
       op: "upsert_nodes",

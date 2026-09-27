@@ -429,17 +429,43 @@ export function ChatHeader({
 }
 
 /** Solo (choose provider) · Builder + Reviewer (choose or Auto) · Team (participants). */
-export function ModeControl({ chatId, control }: { chatId: string; control: ModeControlView }) {
+export function ModeControl({
+  chatId,
+  control,
+  compact = false,
+}: {
+  chatId: string;
+  control: ModeControlView;
+  /** 0.10 header: a "[TEAM ▾]" chip that opens the same form as a popover. */
+  compact?: boolean;
+}) {
   return (
-    <details className="border-border bg-surface rounded-2xl border">
-      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
-        <span>
-          <span className="text-subtle">Mode: </span>
-          <span className="font-medium">{control.summary}</span>
-        </span>
-        <span className="text-accent text-xs">Change</span>
-      </summary>
-      <ActionForm action={setChatModeAction} className="flex flex-col gap-4 px-4 pb-4">
+    <details className={compact ? "relative" : "border-border bg-surface rounded-2xl border"}>
+      {compact ? (
+        <summary
+          className="text-accent bg-accent-soft cursor-pointer list-none rounded-md px-2 py-0.5 text-xs font-semibold tracking-wide"
+          aria-label={`Mode: ${control.summary}. Change mode`}
+          title={control.summary}
+        >
+          {control.badge} ▾
+        </summary>
+      ) : (
+        <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+          <span>
+            <span className="text-subtle">Mode: </span>
+            <span className="font-medium">{control.summary}</span>
+          </span>
+          <span className="text-accent text-xs">Change</span>
+        </summary>
+      )}
+      <ActionForm
+        action={setChatModeAction}
+        className={
+          compact
+            ? "border-border bg-surface shadow-card absolute left-0 z-30 mt-1 flex w-[min(24rem,90vw)] flex-col gap-4 rounded-2xl border p-4"
+            : "flex flex-col gap-4 px-4 pb-4"
+        }
+      >
         <input type="hidden" name="chatId" value={chatId} />
         {/* Keyed on the saved settings so a re-render shows the server's truth. */}
         <fieldset

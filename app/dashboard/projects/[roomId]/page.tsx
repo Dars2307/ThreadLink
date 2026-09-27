@@ -5,7 +5,8 @@ import { notFound, redirect } from "next/navigation";
 import { ChatListRow, NewChatForm, type Choice } from "@/components/dashboard/chats";
 import { PageHeader, Shell } from "@/components/dashboard/shell";
 import { ProjectPolicyForm } from "@/components/dashboard/project-settings";
-import { Card, CardTitle, EmptyState } from "@/components/ui";
+import { Badge, Card, CardTitle, EmptyState } from "@/components/ui";
+import { artifactHref } from "@/lib/dashboard/chat";
 import {
   chatHref,
   defaultChatFor,
@@ -13,11 +14,12 @@ import {
   parseChatListQuery,
   projectTabRedirect,
 } from "@/lib/dashboard/chats";
-import { loadChatGroups, loadChats } from "@/lib/dashboard/chats-data";
-import { loadProject, loadProjectChoices } from "@/lib/dashboard/data";
+import { loadChatGroups, loadChats, loadProjectHub } from "@/lib/dashboard/chats-data";
+import { loadControllerName, loadProject, loadProjectChoices } from "@/lib/dashboard/data";
 import { USAGE_POLICY_TEXT, plural } from "@/lib/dashboard/labels";
 import { usagePolicyOptions } from "@/lib/dashboard/pages";
 import { deriveProject } from "@/lib/dashboard/project";
+import { projectHub } from "@/lib/dashboard/project-hub";
 import { TEAM_LIMITS } from "@/lib/team/model";
 
 export const metadata: Metadata = { title: "Project · ThreadLink" };
@@ -36,11 +38,13 @@ export default async function ProjectPage({
 
   // A project that is not yours reads exactly like one that does not exist.
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(roomId)) notFound();
-  const [data, chats, groups, rooms] = await Promise.all([
+  const [data, chats, groups, rooms, hubRaw, controller] = await Promise.all([
     loadProject(roomId, null),
     loadChats(),
     loadChatGroups(),
     loadProjectChoices(),
+    loadProjectHub(roomId),
+    loadControllerName(),
   ]);
   if (!data) notFound();
   const room = data.room.roomId;
@@ -53,6 +57,7 @@ export default async function ProjectPage({
   if (moved) redirect(moved);
 
   const { view } = deriveProject(data.room, data.jobs, data.detail, data.now);
+  const hub = projectHub(hubRaw, { projectName: data.room.name, controller, now: data.now });
   const list = chats
     ? deriveChatList(
         chats,
@@ -138,6 +143,116 @@ export default async function ProjectPage({
         </Card>
       )}
 
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card labelledBy="where-title">
+          <CardTitle
+            id="where-title"
+            description="The folder and computer this project's work runs on."
+          >
+            Where it runs
+          </CardTitle>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+            <dt className="text-muted">Folder</dt>
+            <dd className="min-w-0 break-words">{hub.repository?.folder ?? view.folder}</dd>
+            <dt className="text-muted">Computer</dt>
+            <dd>{hub.host ? hub.host.text : "Reported by the ThreadLink app"}</dd>
+            {hub.repository?.branch ? (
+              <>
+                <dt className="text-muted">Branch</dt>
+                <dd className="font-mono text-xs">{hub.repository.branch}</dd>
+              </>
+            ) : null}
+            {hub.repository?.remote ? (
+              <>
+                <dt className="text-muted">Repository</dt>
+                <dd className="min-w-0 font-mono text-xs break-all">{hub.repository.remote}</dd>
+              </>
+            ) : null}
+            <dt className="text-muted">Agents</dt>
+            <dd>{view.team}</dd>
+          </dl>
+          {hub.host?.outdated ? (
+            <p role="status" className="text-warning pt-3 text-sm">
+              {hub.host.outdated}
+            </p>
+          ) : null}
+        </Card>
+
+        <Card labelledBy="verify-title">
+          <CardTitle
+            id="verify-title"
+            description="Commands every piece of work must pass in this folder before it can be called done."
+          >
+            Verification
+          </CardTitle>
+          {hub.verification.commands.length ? (
+            <ul className="flex flex-col gap-1">
+              {hub.verification.commands.map((c, i) => (
+                <li key={i}>
+                  <code className="bg-surface-muted rounded px-2 py-0.5 font-mono text-xs">
+                    {c}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="flex flex-col gap-2 text-sm">
+              <p className="font-medium">{hub.verification.empty}</p>
+              <p className="text-muted">{hub.verification.howTo}</p>
+              {hub.verification.suggestions.length ? (
+                <div className="flex flex-col gap-1">
+                  <p className="text-subtle text-xs">{hub.verification.suggestionNote}</p>
+                  <ul className="flex flex-wrap gap-1.5">
+                    {hub.verification.suggestions.map((c) => (
+                      <li key={c}>
+                        <Badge tone="neutral">
+                          <span className="font-mono">{c}</span>
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      <Card labelledBy="artifacts-title">
+        <CardTitle
+          id="artifacts-title"
+          description="Reports, plans, diffs and attachments from this project's chats."
+        >
+          Artifacts
+        </CardTitle>
+        {hub.artifacts.length === 0 ? (
+          <p className="text-muted text-sm">
+            Nothing here yet. Each chat keeps its own artifacts — open a chat and choose Artifacts.
+          </p>
+        ) : (
+          <ul className="divide-border flex flex-col divide-y">
+            {hub.artifacts.map((a) => (
+              <li
+                key={a.key}
+                className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm"
+              >
+                <span className="min-w-0 break-words">
+                  {a.title} <span className="text-subtle text-xs">· {a.kind}</span>
+                </span>
+                <a
+                  href={artifactHref(a.chatId, a.artifactId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent text-xs font-medium"
+                >
+                  Open
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
       <Card labelledBy="config-title">
         <CardTitle id="config-title" description="How work from this project's chats runs.">
           Project settings
@@ -150,7 +265,11 @@ export default async function ProjectPage({
           <dt className="text-muted">Agents</dt>
           <dd>{view.team}</dd>
           <dt className="text-muted">Checks</dt>
-          <dd>The checks each request asks for run in this folder before work can pass.</dd>
+          <dd>
+            {hub.verification.commands.length
+              ? "The verification commands above, plus the checks each request asks for."
+              : "Only the checks each request asks for (no project verification commands configured)."}
+          </dd>
           <dt className="text-muted">Routing</dt>
           <dd>
             Each chat&apos;s mode decides who works on a request; a leading @mention picks someone

@@ -46,6 +46,17 @@ export const CHAT_EVENT_TYPES = [
   // 0.9 chat-first (threadlink, visible)
   "mode_changed",
   "provider_blocked",
+  // 0.10 cards (payload-carrying). code_change is agent-authored (tied to the
+  // builder's run); decision_card is agent- or ThreadLink-authored; the rest
+  // are ThreadLink's. A finding card reuses "finding" with a payload.
+  "code_change",
+  "decision_card",
+  "choice",
+  "job_summary",
+  "phase",
+  "timeout",
+  "interrupted",
+  "control_requested",
 ] as const;
 export type ChatEventType = (typeof CHAT_EVENT_TYPES)[number];
 
@@ -83,6 +94,25 @@ export type ChatEvent = {
   /** Plain text. Redacted before storage. Never rendered as HTML. */
   body: string;
   visibility: ChatVisibility;
+  // --- 0.10 (optional so 0.9 rows and pages still type-check) ---------------
+  /** The row's position in its chat (the 0.10 cursor). Null only outside any chat. */
+  chatSeq?: number | null;
+  /** The agent run that wrote an agent row (or that a ThreadLink row is about). */
+  runId?: string | null;
+  /** Agent rows: "run" = tied to a recorded run; "legacy" = recorded before 0.10 (unverified). */
+  provenance?: "run" | "legacy" | null;
+  /** The chat row this one replies to. */
+  replyTo?: string | null;
+  /** What this row refers to. */
+  ref?: { kind: RefKind; id: string } | null;
+  /** Structured card data (see CHAT_PAYLOAD docs in lib/chat/model.ts). Data, never HTML. */
+  payload?: Record<string, unknown> | null;
+  /** Any registry provider id on agent rows (authorProvider stays the 0.9 union, null for others). */
+  authorProviderId?: string | null;
+  /** The audience as stored: a registry provider id or "team". */
+  audienceId?: string | null;
+  /** Owner notes to a job: where the message is now (section 5). */
+  delivery?: MessageDelivery | null;
 };
 
 export type ChatPage = {
@@ -169,6 +199,8 @@ export type ChatSummary = {
   lastMessage: string | null;
   lastActivityAt: string;
   unread: boolean;
+  /** 0.10: how many rows are unread under the 0.10 rules (at most 100). */
+  unreadCount?: number;
   needsAttention: boolean;
   activeJob: { jobId: string; mode: JobMode; status: string } | null;
   /** The project's default chat (where controller work lands when no chat is named). */
@@ -199,4 +231,255 @@ export type ChatDetail = ChatSummary & {
   retry: ChatRetryOption | null;
   /** The newest seq the owner has read. */
   lastReadSeq: number;
+};
+
+// ---------------------------------------------------------------------------
+// 0.10 — the real ThreadLink experience. See docs/design/threadlink-0.10.md.
+// ---------------------------------------------------------------------------
+
+/** A provider id from the registry (public.agent_providers), e.g. "claude-code". */
+export type ProviderId = string;
+/** A provider id or "team". Validated against the registry, not a fixed union. */
+export type AudienceId = ProviderId | "team";
+
+export const RUN_STATUSES = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "interrupted",
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export const RUN_ACTIVITIES = [
+  "queued",
+  "reading",
+  "planning",
+  "building",
+  "reviewing",
+  "testing",
+  "waiting",
+  "responding",
+  "integrating",
+] as const;
+export type RunActivity = (typeof RUN_ACTIVITIES)[number];
+
+/** What the owner may see about one agent run (Details / Provenance drawer). */
+export type RunProvenance = {
+  runId: string;
+  provider: ProviderId;
+  providerName: string;
+  participantKey: string;
+  role: string;
+  requestedModel: string | null;
+  observedModel: string | null;
+  modelVerified: boolean;
+  effort: string | null;
+  access: "read-only" | "workspace-write" | null;
+  accessVerified: boolean;
+  nativeSession: { available: boolean; kind: string | null; continuity: string | null };
+  executionHost: string | null;
+  worktreeLabel: string | null;
+  status: RunStatus;
+  activity: RunActivity | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastActivityAt: string | null;
+  verified: "verified" | "partial" | "unverified";
+  verificationNotes: string[];
+};
+
+/** A live row for a run that is working but has not produced its message yet. */
+export type LiveActivity = {
+  runId: string;
+  provider: ProviderId;
+  providerName: string;
+  role: string;
+  activity: RunActivity | null;
+  startedAt: string | null;
+  lastActivityAt: string | null;
+};
+
+export const FINDING_STATES = [
+  "open",
+  "accepted",
+  "disputed",
+  "fixed",
+  "resolved",
+  "dismissed",
+] as const;
+export type FindingState = (typeof FINDING_STATES)[number];
+
+export const CHOICE_KINDS = [
+  "provider_failure",
+  "timeout",
+  "plan_disagreement",
+  "interrupted",
+  "migration",
+  "production_deploy",
+  "destructive_action",
+  "security_action",
+  "paid_usage",
+  "permission_expansion",
+  "secret_change",
+] as const;
+export type ChoiceKind = (typeof CHOICE_KINDS)[number];
+
+export const JOB_CONTROLS = [
+  "pause_after_step",
+  "stop_after_review",
+  "stop_before_integration",
+  "stop_now",
+  "cancel_queued",
+  "resume",
+] as const;
+export type JobControl = (typeof JOB_CONTROLS)[number];
+
+export type MessageDelivery =
+  | { state: "sent" }
+  | { state: "queued"; for: string[] }
+  | { state: "seen"; by: string[] }
+  | { state: "not_delivered" };
+
+export const REF_KINDS = ["finding", "decision", "node", "artifact", "message", "choice"] as const;
+export type RefKind = (typeof REF_KINDS)[number];
+
+/**
+ * 0.10 timeline page (GET /api/dashboard/chats/<id>/events). Paged by the
+ * per-chat cursor: every event's `seq` here EQUALS its `chatSeq` (the global
+ * sequence is never exposed on this route).
+ */
+export type ChatTimelinePage = {
+  events: ChatEvent[];
+  /** The highest chatSeq returned, or the `after` passed in when nothing is new. */
+  cursor: number;
+  /** The lowest chatSeq returned (page older rows with before=<this>), or null. */
+  oldestChatSeq: number | null;
+  /** True when rows older than oldestChatSeq exist. */
+  hasMore: boolean;
+  activeJob: {
+    jobId: string;
+    mode: JobMode;
+    status: string;
+    control: JobControl | null;
+    controlRequestedAt: string | null;
+  } | null;
+  /** The newest chatSeq the owner has read. */
+  lastReadChatSeq: number;
+};
+
+export type ProviderInfo = {
+  id: ProviderId;
+  displayName: string;
+  shortName: string;
+  mentionAliases: string[];
+  supported: boolean;
+};
+
+export type FindingView = {
+  findingId: string;
+  jobId: string;
+  severity: "blocking" | "important" | "non_blocking";
+  category: string;
+  /** Agent text, attributed to the raising agent (raisedBy / raisedRunId). Never HTML. */
+  title: string;
+  /** open | accepted | disputed | fixed | resolved | dismissed (a pre-0.10 wont_fix reads as dismissed). */
+  status: FindingState;
+  raisedBy: string;
+  raisedRunId: string | null;
+  ownerParticipant: string | null;
+  filePath: string | null;
+  line: number | null;
+  nodeKey: string | null;
+  resolvedRunId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DecisionView = {
+  decisionId: string;
+  jobId: string;
+  /** "TL-00042": shown in Details only. */
+  label: string;
+  /** A fixed ThreadLink title, or the agent's own words (authorRunId). */
+  title: string;
+  titleSource: "threadlink" | "agent" | null;
+  authorRunId: string | null;
+  requiresUser: boolean;
+  resolved: boolean;
+  createdAt: string;
+};
+
+export type ChoiceView = {
+  choiceId: string;
+  jobId: string | null;
+  kind: ChoiceKind;
+  title: string;
+  options: { key: string; label: string }[];
+  status: "pending" | "chosen" | "expired" | "cancelled";
+  chosenKey: string | null;
+  decidedAt: string | null;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export const ARTIFACT_KINDS = [
+  "report",
+  "plan",
+  "diff",
+  "test_report",
+  "notes",
+  "export",
+  "user_attachment",
+] as const;
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+export type ArtifactView = {
+  artifactId: string;
+  jobId: string | null;
+  runId: string | null;
+  kind: ArtifactKind;
+  title: string;
+  mime: string;
+  bytes: number;
+  createdBy: "runtime" | "owner";
+  createdAt: string;
+};
+
+/** "Runs on <label>", presence, and each agent's health with the time of the check. */
+export type ChatHostStatus = {
+  now: string;
+  runtime: {
+    label: string;
+    presence: "online" | "offline" | "working";
+    lastSeenAt: string | null;
+    protocol: number;
+    needsUpdate: boolean;
+  } | null;
+  agents: {
+    provider: ProviderId;
+    name: string;
+    shortName: string;
+    health: ProviderHealth;
+    /** ready | stale (a ready check older than 2 h) | the failing health. */
+    state: ProviderHealth | "stale";
+    checkedAt: string | null;
+    /** "Ready · checked 23 s ago" / "Stale · last checked 2 h ago" / "Needs sign-in". */
+    label: string;
+  }[];
+};
+
+export type ChatSearchResult = {
+  kind: "chat" | "project" | "message" | "finding" | "decision" | "artifact";
+  chatId: string;
+  chatName: string;
+  /** The matching row's id (a chat, project, chat row, finding, decision or artifact). */
+  refId: string;
+  /** Plain text around the match (never HTML). */
+  snippet: string;
+  /** For messages: where to scroll to. */
+  chatSeq: number | null;
+  at: string;
 };

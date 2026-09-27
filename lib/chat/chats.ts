@@ -141,6 +141,58 @@ const extrasRow = z.object({
   last_at: z.string().nullable(),
   controller_labels: z.array(z.string()).nullable(),
 });
+/** 0.10: chat_list_extras_v2 (per-chat cursor, unread under the 0.10 rules). */
+const extrasV2Row = z.object({
+  chat_id: z.string(),
+  last_chat_seq: z.coerce.number().int().nullable(),
+  last_body: z.string().nullable(),
+  last_at: z.string().nullable(),
+  controller_labels: z.array(z.string()).nullable(),
+  unread_count: z.coerce.number().int().min(0),
+  last_read_chat_seq: z.coerce.number().int().min(0),
+});
+type Extras = {
+  chat_id: string;
+  last_body: string | null;
+  controller_labels: string[] | null;
+  /** 0.10 rules when known (v2); else null and the 0.9 seq comparison decides. */
+  unread_count: number | null;
+  last_seq: number | null;
+};
+
+/**
+ * The newest row, controller labels and unread state per chat. 0.10's
+ * chat_list_extras_v2 first (unread = agent / controller / important
+ * ThreadLink rows after the per-chat read cursor); the 0.9 function when v2
+ * is not there (a database before the 0.10 migration).
+ */
+async function loadExtras(db: SupabaseClient, chatIds: string[]): Promise<Extras[]> {
+  const v2 = await db.rpc("chat_list_extras_v2", { p_chat_ids: chatIds });
+  if (!v2.error && Array.isArray(v2.data)) {
+    return z
+      .array(extrasV2Row)
+      .parse(v2.data)
+      .map((x) => ({
+        chat_id: x.chat_id,
+        last_body: x.last_body,
+        controller_labels: x.controller_labels,
+        unread_count: x.unread_count,
+        last_seq: null,
+      }));
+  }
+  const v1 = await db.rpc("chat_list_extras", { p_chat_ids: chatIds });
+  if (v1.error) fail();
+  return z
+    .array(extrasRow)
+    .parse(v1.data)
+    .map((x) => ({
+      chat_id: x.chat_id,
+      last_body: x.last_body,
+      controller_labels: x.controller_labels,
+      unread_count: null,
+      last_seq: x.last_seq,
+    }));
+}
 
 function assertOwned(user: ThreadLinkUser, rows: { owner_user_id: string }[]) {
   if (rows.some((r) => r.owner_user_id !== user.id)) throw new OwnershipViolationError();
@@ -207,14 +259,14 @@ async function buildSummaries(
       .in("chat_id", chatIds)
       .order("created_at", { ascending: false })
       .limit(1000),
-    db.rpc("chat_list_extras", { p_chat_ids: chatIds }),
+    loadExtras(db, chatIds),
   ]);
-  if (rooms.error || agents.error || groups.error || jobs.error || extras.error) fail();
+  if (rooms.error || agents.error || groups.error || jobs.error) fail();
   const rRows = z.array(roomRow).parse(rooms.data);
   const aRows = z.array(agentRow).parse(agents.data);
   const gRows = z.array(groupRow).parse(groups.data);
   const jRows = z.array(jobRow).parse(jobs.data);
-  const xRows = z.array(extrasRow).parse(extras.data);
+  const xRows = extras;
   assertOwned(user, [...rRows, ...aRows, ...gRows, ...jRows]);
 
   // Health is per computer: each project's agents are judged by the Runtime
@@ -317,7 +369,13 @@ async function buildSummaries(
       ] satisfies ParticipantView[],
       lastMessage: x?.last_body ?? null,
       lastActivityAt: c.last_activity_at,
-      unread: lastSeq !== null && lastSeq > c.last_read_seq,
+      unread:
+        x?.unread_count !== null && x?.unread_count !== undefined
+          ? x.unread_count > 0
+          : lastSeq !== null && lastSeq > c.last_read_seq,
+      ...(x?.unread_count !== null && x?.unread_count !== undefined
+        ? { unreadCount: x.unread_count }
+        : {}),
       needsAttention:
         (latest !== undefined && ATTENTION.has(latest.status)) ||
         (active !== null && waiting.has(active.id)),

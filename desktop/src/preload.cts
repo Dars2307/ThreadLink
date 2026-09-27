@@ -40,6 +40,16 @@ const api = {
   checkProviders: (provider?: string) => ipcRenderer.invoke("providers:check", provider ?? null),
   setSettings: (patch: { autoStart?: boolean; notifications?: boolean }) =>
     ipcRenderer.invoke("settings:set", patch),
+  // 0.10 chats: main validates every argument and rate-limits each operation.
+  listChats: (groupBy?: "recent" | "project") =>
+    ipcRenderer.invoke("chats:list", groupBy ?? "recent"),
+  openChat: (chatId: string) => ipcRenderer.invoke("chat:open", chatId),
+  chatEvents: (chatId: string, page?: { after?: number; before?: number }) =>
+    ipcRenderer.invoke("chat:events", chatId, page ?? {}),
+  sendChat: (chatId: string, body: string, idempotencyKey: string) =>
+    ipcRenderer.invoke("chat:send", chatId, body, idempotencyKey),
+  markChatRead: (chatId: string, seq: number) => ipcRenderer.invoke("chat:read", chatId, seq),
+  openLogs: () => ipcRenderer.invoke("open:logs"),
 };
 
 contextBridge.exposeInMainWorld("threadlink", api);

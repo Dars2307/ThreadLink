@@ -41,6 +41,19 @@ export type {
 export type { TeamProgress } from "./team/orchestrator.ts";
 export { STAGE_KEYS, STAGE_LABELS, STAGE_STATES, deriveStages } from "./team/stages.ts";
 export type { StageKey, StageState, TeamStage } from "./team/stages.ts";
+// 0.10 runtime (docs/design/threadlink-0.10.md §2, §6, §8, §10).
+export { RUNTIME_PROTOCOL } from "./team/wire.ts";
+export {
+  PROVIDER_CAPABILITIES,
+  capabilitiesOf,
+  capabilitiesReport,
+  capabilityFlags,
+} from "./team/capabilities.ts";
+export type { NativeSessionKind, ProviderCapabilities } from "./team/capabilities.ts";
+export { RUN_ACTIVITIES } from "./team/activity.ts";
+export type { RunActivity, StepKind } from "./team/activity.ts";
+export { STEP_TIMEOUT_BOUNDS_MIN, STEP_TIMEOUT_DEFAULTS_MIN } from "./team/timeouts.ts";
+export type { ProcessEntry, RecoveryClass, RecoveryReport } from "./team/registry.ts";
 export { HEALTH_DETAIL, PROVIDER_HEALTH } from "./team/health.ts";
 export type { HealthRecord, ProviderHealth } from "./team/health.ts";
 export { detectIdentity, remoteEnvironment, runtimePlatform } from "./platform.ts";
@@ -55,8 +68,11 @@ export {
 } from "./endpoints.ts";
 export type { CanonicalizeResult, ThreadLinkChannel } from "./endpoints.ts";
 export { maskSessionId } from "./claude-sessions.ts";
+// 0.10 desktop/terminal chat client (owned by the desktop+terminal engineer).
+export { CHAT_API, ChatApiError, ChatClient, chatClientFor } from "./chat-client.ts";
+export type * from "./chat-client.ts";
 
-export const RUNTIME_VERSION = "0.9.0";
+export const RUNTIME_VERSION = "0.10.0";
 
 export type RuntimeContext = {
   configDir: string;

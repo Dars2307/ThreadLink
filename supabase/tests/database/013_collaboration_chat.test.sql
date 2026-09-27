@@ -311,11 +311,11 @@ select is((select body from pg_temp.ev(format('job_id = %L and event_type = ''de
   'a decision names its number and whether it needs the owner');
 select pg_temp.w(pg_temp.id('pj'), 'c-pj', 'set_node_status', '{"key":"limit","status":"running"}');
 select is((select visibility from pg_temp.ev(format(
-  'job_id = %L and event_type = ''unit_status'' and body = ''Unit limit: in progress''', pg_temp.id('pj')))),
+  'job_id = %L and event_type = ''unit_status'' and body = ''Work in progress''', pg_temp.id('pj')))),
   'technical', 'a unit starting is technical');
 select pg_temp.w(pg_temp.id('pj'), 'c-pj', 'set_node_status', '{"key":"limit","status":"changes_requested"}');
 select is((select visibility from pg_temp.ev(format(
-  'job_id = %L and event_type = ''unit_status'' and body = ''Unit limit: changes requested''', pg_temp.id('pj')))),
+  'job_id = %L and event_type = ''unit_status'' and body = ''Work changes requested''', pg_temp.id('pj')))),
   'visible', 'changes requested on a unit is visible');
 select pg_temp.w(pg_temp.id('pj'), 'c-pj', 'set_final',
   '{"verdict":"NEEDS_FIX","summary":"One blocking finding left.","evidence":{}}');

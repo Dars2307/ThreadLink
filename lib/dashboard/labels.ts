@@ -164,6 +164,8 @@ const JOB_LABELS: Record<JobStatus, string> = {
   needs_user_decision: "Needs your decision",
   failed: "Stopped",
   cancelled: "Cancelled",
+  paused: "Paused",
+  interrupted: "Interrupted — needs your decision",
 };
 
 const JOB_TONES: Record<JobStatus, Tone> = {
@@ -180,6 +182,8 @@ const JOB_TONES: Record<JobStatus, Tone> = {
   needs_user_decision: "warning",
   failed: "danger",
   cancelled: "neutral",
+  paused: "neutral",
+  interrupted: "warning",
 };
 
 /** One status for a job: the verdict wins once there is one. */

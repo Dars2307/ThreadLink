@@ -414,7 +414,7 @@ describe("the Chats page", () => {
 });
 
 describe("Home", () => {
-  it("summarises agents, conversations, running chats and attention", async () => {
+  it("summarises agents, the execution host, running chats and attention", async () => {
     mount(
       appState({
         team: [
@@ -428,7 +428,7 @@ describe("Home", () => {
     // Codex is installed but not signed in, so only Claude Code is online.
     expect(tiles).toEqual([
       "Claude CodeAgents online",
-      "1Conversations linked",
+      "OnlineExecution host",
       "1Chats running",
       "1Needs attention",
     ]);
@@ -441,7 +441,7 @@ describe("Providers & plans", () => {
   it("shows install, sign-in, plan, version and models for each provider", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     const cards = [...document.querySelectorAll(".provider")];
     expect(cards).toHaveLength(2);
     const [claude, codex] = cards.map((c) => c.textContent ?? "");
@@ -469,7 +469,7 @@ describe("Providers & plans", () => {
   it("shows usage policy and paid usage from ThreadLink, read-only, and no usage number", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     const text = viewText();
     expect(factOf(0, "Usage policy")).toBe("Balanced");
     expect(factOf(0, "Paid usage")).toBe("Off");
@@ -497,7 +497,7 @@ describe("Providers & plans", () => {
       providers: planViews(serverProfiles, list),
     });
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     expect(document.querySelectorAll(".provider")).toHaveLength(2);
     expect(factOf(0, "Provider reported")).toBe("Claude Code hasn't reported a plan yet.");
     expect(factOf(1, "Provider reported")).toContain("Codex doesn't report your plan");
@@ -507,14 +507,14 @@ describe("Providers & plans", () => {
   it("explains itself when no provider has been found", async () => {
     mount(appState({ teamProviders: [] }));
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     expect(viewText()).toContain("has not found Claude Code or Codex");
   });
 
   it("keeps the executable path under closed Technical details", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     const details = document.querySelector(".provider details.tech") as HTMLDetailsElement;
     expect(details.open).toBe(false);
     expect(details.querySelector("summary")?.textContent).toBe("Technical details");
@@ -540,7 +540,7 @@ describe("choosing your plan from the desktop", () => {
   it("says a plan that is not set is not set, and asks for one", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     expect(factOf(1, "Your plan")).toBe("Not set — choose your plan");
     expect(selectOf(1).value).toBe("unknown");
   });
@@ -548,7 +548,7 @@ describe("choosing your plan from the desktop", () => {
   it("offers exactly the plan lists, with no generic Business", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     const options = (i: number) => [...selectOf(i).options].map((o) => [o.value, o.textContent]);
     expect(options(0)).toEqual([
       ["free", "Free"],
@@ -575,7 +575,7 @@ describe("choosing your plan from the desktop", () => {
   it("saves, says Saved, and shows what the server now holds", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     expect(saveOf(1).disabled).toBe(true); // nothing to save yet
     await choose(1, "business_premium");
     expect(saveOf(1).disabled).toBe(false);
@@ -592,14 +592,14 @@ describe("choosing your plan from the desktop", () => {
   it("keeps the saved plan after leaving and coming back (re-read from the server)", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     await choose(0, "pro");
     saveOf(0).dispatchEvent(new Event("click"));
     await settle();
     const before = bridgeCalls.getPlans;
 
     await navTo("Home");
-    await navTo("Settings");
+    await navTo("Agents");
     expect(bridgeCalls.getPlans).toBe(before + 1);
     expect(factOf(0, "Your plan")).toBe("Pro");
     // The feedback belonged to the last visit.
@@ -610,7 +610,7 @@ describe("choosing your plan from the desktop", () => {
     setPlanResult = () => ({ ok: false, error: "failed" });
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     await choose(0, "free");
     saveOf(0).dispatchEvent(new Event("click"));
     await settle();
@@ -626,7 +626,7 @@ describe("choosing your plan from the desktop", () => {
     };
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     await choose(1, "plus");
     saveOf(1).dispatchEvent(new Event("click"));
     await settle();
@@ -637,7 +637,7 @@ describe("choosing your plan from the desktop", () => {
     getPlansFails = true;
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     expect(viewText()).toContain("Couldn't load your plan from ThreadLink");
     expect(document.querySelectorAll(".provider select")).toHaveLength(0);
   });
@@ -645,7 +645,7 @@ describe("choosing your plan from the desktop", () => {
   it("sends usage policy and paid usage changes to the browser", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     const open = [...document.querySelectorAll(".provider button")].find(
       (b) => b.textContent === "Change in browser",
     )!;
@@ -663,7 +663,7 @@ describe("choosing your plan from the desktop", () => {
     views[0]!.reported = "<img src=x onerror=alert(1)>";
     bridge.getPlans = async () => ({ ok: true, stale: false, providers: views });
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     expect(document.querySelector(".provider img")).toBeNull();
     expect(factOf(0, "Provider reported")).toBe("<img src=x onerror=alert(1)>");
   });
@@ -703,10 +703,10 @@ describe("identifiers", () => {
     expect(row.querySelector("button")?.textContent).toBe("Copied");
   });
 
-  it("copies a provider's detail from Settings", async () => {
+  it("copies a provider's detail from Agents", async () => {
     mount(appState());
     await settle();
-    await navTo("Settings");
+    await navTo("Agents");
     const row = [...document.querySelectorAll(".provider .copy-row")].find((r) =>
       r.textContent?.includes("claude.exe"),
     )!;

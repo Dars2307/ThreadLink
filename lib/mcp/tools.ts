@@ -2,6 +2,17 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
+import {
+  ChatApiError,
+  controllerChatStatus,
+  controllerJobResult,
+  createControllerChat,
+  getControllerChat,
+  listControllerChats,
+  postControllerChatMessage,
+  type ChatApiEvent,
+  type ChatApiSummary,
+} from "@/lib/client-api/chats";
 import { listAgentSessions } from "@/lib/client-api/native";
 import {
   ClientOperationError,
@@ -78,6 +89,11 @@ const chatIdInput = z
     "Optional: the ThreadLink chat this work belongs to (the user can copy it from the chat's " +
       "Details tab). Omit to use the project's default chat.",
   );
+
+const chatHandle = z
+  .string()
+  .regex(/^tlcht_[0-9a-f]{32}$/)
+  .describe("A chatId returned by list_chats or create_chat.");
 
 export const toolInputs = {
   ensure_session: {
@@ -216,6 +232,59 @@ export const toolInputs = {
     offset: z.number().int().min(0).max(100_000).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   },
+  // Chat-first (0.10) --------------------------------------------------------
+  list_chats: { sessionId: sessionIdInput },
+  get_chat: {
+    sessionId: sessionIdInput,
+    chatId: chatHandle,
+    after: z
+      .number()
+      .int()
+      .min(0)
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe("Only messages after this cursor (from a previous get_chat). Omit for the latest."),
+    limit: z.number().int().min(1).max(50).optional().describe("How many messages (default 20)."),
+  },
+  create_chat: {
+    sessionId: sessionIdInput,
+    projectId: z
+      .string()
+      .regex(/^tlrom_[0-9a-f]{32}$/)
+      .describe("A projectId from list_chats (projects)."),
+    name: z.string().trim().min(1).max(100).describe("A short name for the chat."),
+    mode: z
+      .enum(JOB_MODES)
+      .optional()
+      .describe(
+        "How work in this chat runs: 'team' (default), 'pair' (one builds, the other reviews) or 'solo'.",
+      ),
+  },
+  send_message: {
+    sessionId: sessionIdInput,
+    chatId: chatHandle,
+    message: z
+      .string()
+      .min(1)
+      .max(4000)
+      .describe(
+        "What the agents should do, in the user's words. Start with '@claude' or '@codex' to have " +
+          "that agent work alone, or '@team' for the whole team; otherwise the chat's mode decides.",
+      ),
+    idempotencyKey: z
+      .string()
+      .regex(/^[A-Za-z0-9._:-]{1,128}$/)
+      .optional()
+      .describe("Reuse the same key when retrying the same request to avoid duplicates."),
+  },
+  get_chat_status: { sessionId: sessionIdInput, chatId: chatHandle },
+  get_job_result: {
+    sessionId: sessionIdInput,
+    jobId: z
+      .string()
+      .regex(/^tljob_[0-9a-f]{32}$/)
+      .describe("A jobId returned by send_message or get_chat_status."),
+  },
 } as const;
 
 type Input<K extends keyof typeof toolInputs> = z.infer<z.ZodObject<(typeof toolInputs)[K]>>;
@@ -235,6 +304,8 @@ export class ToolError extends Error {}
 
 export function describeError(error: unknown): string {
   if (error instanceof ToolError) return error.message;
+  // Chat refusals carry a fixed sentence chosen by the server (never database text).
+  if (error instanceof ChatApiError) return error.userMessage;
   // Health refusals say who is not ready, in fixed words built from provider ids.
   if (error instanceof ProviderUnhealthyError) return error.userMessage;
   if (error instanceof ClientOperationError) return ERROR_MESSAGES[error.kind] ?? "Request failed.";
@@ -624,5 +695,114 @@ export async function getTeamLogTool(ctx: McpContext, input: Input<"get_team_log
     entries: log.entries,
     total: log.total,
     nextOffset: log.nextOffset,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Chat-first (0.10): the chats this conversation reaches through its links
+// ---------------------------------------------------------------------------
+
+/** A chat for a controller: names, not internals. The chatId is an opaque handle. */
+const chatView = (c: ChatApiSummary) => ({
+  chatId: c.chatId,
+  name: c.name,
+  project: c.projectName,
+  mode: c.mode,
+  runsOn: c.runtimeLabel,
+  computerOnline: c.runtimeOnline,
+  agents: c.participants
+    .filter((p) => p.kind === "agent")
+    .map((p) => ({ name: p.name, health: p.health })),
+  working: c.activeJob ? { jobId: c.activeJob.jobId, status: c.activeJob.status } : null,
+  needsAttention: c.needsAttention,
+  lastActivityAt: c.lastActivityAt,
+});
+
+const messageView = (e: ChatApiEvent) => ({
+  cursor: e.cursor,
+  at: e.createdAt,
+  from: e.authorLabel,
+  ...(e.authorRole ? { role: e.authorRole } : {}),
+  kind: e.eventType,
+  text: e.body,
+});
+
+export async function listChatsTool(ctx: McpContext, input: Input<"list_chats">) {
+  const { chats, projects } = await listControllerChats(
+    ctx.db,
+    ctx.credentialHash,
+    input.sessionId,
+  );
+  return {
+    chats: chats.map((c) => ({
+      chatId: c.chatId,
+      name: c.name,
+      project: c.projectName,
+      mode: c.mode,
+      working: c.activeJob ? { jobId: c.activeJob.jobId, status: c.activeJob.status } : null,
+      lastActivityAt: c.lastActivityAt,
+    })),
+    projects: projects.map((p) => ({ projectId: p.roomId, name: p.name })),
+    next:
+      projects.length === 0
+        ? "No project is linked to this conversation yet. Use link_to_claude and create_room first."
+        : "Use send_message with a chatId to give the agents work, or create_chat for a new chat.",
+  };
+}
+
+export async function getChatTool(ctx: McpContext, input: Input<"get_chat">) {
+  const { chat, messages } = await getControllerChat(ctx.db, ctx.credentialHash, input);
+  return {
+    chat: chatView(chat),
+    messages: messages.events.map(messageView),
+    cursor: messages.cursor,
+    more: messages.hasMore,
+  };
+}
+
+export async function createChatTool(ctx: McpContext, input: Input<"create_chat">) {
+  const chat = await createControllerChat(ctx.db, ctx.credentialHash, {
+    sessionId: input.sessionId,
+    roomId: input.projectId,
+    name: input.name,
+    mode: input.mode,
+  });
+  return {
+    chat: chatView(chat),
+    next: "Use send_message with this chatId to give the agents work.",
+  };
+}
+
+export async function sendMessageTool(ctx: McpContext, input: Input<"send_message">) {
+  const { job, created } = await postControllerChatMessage(ctx.db, ctx.credentialHash, {
+    sessionId: input.sessionId,
+    chatId: input.chatId,
+    body: input.message,
+    idempotencyKey: input.idempotencyKey,
+  });
+  return {
+    jobId: job.jobId,
+    created,
+    status: job.status,
+    mode: job.mode,
+    project: job.roomName,
+    next:
+      "The agents work on the user's computer, asynchronously. Check get_chat_status now and " +
+      "then, and get_job_result when it has finished. The user can follow along in the chat.",
+  };
+}
+
+export async function getChatStatusTool(ctx: McpContext, input: Input<"get_chat_status">) {
+  const { chat, job } = await controllerChatStatus(ctx.db, ctx.credentialHash, input);
+  return { chat: chatView(chat), job: job ? conciseTeamStatus(job) : null };
+}
+
+export async function getJobResultTool(ctx: McpContext, input: Input<"get_job_result">) {
+  const { job, chatName } = await controllerJobResult(ctx.db, ctx.credentialHash, input);
+  return {
+    ...conciseTeamStatus(job),
+    chat: chatName,
+    goal: job.goal,
+    verdictReason: job.verdictReason ?? null,
   };
 }

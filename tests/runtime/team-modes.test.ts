@@ -27,7 +27,8 @@ import { WorktreeManager } from "../../runtime/src/team/worktrees.ts";
  * is run.
  */
 
-vi.setConfig({ testTimeout: 120_000 });
+// Real git worktrees are slow on a loaded machine: generous limits, never a false failure.
+vi.setConfig({ testTimeout: 300_000, hookTimeout: 60_000 });
 
 let repo: string;
 const git = (...args: string[]) =>

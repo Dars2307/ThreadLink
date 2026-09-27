@@ -160,3 +160,53 @@ export function fixedHealthDetail(v: unknown): string | null {
 /** healthCheckedAt: an ISO-8601 timestamp (same rule as the SQL check). */
 export const HEALTH_CHECKED_AT_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+// ---------------------------------------------------------------------------
+// 0.10: one freshness calculation, with the time of the check (section 8).
+// ---------------------------------------------------------------------------
+
+/** "23 s", "4 min", "2 h", "3 d": how long ago, in the largest whole unit. */
+export function agoText(
+  fromIso: string | null | undefined,
+  now: number = Date.now(),
+): string | null {
+  if (!fromIso) return null;
+  const t = Date.parse(fromIso);
+  if (!Number.isFinite(t)) return null;
+  const s = Math.max(0, Math.floor((now - t) / 1000));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86_400) return `${Math.floor(s / 3600)} h`;
+  return `${Math.floor(s / 86_400)} d`;
+}
+
+/** ready | stale (a ready check older than 2 h) | the failing health. */
+export type HealthState = ProviderHealth | "stale";
+
+/**
+ * The one label the UI shows for an agent's health. Never "Ready" with stale
+ * text: "Ready · checked 23 s ago", "Stale · last checked 2 h ago",
+ * "Needs sign-in", "Not checked yet".
+ */
+export function healthStateLabel(
+  state: HealthState,
+  checkedAt: string | null | undefined,
+  now: number = Date.now(),
+): string {
+  const ago = agoText(checkedAt, now);
+  if (state === "ready") return ago ? `Ready · checked ${ago} ago` : "Ready";
+  if (state === "stale") return ago ? `Stale · last checked ${ago} ago` : "Stale";
+  return PROVIDER_HEALTH_LABELS[state];
+}
+
+/** The execution host's presence, in words ("Online", "Offline · last seen 5 min ago", "Working"). */
+export function presenceLabel(
+  presence: "online" | "offline" | "working",
+  lastSeenAt: string | null | undefined,
+  now: number = Date.now(),
+): string {
+  if (presence === "working") return "Working";
+  if (presence === "online") return "Online";
+  const ago = agoText(lastSeenAt, now);
+  return ago ? `Offline · last seen ${ago} ago` : "Offline";
+}

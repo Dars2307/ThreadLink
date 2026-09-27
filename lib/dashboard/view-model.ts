@@ -258,11 +258,11 @@ export function deriveDashboard(data: DashboardData) {
   const anyRuntimeOnline = onlineRuntimes.length > 0;
   const headline = !setupComplete
     ? { tone: "warning" as const, text: "Finish setting up ThreadLink" }
-    : links.some((l) => l.status === "ready")
+    : // A busy exact conversation is that link's own status (Agents → Claude Code),
+      // never a global "Claude is open" headline (brief §64).
+      links.some((l) => l.status === "ready" || l.status === "busy")
       ? { tone: "success" as const, text: "Everything is connected" }
-      : links.some((l) => l.status === "busy")
-        ? { tone: "warning" as const, text: "Claude is open right now" }
-        : { tone: "warning" as const, text: "Connected, but no Runtime is online" };
+      : { tone: "warning" as const, text: "Connected, but no Runtime is online" };
 
   const appOrder: ConnectionPlatform[] = [
     "chatgpt",

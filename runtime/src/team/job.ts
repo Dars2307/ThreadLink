@@ -13,6 +13,7 @@
  */
 
 import type { TeamSpec } from "./prompts.ts";
+import { parseTimeoutOverrides, type TimeoutOverrides } from "./timeouts.ts";
 import {
   parseChatId,
   parseParticipants,
@@ -67,6 +68,11 @@ export type TeamJobDefinition = {
   participants?: AgentProvider[] | null;
   /** 0.9: the chat this job belongs to. */
   chatId?: string | null;
+  /**
+   * 0.10: the project's per-step timeout overrides, in minutes, within
+   * 2-120 (timeouts.ts). Absent: the defaults.
+   */
+  timeouts?: TimeoutOverrides;
 };
 
 export class TeamJobError extends Error {
@@ -210,6 +216,13 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     throw new TeamJobError("reviewer and roleOverrides.reviewer name different agents.");
   }
 
+  let timeouts: TimeoutOverrides;
+  try {
+    timeouts = parseTimeoutOverrides(raw.timeouts ?? p.timeouts);
+  } catch (error) {
+    throw new TeamJobError((error as Error).message);
+  }
+
   const verifyIn = raw.verifyCommands ?? [];
   if (!Array.isArray(verifyIn) || verifyIn.length > 10) {
     throw new TeamJobError("verifyCommands must be a list of at most 10 commands.");
@@ -250,6 +263,7 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     roleOverrides,
     participants,
     chatId,
+    timeouts,
   };
 }
 

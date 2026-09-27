@@ -47,6 +47,9 @@ export const JOB_STATUSES = [
   "needs_user_decision",
   "failed",
   "cancelled",
+  // 0.10: non-terminal waits (a step was interrupted; paused by the owner or a choice).
+  "interrupted",
+  "paused",
 ] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
@@ -94,7 +97,19 @@ export const FINDING_CATEGORIES = [
 ] as const;
 export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
-export const FINDING_STATUSES = ["open", "resolved", "wont_fix"] as const;
+/**
+ * wont_fix is the pre-0.10 name for dismissed. accepted, disputed and fixed
+ * are still open: they block a PASS like open does (0.10 §4).
+ */
+export const FINDING_STATUSES = [
+  "open",
+  "resolved",
+  "wont_fix",
+  "accepted",
+  "disputed",
+  "fixed",
+  "dismissed",
+] as const;
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
 
 /**

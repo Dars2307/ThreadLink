@@ -51,7 +51,11 @@ export async function handleClientRequest(
       error instanceof ClientOperationError ? error.kind : "unavailable";
     if (kind === "unauthorized") return connectionUnauthorizedResponse();
     if (kind === "unavailable") console.error("[threadlink] client operation failed");
-    return Response.json({ error: kind }, { status: STATUS[kind], headers: NO_STORE });
+    const reason = error instanceof ClientOperationError ? error.reason : undefined;
+    return Response.json(reason ? { error: kind, reason } : { error: kind }, {
+      status: STATUS[kind],
+      headers: NO_STORE,
+    });
   }
 }
 

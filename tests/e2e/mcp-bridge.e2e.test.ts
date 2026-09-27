@@ -261,6 +261,13 @@ describe("MCP tools -> bridge -> result", () => {
         "get_team_status",
         "list_rooms",
         "start_team_job",
+        // Chat-first (0.10): chats reachable through this conversation's links.
+        "create_chat",
+        "get_chat",
+        "get_chat_status",
+        "get_job_result",
+        "list_chats",
+        "send_message",
       ].sort(),
     );
   });

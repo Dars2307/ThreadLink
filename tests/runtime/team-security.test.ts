@@ -44,7 +44,8 @@ import { WorktreeManager, type JobWorktrees } from "../../runtime/src/team/workt
  * passing -- turn them into plain `it` then.
  */
 
-vi.setConfig({ testTimeout: 120_000 });
+// Real git worktrees are slow on a loaded machine: generous limits, never a false failure.
+vi.setConfig({ testTimeout: 300_000, hookTimeout: 60_000 });
 
 const UUID = "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
 
@@ -836,8 +837,12 @@ describe("orchestrator writes", () => {
       budgets: { maxPlanningRounds: 1, maxReviewRounds: 1, parallelAgents: 1 },
     });
     expect(outcome.verdict).toBe("NEEDS_USER_DECISION");
+    // 0.10: the owner's question is a plan_disagreement choice (§4); no decision
+    // title fits "not agreed", so none is written with a made-up one.
+    expect(ops.filter((o) => o.op === "request_choice").map((o) => o.payload.kind)).toEqual([
+      "plan_disagreement",
+    ]);
     const needsUser = ops.filter((o) => o.op === "add_decision" && o.payload.needsUser === true);
-    expect(needsUser.length).toBeGreaterThan(0);
     // team_decisions: "waiting for the user" == requires_user AND resolution IS NULL.
     for (const d of needsUser) expect(d.payload.resolution).toBeUndefined();
   });

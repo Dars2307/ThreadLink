@@ -35,6 +35,38 @@ export function chatEventsUrl(chatId: string, after: number, technical: boolean)
   return `/api/dashboard/chat?${q.toString()}`;
 }
 
+/**
+ * 0.10 GET: one page of a chat by its per-chat cursor (chat_seq).
+ * `after` → newer rows (polling); `before` → an older page; neither → the latest page.
+ */
+export function chatPageUrl(
+  chatId: string,
+  opts: { after?: number; before?: number; limit?: number; technical: boolean },
+): string {
+  const q = new URLSearchParams({ technical: opts.technical ? "1" : "0" });
+  if (opts.after !== undefined) q.set("after", String(Math.max(0, Math.floor(opts.after))));
+  if (opts.before !== undefined) q.set("before", String(Math.max(1, Math.floor(opts.before))));
+  if (opts.limit !== undefined) {
+    q.set("limit", String(Math.min(200, Math.max(1, Math.floor(opts.limit)))));
+  }
+  return `/api/dashboard/chats/${encodeURIComponent(chatId)}/events?${q.toString()}`;
+}
+
+/** 0.10 GET → {live: LiveActivity[], host: ChatHostStatus}. */
+export function chatActivityUrl(chatId: string): string {
+  return `/api/dashboard/chats/${encodeURIComponent(chatId)}/activity`;
+}
+
+/** 0.10: download one artifact (text, attachment, nosniff, sandboxed). */
+export function artifactHref(chatId: string, artifactId: string): string {
+  return `/api/dashboard/chats/${encodeURIComponent(chatId)}/artifacts/${encodeURIComponent(artifactId)}`;
+}
+
+/** 0.10: the chat export. */
+export function chatExportHref(chatId: string, format: "md" | "json"): string {
+  return `/api/dashboard/chats/${encodeURIComponent(chatId)}/export?format=${format}`;
+}
+
 /** POST {chatId, body, idempotencyKey}: the server routes it by the chat's mode and any @mention. */
 export const CHAT_POST_URL = "/api/dashboard/chat";
 

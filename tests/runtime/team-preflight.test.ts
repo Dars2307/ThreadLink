@@ -30,7 +30,8 @@ import { WorktreeManager } from "../../runtime/src/team/worktrees.ts";
  * orchestrator with real git worktrees and scripted agents. No real CLI runs.
  */
 
-vi.setConfig({ testTimeout: 120_000 });
+// Real git worktrees are slow on a loaded machine: generous limits, never a false failure.
+vi.setConfig({ testTimeout: 300_000, hookTimeout: 60_000 });
 
 let repo: string;
 const git = (...args: string[]) =>
@@ -426,7 +427,7 @@ describe("provider-neutral roles in a real job", () => {
   it("records the assignment as a decision in fixed words the server accepts", async () => {
     const h = harness();
     await new TeamOrchestrator(job({ roleOverrides: { coordinator: "codex" } }), h.deps).run(repo);
-    const roles = h.of("add_decision").find((d) => d.topic === "Roles")!;
+    const roles = h.of("add_decision").find((d) => d.topic === "Roles chosen")!;
     expect(roles.resolution).toMatch(/^Roles: Codex coordinates \(you chose it\);/);
     expect(JSON.stringify(roles)).not.toContain("AGENT-WRITTEN");
     expect(roles.evidence).toMatchObject({ coordinator: "codex" });

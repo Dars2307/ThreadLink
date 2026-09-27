@@ -40,11 +40,31 @@ export type ClientErrorKind =
   | "unavailable";
 
 export class ClientOperationError extends Error {
-  constructor(readonly kind: ClientErrorKind) {
+  constructor(
+    readonly kind: ClientErrorKind,
+    /** A fixed reason code from SAFE_REASONS, never database text. */
+    readonly reason?: string,
+  ) {
     super(kind);
     this.name = "ClientOperationError";
   }
 }
+
+/**
+ * Database hints a credential client (the Runtime) must be able to act on.
+ * Only these fixed codes are passed through; any other hint is dropped.
+ */
+const SAFE_REASONS = new Set([
+  "interrupted_needs_owner",
+  "native_session_reused",
+  "run_required",
+  "invalid_run",
+  "model_mismatch",
+  "provider_unhealthy",
+  "runtime_outdated",
+  "other_computer",
+  "choice_closed",
+]);
 
 const ERROR_KINDS: Record<string, ClientErrorKind> = {
   "28000": "unauthorized",
@@ -70,7 +90,11 @@ export async function call<T>(
     throw new ClientOperationError("unavailable");
   }
   if (result.error) {
-    throw new ClientOperationError(ERROR_KINDS[result.error.code ?? ""] ?? "unavailable");
+    const hint = (result.error as { hint?: string | null }).hint ?? "";
+    throw new ClientOperationError(
+      ERROR_KINDS[result.error.code ?? ""] ?? "unavailable",
+      SAFE_REASONS.has(hint) ? hint : undefined,
+    );
   }
   try {
     return parse(result.data);

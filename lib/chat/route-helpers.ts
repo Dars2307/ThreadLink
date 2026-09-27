@@ -1,4 +1,6 @@
 import { AuthenticationRequiredError } from "@/lib/auth/resolve-identity";
+import { requireThreadLinkUser } from "@/lib/auth/threadlink-user";
+import { readCappedText } from "@/lib/http/body";
 import { OwnershipViolationError } from "@/lib/connections/model";
 
 import { ChatActionError } from "./chats";
@@ -62,15 +64,10 @@ export async function readSmallJson(
   request: Request,
   maxBytes: number = CHAT_ACTION_MAX_BYTES,
 ): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
-  const declared = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    return { ok: false, response: chatFailure("too_long") };
-  }
   try {
-    const text = await request.text();
-    if (Buffer.byteLength(text, "utf8") > maxBytes) {
-      return { ok: false, response: chatFailure("too_long") };
-    }
+    // Streamed with a byte cap: an oversized body is never buffered whole.
+    const text = await readCappedText(request, maxBytes);
+    if (typeof text !== "string") return { ok: false, response: chatFailure("too_long") };
     return { ok: true, body: JSON.parse(text) as unknown };
   } catch {
     return { ok: false, response: chatFailure("invalid") };
@@ -79,3 +76,20 @@ export async function readSmallJson(
 
 export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * Fail closed before reading anything from the request: the signed-in
+ * ThreadLink user, or the reason to refuse (unauthenticated / unavailable).
+ */
+export async function ownerSignedIn(): Promise<ChatErrorReason | null> {
+  try {
+    await requireThreadLinkUser();
+    return null;
+  } catch (error) {
+    return error instanceof AuthenticationRequiredError ? "unauthenticated" : "unavailable";
+  }
+}
+
+/** A JSON body answered with no-store. */
+export const json = (body: unknown, status = 200): Response =>
+  Response.json(body, { status, headers: NO_STORE });

@@ -1,6 +1,6 @@
 import type { EngineSnapshot } from "threadlink";
 
-import type { HealthView } from "./health.js";
+import { agentsSummary, workingAgents, type HealthView } from "./health.js";
 import type { ChatGroupView } from "./progress.js";
 
 /**
@@ -22,7 +22,69 @@ export type AppState = {
   health?: HealthView[];
   /** Running and recent work grouped by chat, with honest stages. */
   work?: ChatGroupView[];
+  /** 0.10: "2 agents ready" / "1 agent working" / "Execution host online". */
+  agentsLine?: string;
+  /** 0.10: this computer as an execution host. */
+  host?: HostView;
 };
+
+export type HostView = {
+  label: string | null;
+  platform: string | null;
+  online: boolean;
+  lastHeartbeatAt: string | null;
+  version: string;
+  protocol: number | null;
+  /** True when ThreadLink says this Runtime is too old for Team work. */
+  updateRequired: boolean;
+  /** Friendly words for it, or null. */
+  updateText: string | null;
+};
+
+/**
+ * This computer as an execution host. The "update needed" flag is read
+ * tolerantly from whatever the server's register/heartbeat answer carries
+ * (updateRequired / minProtocol); anything unrecognised means no notice.
+ */
+export function hostView(
+  snapshot: unknown,
+  runtime: { version: string; protocol: number | null },
+): HostView {
+  const snap = (snapshot && typeof snapshot === "object" ? snapshot : {}) as Record<
+    string,
+    unknown
+  >;
+  const rt = (snap.runtime && typeof snap.runtime === "object" ? snap.runtime : {}) as Record<
+    string,
+    unknown
+  >;
+  const identity = (
+    snap.identity && typeof snap.identity === "object" ? snap.identity : {}
+  ) as Record<string, unknown>;
+  const label =
+    typeof rt.label === "string"
+      ? rt.label
+      : typeof identity.label === "string"
+        ? identity.label
+        : null;
+  const minProtocol = typeof rt.minProtocol === "number" ? rt.minProtocol : null;
+  const updateRequired =
+    rt.updateRequired === true ||
+    snap.status === "update-required" ||
+    (minProtocol !== null && (runtime.protocol === null || runtime.protocol < minProtocol));
+  return {
+    label: label ? label.slice(0, 100) : null,
+    platform: typeof identity.platform === "string" ? identity.platform.slice(0, 40) : null,
+    online: snap.status === "online" || snap.status === "paused",
+    lastHeartbeatAt: typeof snap.lastHeartbeatAt === "string" ? snap.lastHeartbeatAt : null,
+    version: runtime.version,
+    protocol: runtime.protocol,
+    updateRequired,
+    updateText: updateRequired
+      ? `ThreadLink on ${label ? label.slice(0, 100) : "this computer"} needs an update before Team work can start.`
+      : null,
+  };
+}
 
 export type StatusTone = "ready" | "busy" | "warn" | "off";
 
@@ -31,7 +93,6 @@ export function statusLine(state: AppState): { title: string; detail: string; to
     return { title: "Sign in to ThreadLink", detail: "Not connected", tone: "warn" };
   }
   const snap = state.snapshot;
-  const attached = snap?.workspaces.flatMap((w) => w.conversations) ?? [];
   const claude = snap?.providers.find((p) => p.id === "claude-code");
   if (claude && !claude.available) {
     return {
@@ -46,20 +107,17 @@ export function statusLine(state: AppState): { title: string; detail: string; to
   if (signIn && snap?.status === "online") {
     return { title: `${signIn.providerName} needs sign-in`, detail: signIn.line, tone: "warn" };
   }
-  // Only an exact-conversation binding is blocked by Claude being open; a
-  // background worker runs alongside it and must not be reported as in use.
-  const inUse = attached.some((c) => c.mode === "resume" && c.busy);
   switch (snap?.status) {
-    case "online":
-      return attached.length
-        ? {
-            title: "ThreadLink Ready",
-            detail: inUse
-              ? "A Claude conversation is in use right now"
-              : `${attached.length} conversation${attached.length === 1 ? "" : "s"} ready`,
-            tone: inUse ? "busy" : "ready",
-          }
-        : { title: "Choose a Claude conversation", detail: "Nothing attached yet", tone: "warn" };
+    case "online": {
+      // 0.10: the agents, not one provider's window, say how things are.
+      // Never "Claude is open": that is one binding's detail, not a status.
+      const working = workingAgents(snap.team);
+      return {
+        title: "ThreadLink Ready",
+        detail: agentsSummary(state.health ?? [], working),
+        tone: working ? "busy" : "ready",
+      };
+    }
     case "paused":
       return {
         title: "ThreadLink paused",

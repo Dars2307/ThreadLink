@@ -23,7 +23,45 @@ import {
 } from "./chats";
 import type { ChatQuery } from "./model";
 import { listChatFor, postChatMessageAs, type PostChatMessageOutcome } from "./queries";
-import type { ChatDetail, ChatGroup, ChatPage, ChatSummary } from "./types";
+import type {
+  ArtifactView,
+  ChatDetail,
+  ChatGroup,
+  ChatHostStatus,
+  ChatPage,
+  ChatSearchResult,
+  ChatSummary,
+  ChatTimelinePage,
+  ChoiceView,
+  DecisionView,
+  FindingView,
+  LiveActivity,
+  ProviderInfo,
+  RunProvenance,
+} from "./types";
+import {
+  addAttachmentAs,
+  controlJobAs,
+  decideChoiceAs,
+  deleteArtifactAs,
+  getHostStatusAs,
+  getProjectHubFor,
+  getRunProvenanceFor,
+  listArtifactsFor,
+  listChoicesFor,
+  listDecisionsFor,
+  listFindingsFor,
+  listLiveActivityFor,
+  listRunsFor,
+  listTimelineFor,
+  markChatReadSeqAs,
+  readArtifactFor,
+  revealRunNativeSessionAs,
+  searchChatsAs,
+  type ProjectHub,
+  type TimelineQuery,
+} from "./work";
+import { listAgentProviders } from "@/lib/providers/registry";
 
 /**
  * Signed-in (dashboard) entry points for chats and the chat timeline.
@@ -136,4 +174,117 @@ export async function retryMyJobWithRoles(
 ): Promise<{ jobId: string; chatId: string; replayed: boolean }> {
   await requireThreadLinkUser();
   return retryJobWithRolesAs(createUserSupabaseClient(), jobId, coordinator);
+}
+
+// --- 0.10 -------------------------------------------------------------------
+// The timeline by the per-chat cursor, run provenance, live activity,
+// findings / decisions / choices / artifacts, controls, attachments, search,
+// host status. See lib/chat/work.ts.
+
+/** One page of a chat by its own cursor (chat_seq); the global seq is never exposed. */
+export async function listMyChatTimeline(
+  chatId: unknown,
+  query: TimelineQuery,
+): Promise<ChatTimelinePage> {
+  const user = await requireThreadLinkUser();
+  return listTimelineFor(createUserSupabaseClient(), user, chatId, query);
+}
+
+export async function getMyRunProvenance(
+  chatId: unknown,
+  runId: unknown,
+): Promise<RunProvenance | null> {
+  const user = await requireThreadLinkUser();
+  return getRunProvenanceFor(createUserSupabaseClient(), user, chatId, runId);
+}
+
+export async function revealMyRunNativeSession(chatId: unknown, runId: unknown) {
+  const user = await requireThreadLinkUser();
+  return revealRunNativeSessionAs(createUserSupabaseClient(), user, chatId, runId);
+}
+
+/** Every recorded run of the chat (Details), newest first. */
+export async function listMyChatRuns(chatId: unknown): Promise<RunProvenance[]> {
+  const user = await requireThreadLinkUser();
+  return listRunsFor(createUserSupabaseClient(), user, chatId);
+}
+
+export async function listMyLiveActivity(chatId: unknown): Promise<LiveActivity[]> {
+  const user = await requireThreadLinkUser();
+  return listLiveActivityFor(createUserSupabaseClient(), user, chatId);
+}
+
+export async function getMyHostStatus(chatId: unknown): Promise<ChatHostStatus> {
+  await requireThreadLinkUser();
+  return getHostStatusAs(createUserSupabaseClient(), chatId);
+}
+
+export async function listMyFindings(chatId: unknown): Promise<FindingView[]> {
+  const user = await requireThreadLinkUser();
+  return listFindingsFor(createUserSupabaseClient(), user, chatId);
+}
+
+export async function listMyDecisions(chatId: unknown): Promise<DecisionView[]> {
+  const user = await requireThreadLinkUser();
+  return listDecisionsFor(createUserSupabaseClient(), user, chatId);
+}
+
+export async function listMyChoices(chatId: unknown): Promise<ChoiceView[]> {
+  const user = await requireThreadLinkUser();
+  return listChoicesFor(createUserSupabaseClient(), user, chatId);
+}
+
+export async function decideMyChoice(
+  chatId: unknown,
+  choiceId: unknown,
+  body: unknown,
+): Promise<ChoiceView> {
+  const user = await requireThreadLinkUser();
+  return decideChoiceAs(createUserSupabaseClient(), user, chatId, choiceId, body);
+}
+
+export async function controlMyJob(chatId: unknown, body: unknown) {
+  const user = await requireThreadLinkUser();
+  return controlJobAs(createUserSupabaseClient(), user, chatId, body);
+}
+
+export async function listMyArtifacts(chatId: unknown): Promise<ArtifactView[]> {
+  const user = await requireThreadLinkUser();
+  return listArtifactsFor(createUserSupabaseClient(), user, chatId);
+}
+
+export async function addMyAttachment(chatId: unknown, input: unknown): Promise<ArtifactView> {
+  const user = await requireThreadLinkUser();
+  return addAttachmentAs(createUserSupabaseClient(), user, chatId, input);
+}
+
+export async function deleteMyArtifact(chatId: unknown, artifactId: unknown): Promise<void> {
+  const user = await requireThreadLinkUser();
+  return deleteArtifactAs(createUserSupabaseClient(), user, chatId, artifactId);
+}
+
+export async function readMyArtifact(chatId: unknown, artifactId: unknown) {
+  const user = await requireThreadLinkUser();
+  return readArtifactFor(createUserSupabaseClient(), user, chatId, artifactId);
+}
+
+export async function searchMyChats(query: unknown): Promise<ChatSearchResult[]> {
+  await requireThreadLinkUser();
+  return searchChatsAs(createUserSupabaseClient(), query);
+}
+
+export async function markMyChatReadSeq(chatId: unknown, chatSeq: unknown) {
+  await requireThreadLinkUser();
+  return markChatReadSeqAs(createUserSupabaseClient(), chatId, chatSeq);
+}
+
+export async function listMyAgentProviders(): Promise<ProviderInfo[]> {
+  await requireThreadLinkUser();
+  return listAgentProviders(createUserSupabaseClient());
+}
+
+/** The project hub: verification commands, repository, execution host (owner only). */
+export async function getMyProjectHub(roomId: unknown): Promise<ProjectHub | null> {
+  const user = await requireThreadLinkUser();
+  return getProjectHubFor(createUserSupabaseClient(), user, roomId);
 }

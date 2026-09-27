@@ -292,7 +292,14 @@ describe("provider health texts", () => {
     ["unknown", "Not checked yet"],
   ])("%s reads %s", (health, words) => {
     const [claude] = healthViews({
-      teamProviders: [{ provider: "claude-code", installed: true, health }],
+      teamProviders: [
+        {
+          provider: "claude-code",
+          installed: true,
+          health,
+          healthCheckedAt: new Date().toISOString(),
+        },
+      ],
     });
     expect(claude!.text).toBe(words);
     expect(claude!.line).toBe(`Claude Code — ${words}`);
@@ -468,8 +475,8 @@ describe("the tray", () => {
   });
 });
 
-it("is version 0.9.0", () => {
-  expect(PKG.version).toBe("0.9.0");
+it("is version 0.10.0", () => {
+  expect(PKG.version).toBe("0.10.0");
 });
 
 // ---------------------------------------------------------------------------
@@ -514,7 +521,14 @@ function appState(snapshot: Record<string, unknown> = {}) {
         health: "needs_sign_in",
         models: [],
       },
-      { provider: "codex", installed: true, authenticated: true, health: "ready", models: [] },
+      {
+        provider: "codex",
+        installed: true,
+        authenticated: true,
+        health: "ready",
+        healthCheckedAt: new Date(Date.now() - 23_000).toISOString(),
+        models: [],
+      },
     ],
     ...snapshot,
   };
@@ -606,18 +620,29 @@ describe("provider health on screen", () => {
     expect(tiles[3]).toBe("1Needs attention");
   });
 
-  it("shows it on Agents and in Settings → Providers & plans", async () => {
+  it("shows it on Agents, with each agent's own section (Agents → <provider>)", async () => {
     mount(appState());
     await settle();
     await navTo("Agents");
     expect(healthLines()).toEqual(["Claude Code — Needs sign-in", "Codex — Ready"]);
-    await navTo("Settings");
+    // One freshness verdict: "Ready · checked 23 s ago", never Ready beside stale words.
+    expect(viewText()).toContain("checked 23 s ago");
     const cards = [...document.querySelectorAll(".provider")];
-    expect(cards[0]!.textContent).toContain("Claude Code — Needs sign-in");
+    expect(cards[0]!.textContent).toContain("Needs sign-in");
     expect(cards[0]!.textContent).toContain(SIGN_IN_INSTRUCTION);
-    expect(cards[1]!.textContent).toContain("Codex — Ready");
+    expect(cards[1]!.textContent).toContain("Ready · checked 23 s ago");
+    expect(document.getElementById("agent-claude-code")?.textContent).toContain(
+      "Attached conversations",
+    );
+    expect(document.getElementById("agent-codex")?.textContent).not.toContain(
+      "Attached conversations",
+    );
     expect(viewText()).not.toContain("Signed in");
-    expect(document.querySelector("#providers-check .check-again")).toBeTruthy();
+    expect(document.querySelector("#agents-health .check-again")).toBeTruthy();
+    // Settings no longer carries provider-specific settings.
+    await navTo("Settings");
+    expect(document.querySelectorAll(".provider")).toHaveLength(0);
+    expect(document.getElementById("settings-agents")).toBeTruthy();
   });
 
   it("says 'Not checked yet' when main sent no health at all", async () => {

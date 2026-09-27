@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { isAbsolute } from "node:path";
 import { statSync } from "node:fs";
 
+import type { RunActivity } from "./activity.ts";
 import type { AgentProvider, TeamRole } from "./types.ts";
 
 export type { AgentProvider } from "./types.ts";
@@ -42,6 +43,19 @@ export type AgentRunRequest = {
   resumeThreadId?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Real activity signals from the provider's own event stream, mapped to the
+   * fixed enum in activity.ts. Never carries text. Called for every event, so
+   * the caller rate-limits (ActivityReporter).
+   */
+  onActivity?: (activity: RunActivity) => void;
+  /** The provider process this run started, and its exit: for the process registry. */
+  onProcess?: ProcessHooks;
+};
+
+export type ProcessHooks = {
+  started(child: ChildProcess): void;
+  exited(pid: number): void;
 };
 
 export type AgentRunFailure =
@@ -51,6 +65,8 @@ export type AgentRunFailure =
   | "not_authenticated"
   | "not_installed"
   | "timeout"
+  /** Stopped by ThreadLink (the owner's stop, or the job ending): not a provider failure. */
+  | "cancelled"
   | "provider_error";
 
 export type AgentRunResult = {
@@ -66,6 +82,11 @@ export type AgentRunResult = {
   observedModel: string | null;
   /** Every model the provider reported using in this run, if it reports several. */
   observedModels?: string[];
+  /**
+   * Set by the runner only after it compared the observed model with the
+   * requested one and they matched. Absent or false: not verified.
+   */
+  modelVerified?: boolean;
   observedEffort: string | null;
   /** The provider itself confirmed the sandbox we asked for. */
   accessVerified: boolean;
@@ -283,6 +304,8 @@ export type SpawnFn = typeof spawn;
 export function killTree(child: ChildProcess): Promise<void> {
   const pid = child.pid;
   if (!pid) return Promise.resolve();
+  // Already gone: its pid may belong to something else by now. Never kill it.
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   if (process.platform === "win32") {
     return new Promise((resolve) => {
       try {
@@ -348,13 +371,16 @@ export type RunProcessOptions = {
   signal?: AbortSignal;
   /** Called per complete stdout line; stdout is then not accumulated. */
   onStdoutLine?: (line: string) => void;
+  /** The process ThreadLink started, and its exit (process registry). */
+  hooks?: ProcessHooks;
 };
 
 const MAX_CAPTURE = 8 * 1024 * 1024;
 
 /** Spawns without a shell, captures output, enforces timeout/abort by killing the tree. */
 export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> {
-  const { spawnFn, command, args, cwd, env, stdinText, timeoutMs, signal, onStdoutLine } = options;
+  const { spawnFn, command, args, cwd, env, stdinText, timeoutMs, signal, onStdoutLine, hooks } =
+    options;
   return new Promise((resolve) => {
     let settled = false;
     let stdout = "";
@@ -370,6 +396,13 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> 
     ) => {
       if (settled) return;
       settled = true;
+      if (child?.pid) {
+        try {
+          hooks?.exited(child.pid);
+        } catch {
+          /* the registry is advisory */
+        }
+      }
       if (timers.timeout) clearTimeout(timers.timeout);
       signal?.removeEventListener("abort", onAbort);
       if (onStdoutLine && partial.trim()) onStdoutLine(partial);
@@ -403,6 +436,13 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> 
     } catch (error) {
       finish({ code: null, spawnError: error instanceof Error ? error.message : "spawn failed" });
       return;
+    }
+    if (child.pid) {
+      try {
+        hooks?.started(child);
+      } catch {
+        /* the registry is advisory; stopping still goes through this function */
+      }
     }
 
     child.stdout?.on("data", (d: Buffer) => {
@@ -462,7 +502,7 @@ export function processFailure(
         : "provider_error",
     );
   }
-  if (outcome.aborted) return failResult(request, `${label} run was aborted.`, "timeout");
+  if (outcome.aborted) return failResult(request, `${label} run was stopped.`, "cancelled");
   if (outcome.timedOut) {
     return failResult(
       request,

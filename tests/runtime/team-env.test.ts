@@ -5,6 +5,9 @@ import { buildAgentEnv, isScrubbedVariable } from "../../runtime/src/team/env.ts
 const MUST_REMOVE = [
   // named in the design / brief
   "ANTHROPIC_API_KEY",
+  // ThreadLink's own credential and settings (0.10 security review)
+  "THREADLINK_BRIDGE_TOKEN",
+  "THREADLINK_CODEX_PATH",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
   "OPENAI_API_KEY",
@@ -58,7 +61,6 @@ const MUST_KEEP = [
   "GIT_AUTHOR_NAME",
   "CLAUDE_CODE_GIT_BASH_PATH",
   "CLAUDE_CODE_OAUTH_TOKEN", // subscription login for headless setups: not a billing switch
-  "THREADLINK_CODEX_PATH",
   "API_KEY_HINT", // does not END in _API_KEY
   "TOKEN_DIR",
   "ANTHROPICISH", // no underscore: not the ANTHROPIC_ family

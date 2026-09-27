@@ -6,7 +6,10 @@ import {
   CHAT_EVENT_TYPES,
   CHAT_VISIBILITY,
   JOB_MODES,
+  REF_KINDS,
+  type ChatAudience,
   type ChatEvent,
+  type MessageDelivery,
 } from "./types";
 
 /**
@@ -28,6 +31,8 @@ export const CHAT_MESSAGE_MAX_CHARS = 4000;
 export const CHAT_POST_MAX_BYTES = 20 * 1024;
 
 const PROVIDERS = ["claude-code", "codex"] as const;
+/** A registry provider id (public.agent_providers.id). */
+export const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
 
 export const chatEventRowSchema = z.object({
   seq: z.coerce.number().int().min(1),
@@ -42,10 +47,14 @@ export const chatEventRowSchema = z.object({
   task_id: z.string().nullable(),
   node_id: z.string().nullable(),
   author_kind: z.enum(CHAT_AUTHOR_KINDS),
-  author_provider: z.enum(PROVIDERS).nullable(),
+  // 0.10: any registry provider (the database checks it against the registry).
+  author_provider: z.string().regex(PROVIDER_ID_PATTERN).nullable(),
   author_label: z.string().min(1).max(60),
   author_role: z.string().nullable(),
-  audience: z.enum(CHAT_AUDIENCES).nullable(),
+  audience: z
+    .string()
+    .regex(/^(team|[a-z][a-z0-9-]{1,39})$/)
+    .nullable(),
   event_type: z.enum(CHAT_EVENT_TYPES),
   message_type: z.string().nullable(),
   round: z.number().int().nullable(),
@@ -53,6 +62,16 @@ export const chatEventRowSchema = z.object({
   model_observed: z.string().nullable(),
   body: z.string(),
   visibility: z.enum(CHAT_VISIBILITY),
+  // 0.10 (optional so a row selected without them still parses).
+  chat_seq: z.coerce.number().int().min(1).nullable().optional(),
+  run_id: z.string().nullable().optional(),
+  reply_to_event_id: z.string().nullable().optional(),
+  ref_kind: z.enum(REF_KINDS).nullable().optional(),
+  ref_id: z.string().nullable().optional(),
+  payload: z.record(z.string(), z.unknown()).nullable().optional(),
+  queued_for: z.array(z.string()).nullable().optional(),
+  consumed_by_run_id: z.string().nullable().optional(),
+  delivered_at: z.string().nullable().optional(),
 });
 export type ChatEventRow = z.infer<typeof chatEventRowSchema>;
 
@@ -61,6 +80,49 @@ export const CHAT_EVENT_COLUMNS =
   "seq, id, owner_user_id, created_at, room_id, chat_id, agent_session_id, job_id, task_id, node_id, " +
   "author_kind, author_provider, author_label, author_role, audience, event_type, message_type, " +
   "round, model_requested, model_observed, body, visibility";
+
+/** 0.10: the same plus the cursor, provenance, replies, card payload and delivery. */
+export const CHAT_EVENT_COLUMNS_V10 =
+  CHAT_EVENT_COLUMNS +
+  ", chat_seq, run_id, reply_to_event_id, ref_kind, ref_id, payload, queued_for, consumed_by_run_id, delivered_at";
+
+const isLegacyProvider = (p: string | null): p is (typeof PROVIDERS)[number] =>
+  p !== null && (PROVIDERS as readonly string[]).includes(p);
+const isLegacyAudience = (a: string | null): a is ChatAudience =>
+  a !== null && (CHAT_AUDIENCES as readonly string[]).includes(a);
+
+/**
+ * Where an owner note is (section 5), from the row and trusted context:
+ * the job's state and the provider of the run that consumed it.
+ *   sent          a request, a stop, or a note that needs no delivery
+ *   queued        waiting for the addressed participants (job still running)
+ *   seen          read by a run (by its provider), or delivered before 0.10
+ *   not_delivered the job ended before anyone read it
+ */
+export function deliveryOf(
+  r: Pick<ChatEventRow, "author_kind" | "event_type" | "job_id" | "audience"> & {
+    queued_for?: string[] | null;
+    consumed_by_run_id?: string | null;
+    delivered_at?: string | null;
+  },
+  ctx: { jobFinished: boolean | null; consumedByProvider: string | null },
+): MessageDelivery | null {
+  if (r.author_kind !== "owner") return null;
+  if (r.event_type !== "message" || r.job_id === null) return { state: "sent" };
+  const queued = r.queued_for ?? null;
+  if (!r.delivered_at) {
+    if (ctx.jobFinished) return { state: "not_delivered" };
+    return { state: "queued", for: queued ?? (r.audience ? [r.audience] : []) };
+  }
+  if (r.consumed_by_run_id) {
+    return {
+      state: "seen",
+      by: ctx.consumedByProvider ? [ctx.consumedByProvider] : (queued ?? []),
+    };
+  }
+  // Delivered without a queue: a stop request (never delivered as a note).
+  return queued ? { state: "seen", by: queued } : { state: "sent" };
+}
 
 export function toChatEvent(r: ChatEventRow): ChatEvent {
   return {
@@ -74,11 +136,13 @@ export function toChatEvent(r: ChatEventRow): ChatEvent {
     taskId: r.task_id,
     nodeId: r.node_id,
     authorKind: r.author_kind,
-    // Defence in depth: a provider is only ever shown on an agent row.
-    authorProvider: r.author_kind === "agent" ? r.author_provider : null,
+    // Defence in depth: a provider is only ever shown on an agent row. The
+    // 0.9 field keeps its union; any other registry id is in authorProviderId.
+    authorProvider:
+      r.author_kind === "agent" && isLegacyProvider(r.author_provider) ? r.author_provider : null,
     authorLabel: r.author_label,
     authorRole: r.author_role,
-    audience: r.audience,
+    audience: isLegacyAudience(r.audience) ? r.audience : null,
     eventType: r.event_type,
     messageType: r.message_type,
     round: r.round,
@@ -86,6 +150,25 @@ export function toChatEvent(r: ChatEventRow): ChatEvent {
     modelObserved: r.model_observed,
     body: r.body,
     visibility: r.visibility,
+    // 0.10 fields, only when the row was selected with them.
+    ...(r.chat_seq !== undefined ? { chatSeq: r.chat_seq } : {}),
+    ...(r.run_id !== undefined
+      ? {
+          runId: r.run_id,
+          provenance: r.author_kind === "agent" ? (r.run_id ? "run" : "legacy") : null,
+        }
+      : {}),
+    ...(r.reply_to_event_id !== undefined ? { replyTo: r.reply_to_event_id } : {}),
+    ...(r.ref_kind !== undefined
+      ? { ref: r.ref_kind && r.ref_id ? { kind: r.ref_kind, id: r.ref_id } : null }
+      : {}),
+    ...(r.payload !== undefined ? { payload: r.payload } : {}),
+    ...(r.chat_seq !== undefined
+      ? {
+          authorProviderId: r.author_kind === "agent" ? r.author_provider : null,
+          audienceId: r.audience,
+        }
+      : {}),
   };
 }
 
@@ -195,6 +278,16 @@ export const CHAT_ERROR_REASONS = [
   "project_not_found",
   "job_not_found",
   "project_changed",
+  // 0.10
+  "choice_not_found",
+  "choice_closed",
+  "choice_expired",
+  "invalid_choice",
+  "invalid_control",
+  "job_finished",
+  "nothing_to_resume",
+  "run_not_found",
+  "artifact_not_found",
 ] as const;
 export type ChatErrorReason = (typeof CHAT_ERROR_REASONS)[number];
 
@@ -235,6 +328,15 @@ export const CHAT_ERROR_MESSAGES: Record<ChatErrorReason, string> = {
   project_not_found: "This project wasn't found.",
   job_not_found: "This work wasn't found.",
   project_changed: "This chat now belongs to another project; start a new request instead.",
+  choice_not_found: "This question wasn't found.",
+  choice_closed: "This question has already been answered or closed.",
+  choice_expired: "This question expired: nobody answered it within 24 hours.",
+  invalid_choice: "That isn't one of the options.",
+  invalid_control: "That isn't a control ThreadLink knows.",
+  job_finished: "This work has already finished.",
+  nothing_to_resume: "Nothing is paused or interrupted here, so there's nothing to resume.",
+  run_not_found: "This agent run wasn't found.",
+  artifact_not_found: "This file wasn't found.",
 };
 
 export const CHAT_ERROR_STATUS: Record<ChatErrorReason, number> = {
@@ -269,6 +371,15 @@ export const CHAT_ERROR_STATUS: Record<ChatErrorReason, number> = {
   project_not_found: 404,
   job_not_found: 404,
   project_changed: 409,
+  choice_not_found: 404,
+  choice_closed: 409,
+  choice_expired: 409,
+  invalid_choice: 400,
+  invalid_control: 400,
+  job_finished: 409,
+  nothing_to_resume: 409,
+  run_not_found: 404,
+  artifact_not_found: 404,
 };
 
 const HINT_REASONS: Record<string, ChatErrorReason> = {
@@ -303,6 +414,16 @@ const HINT_REASONS: Record<string, ChatErrorReason> = {
   project_not_found: "project_not_found",
   job_not_found: "job_not_found",
   project_changed: "project_changed",
+  // 0.10
+  choice_not_found: "choice_not_found",
+  choice_closed: "choice_closed",
+  choice_expired: "choice_expired",
+  invalid_choice: "invalid_choice",
+  invalid_control: "invalid_control",
+  job_finished: "job_finished",
+  nothing_to_resume: "nothing_to_resume",
+  run_not_found: "run_not_found",
+  artifact_not_found: "artifact_not_found",
 };
 
 const CODE_REASONS: Record<string, ChatErrorReason> = {

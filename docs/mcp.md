@@ -29,6 +29,37 @@ exposed over MCP. An agent credential gets `403` on `/mcp`.
 
 ThreadLink never guesses a destination, and pending links never route.
 
+### Chat-first tools (0.10)
+
+The Team Mode tools (`list_rooms`, `create_room`, `get_room`, `start_team_job`, `get_team_status`,
+`get_team_log`) are unchanged. 0.10 adds the chat-first tools. Responses use names (chat, project,
+computer, agents); `chatId`, `projectId` and `jobId` are opaque handles.
+
+| Tool              | Purpose                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `list_chats`      | The chats this conversation can reach, plus the projects it can create chats in                                          |
+| `get_chat`        | A chat's agents (with readiness), what is running, and its recent messages (`after` = a cursor from a previous call)     |
+| `create_chat`     | A new chat in a reachable project (`projectId`, `name`, optional `mode`)                                                 |
+| `send_message`    | Give the chat's agents work, as this conversation: routed by the chat's mode or a leading `@claude` / `@codex` / `@team` |
+| `get_chat_status` | The running job in a chat (or its latest one): phase, rounds, open findings                                              |
+| `get_job_result`  | A job's outcome: verdict, summary, open findings                                                                         |
+
+**Reachability.** A controller may only address a chat whose project (room) is active and whose
+agent session is the target of one of **this session's own active links**. Another account's chat,
+the same owner's chat in a project this conversation has no link to, a chat with no project, and a
+deleted chat are all answered exactly like a chat that does not exist ("This chat wasn't found.").
+
+**`send_message` is the controller's request, not the owner's.** The job is started over the
+caller's own link and its request row is authored by the controller with the controller's label
+(e.g. "ChatGPT"), never "You". It follows the owner composer's rules (chat mode, `@mention`, health
+gate, per-link task caps, idempotency by `idempotencyKey` per session) with three fail-closed
+differences: it cannot add notes to, or stop, work already running in the chat (`job_active`); a
+failed health gate stores nothing and names who is not ready; solo work in a project that requires
+review is refused.
+
+A Runtime (agent) credential gets `403` on `/mcp`, and the database refuses it on every controller
+function as well.
+
 ## Session binding: no ChatGPT conversation ID
 
 ChatGPT does not give MCP servers a verified, stable conversation ID, so ThreadLink does not invent

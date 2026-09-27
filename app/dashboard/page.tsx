@@ -5,14 +5,19 @@ import { redirect } from "next/navigation";
 
 import { PageHeader, Shell, StatGrid, StatTile } from "@/components/dashboard/shell";
 import { ModeBadge } from "@/components/dashboard/chats";
+import { OnboardingCard } from "@/components/dashboard/onboarding";
 import { SetupWizard } from "@/components/dashboard/setup-wizard";
 import { Badge, buttonStyles, Card, CardTitle, EmptyState } from "@/components/ui";
 import { getIdentity } from "@/lib/auth/identity";
 import { chatHref, homeChats, type ChatRow } from "@/lib/dashboard/chats";
 import { loadChats } from "@/lib/dashboard/chats-data";
-import { loadAccount, loadTeam } from "@/lib/dashboard/data";
+import { profileHealth } from "@/lib/dashboard/agents";
+import { loadAccount, loadProjectChoices, loadProviders, loadTeam } from "@/lib/dashboard/data";
+import { onboarding } from "@/lib/dashboard/onboarding";
 import { deriveHome, EMPTY_TEAM } from "@/lib/dashboard/pages";
 import { projectHref } from "@/lib/dashboard/project";
+import { providerDisplay } from "@/lib/dashboard/providers-display";
+import { healthFreshness } from "@/lib/dashboard/timeline";
 import { controllerName, deriveDashboard } from "@/lib/dashboard/view-model";
 import { requestOrigin } from "@/lib/oauth/authorize";
 
@@ -25,7 +30,13 @@ export default async function HomePage() {
   const clerkUser = await currentUser();
   if (!clerkUser || clerkUser.id !== identity.clerkUserId) redirect("/sign-in");
 
-  const [account, team, chats] = await Promise.all([loadAccount(), loadTeam(), loadChats()]);
+  const [account, team, chats, providers, rooms] = await Promise.all([
+    loadAccount(),
+    loadTeam(),
+    loadChats(),
+    loadProviders(),
+    loadProjectChoices(),
+  ]);
   if (!account) {
     return (
       <Shell>
@@ -44,9 +55,26 @@ export default async function HomePage() {
   // The setup steps need the session choices; they only render until setup is done.
   const setup = view.setupComplete ? null : deriveDashboard(account);
   const origin = setup ? await requestOrigin() : "";
+  // First run: connect agents → create the first chat. "Ready" counts only when freshly checked.
+  const profiles = providers?.profiles ?? [];
+  const readyAgents = profiles
+    .filter((p) => {
+      const h = profileHealth(p);
+      return healthFreshness(h.health, h.checkedAt, account.now).state === "ready";
+    })
+    .map((p) => providerDisplay(p.provider).name);
+  const firstRun = onboarding({
+    chats: chats?.length ?? 1,
+    readyAgents,
+    detectedAgents: profiles.filter((p) => p.detected.installed === true || p.detectedAt).length,
+  });
+  const projectChoices = (rooms ?? [])
+    .filter((r) => !r.archived)
+    .map((r, i) => ({ key: `p${i}`, name: r.name, id: r.roomId }));
 
   return (
     <Shell>
+      <OnboardingCard model={firstRun} projects={projectChoices} />
       <PageHeader
         eyebrow={firstName ? `Welcome back, ${firstName}` : "Welcome back"}
         title={view.headline.text}

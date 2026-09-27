@@ -7,11 +7,14 @@
 export class ApiError extends Error {
   readonly status: number;
   readonly kind: string;
-  constructor(status: number, kind: string) {
-    super(`ThreadLink request failed (${status} ${kind})`);
+  /** A fixed reason code the server passed through (e.g. interrupted_needs_owner). */
+  readonly reason: string | null;
+  constructor(status: number, kind: string, reason: string | null = null) {
+    super(`ThreadLink request failed (${status} ${kind}${reason ? `: ${reason}` : ""})`);
     this.name = "ApiError";
     this.status = status;
     this.kind = kind;
+    this.reason = reason;
   }
 }
 
@@ -176,7 +179,9 @@ export class ThreadLinkApi {
     if (!response.ok) {
       const kind =
         json && typeof json === "object" && "error" in json ? String(json.error) : "error";
-      throw new ApiError(response.status, kind);
+      const raw = json && typeof json === "object" && "reason" in json ? json.reason : null;
+      const reason = typeof raw === "string" && /^[a-z_]{1,40}$/.test(raw) ? raw : null;
+      throw new ApiError(response.status, kind, reason);
     }
     return json as T;
   }
@@ -339,12 +344,20 @@ export class ThreadLinkApi {
     return res.links;
   }
 
-  registerRuntime(input: { label: string; platform: string; kind: string; version: string }) {
+  /** `protocol`: RUNTIME_PROTOCOL (team/wire.ts), so the server can gate features (§8). */
+  registerRuntime(input: {
+    label: string;
+    platform: string;
+    kind: string;
+    version: string;
+    protocol: number;
+  }) {
     return this.#request<RuntimeView>("POST", "/api/runtime/register", input);
   }
 
   runtimeHeartbeat(input: {
     version: string;
+    protocol: number;
     capabilities: Record<string, string>;
     busySessionIds: string[];
   }) {

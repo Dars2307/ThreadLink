@@ -16,6 +16,7 @@ import type { ProviderHealthMonitor } from "./health.ts";
 import { parseTeamJob, TeamJobError } from "./job.ts";
 import { classifyModels, isSelectable, type ModelClassOverrides } from "./models.ts";
 import {
+  InterruptedRefusal,
   TeamOrchestrator,
   type AgentRunner,
   type HealthPort,
@@ -26,7 +27,24 @@ import {
 import { graphPort, routePort } from "./ports.ts";
 import type { RouteOverride } from "./router.ts";
 import { createRunners } from "./providers.ts";
+import {
+  classifyRecovery,
+  leftByAnotherProcess,
+  type JobJournal,
+  type JournalStore,
+  type JobJournalState,
+  type ProcessEntry,
+  type ProcessRegistry,
+  type RecoveryReport,
+} from "./registry.ts";
 import type { AgentProvider, ModelClass } from "./types.ts";
+import {
+  OPS_0_10,
+  parseChoiceId,
+  parseChoices,
+  readChoicesPayload,
+  requestChoicePayload,
+} from "./wire.ts";
 import { UsageGovernor } from "./usage.ts";
 import { runVerify } from "./verify.ts";
 import { WorktreeManager } from "./worktrees.ts";
@@ -63,6 +81,21 @@ export type TeamExecutorOptions = {
   verify?: typeof runVerify;
   onProgress?(progress: TeamProgress): void;
   log?(message: string): void;
+  /** 0.10 crash recovery: per-job journals in configDir (registry.ts). */
+  journals?: JournalStore;
+  /** 0.10: the provider processes this Runtime started (stop_now kills only these). */
+  processes?: ProcessRegistry;
+  /** Process entries a previous Runtime left behind (classification only). */
+  staleProcesses?: readonly ProcessEntry[];
+  /** Jobs running in this process now, shared by every executor of one Runtime. */
+  activeJobs?: Set<string>;
+  /** Called with the classification of a job a previous Runtime left behind. */
+  onRecovery?(report: RecoveryReport): void;
+  /** Waiting on the owner (tests). */
+  clock?: { now(): number; sleep(ms: number, signal: AbortSignal): Promise<void> };
+  choicePollMs?: number;
+  choiceWaitMs?: number;
+  controlPollMs?: number;
 };
 
 const NAME: Record<AgentProvider, string> = { "claude-code": "Claude Code", codex: "Codex" };
@@ -89,6 +122,53 @@ export class TeamExecutor implements Executor {
         ok: false,
         error: error instanceof TeamJobError ? error.message : "This team job could not be read.",
       };
+    }
+    // One job runs once on this computer at a time: a redelivered carrier task
+    // for a job that is still running here is refused, never run twice.
+    const active = this.#o.activeJobs ?? new Set<string>();
+    if (active.has(job.jobId)) {
+      return { ok: false, error: "This team job is already running on this computer." };
+    }
+    active.add(job.jobId);
+    try {
+      return await this.#execute(job, signal);
+    } finally {
+      active.delete(job.jobId);
+    }
+  }
+
+  /** The sink for this job: every write is claim-gated by the server. */
+  #sink(jobId: string) {
+    return (op: TeamOp, payload: Record<string, unknown>) =>
+      this.#o.write(jobId, this.#o.sessionId, this.#o.claimRef, op, payload);
+  }
+
+  async #execute(
+    job: ReturnType<typeof parseTeamJob>,
+    signal: AbortSignal,
+  ): Promise<ExecutionResult> {
+    // Crash recovery (docs/design/threadlink-0.10.md §6): a journal left by a
+    // Runtime that stopped mid-job says what may and may not happen next.
+    let previous = this.#o.journals?.read(job.jobId) ?? null;
+    let recoveryNote: string | null = null;
+    // Another Runtime process on this computer (sharing this config
+    // directory) is running this job right now: that is not a crash.
+    if (previous && previous.runtimePid !== process.pid && !leftByAnotherProcess(previous)) {
+      return {
+        ok: false,
+        error: "This team job is already running in another ThreadLink Runtime on this computer.",
+      };
+    }
+    if (previous) {
+      const report = classifyRecovery(previous, this.#o.staleProcesses ?? []);
+      this.#o.onRecovery?.(report);
+      this.#o.log?.(`team job ${job.jobId} recovered: ${report.classification}`);
+      const settled = await this.#recover(job, previous, report, signal);
+      if (settled) return settled;
+      recoveryNote =
+        report.classification === "resumable"
+          ? "ThreadLink restarted this job after the Runtime stopped. Only steps that change nothing were repeated."
+          : "ThreadLink restarted this job from its approved plan after you chose to resume it. Work on the earlier attempt's branches was not reused.";
     }
 
     const found = await (this.#o.discover ?? (() => discoverProviders()))();
@@ -124,6 +204,53 @@ export class TeamExecutor implements Executor {
         }
       : undefined;
 
+    // A write step refused because an earlier attempt was interrupted (§6):
+    // the owner decides, and only "resume" runs the job again. Bounded.
+    for (let attempt = 0; ; attempt++) {
+      const journal = this.#o.journals?.open(job.jobId, previous) ?? undefined;
+      try {
+        return await this.#runOrchestrator(
+          job,
+          signal,
+          found,
+          available,
+          modelClasses,
+          health,
+          journal,
+          recoveryNote,
+        );
+      } catch (error) {
+        if (!(error instanceof InterruptedRefusal) || attempt >= 2) throw error;
+        const report: RecoveryReport = {
+          jobId: job.jobId,
+          classification: "interrupted",
+          phase: journal?.state.phase ?? "unknown",
+          attempt: journal?.state.attempt ?? 1,
+          runningWriteStep: { kind: error.step, provider: error.provider },
+          lastSafeStep: journal?.state.lastSafeStep ?? null,
+          orphanedProcesses: 0,
+        };
+        this.#o.onRecovery?.(report);
+        const state = journal?.state ?? null;
+        const settled = await this.#recover(job, state ?? emptyJournal(job.jobId), report, signal);
+        if (settled) return settled;
+        previous = state;
+        recoveryNote =
+          "ThreadLink restarted this job from its approved plan after you chose to resume it. Work on the earlier attempt's branches was not reused.";
+      }
+    }
+  }
+
+  async #runOrchestrator(
+    job: ReturnType<typeof parseTeamJob>,
+    signal: AbortSignal,
+    found: ProviderDiscovery[],
+    available: ReturnType<typeof classifyModels>,
+    modelClasses: Partial<Record<AgentProvider, ModelClass[]>>,
+    health: HealthPort | undefined,
+    journal: JobJournal | undefined,
+    recoveryNote: string | null,
+  ): Promise<ExecutionResult> {
     const orchestrator = new TeamOrchestrator(job, {
       runners: (this.#o.runners ?? createRunners)(found),
       health,
@@ -137,9 +264,15 @@ export class TeamExecutor implements Executor {
       graph: graphPort(),
       worktrees: this.#o.worktrees ?? new WorktreeManager(),
       verify: (cwd, commands) => (this.#o.verify ?? runVerify)(cwd, commands, { signal }),
-      sink: (op, payload) =>
-        this.#o.write(job.jobId, this.#o.sessionId, this.#o.claimRef, op, payload),
+      sink: this.#sink(job.jobId),
       onProgress: this.#o.onProgress,
+      journal,
+      processes: this.#o.processes,
+      attempt: journal?.state.attempt ?? 1,
+      clock: this.#o.clock,
+      choicePollMs: this.#o.choicePollMs,
+      choiceWaitMs: this.#o.choiceWaitMs,
+      controlPollMs: this.#o.controlPollMs,
       // Remembered across jobs, so the next one does not retry a spent provider.
       onExhausted: (provider, model) => this.#o.governor.markExhausted(provider, model),
       signal,
@@ -147,10 +280,138 @@ export class TeamExecutor implements Executor {
 
     this.#o.log?.(`team job ${job.jobId} started in ${job.roomName}`);
     const outcome = await orchestrator.run(this.#o.workspace);
+    if (recoveryNote) outcome.evidence.uncertainty.push(recoveryNote);
     this.#o.log?.(`team job ${job.jobId} finished: ${outcome.verdict}`);
+    const report = teamReport(job.roomName, job.goal, outcome);
+    // Kept, so a redelivered carrier task for a finished job is answered, not re-run.
+    if (journal?.state.finalSynced) journal.finalSynced(report);
     // The carrier task is complete whatever the verdict: the team did its job
     // and reached one. NEEDS_FIX or BLOCKED is the answer, not a crash.
-    return { ok: true, result: teamReport(job.roomName, job.goal, outcome), artifacts: [] };
+    return { ok: true, result: report, artifacts: [] };
+  }
+
+  /**
+   * Acts on a recovered job. Returns the task result when the job is settled
+   * here (already finished, verdict resent, or stopped by the owner), or null
+   * to run it (resumable, or interrupted and the owner chose to resume).
+   */
+  async #recover(
+    job: ReturnType<typeof parseTeamJob>,
+    previous: JobJournalState,
+    report: RecoveryReport,
+    signal: AbortSignal,
+  ): Promise<ExecutionResult | null> {
+    const sink = this.#sink(job.jobId);
+    const done = (text: string): ExecutionResult => ({ ok: true, result: text, artifacts: [] });
+    const headline = (final: Record<string, unknown>) =>
+      [
+        `Team result: ${typeof final.verdict === "string" ? final.verdict : "unknown"}`,
+        `${job.roomName} — ${summarize(job.goal) ?? "team job"}`,
+        "",
+        typeof final.summary === "string" ? final.summary : "",
+      ].join("\n");
+    switch (report.classification) {
+      case "completed":
+        // The server has the verdict: the job is never run twice.
+        return done(previous.report ?? headline(previous.final ?? {}));
+      case "completed_unsynced": {
+        // The verdict was computed; send it again (set_final is idempotent).
+        const final = previous.final!;
+        await sink("set_final", final);
+        const journal = this.#o.journals!.open(job.jobId, previous);
+        journal.finalComputed(final);
+        const text = headline(final);
+        journal.finalSynced(text);
+        return done(text);
+      }
+      case "resumable":
+        return null;
+      case "interrupted": {
+        // A step that changes files was running, or had run. It is never
+        // re-run on ThreadLink's own initiative: the owner decides.
+        const choice = await this.#askInterrupted(job.jobId, report, signal);
+        if (choice === "resume") return null;
+        const final = {
+          verdict: "NEEDS_USER_DECISION",
+          summary:
+            choice === "stop"
+              ? "ThreadLink was interrupted while the team was working, and you chose to stop. Work already done is on the job's branches."
+              : "ThreadLink was interrupted while an agent was changing files. It did not run that step again on its own. Start the job again when you are ready.",
+          reason: choice === "stop" ? "stopped_by_owner" : "unexpected_error",
+          evidence: {
+            base: "",
+            baseExcludedUncommittedChanges: false,
+            planHash: null,
+            integrationBranch: null,
+            diffFingerprint: null,
+            commits: [],
+            tests: [],
+            uncertainty: [
+              "ThreadLink was interrupted while this job was running on this computer.",
+            ],
+          },
+        };
+        const journal = this.#o.journals?.open(job.jobId, previous);
+        journal?.finalComputed(final);
+        await sink("set_final", final);
+        const text = headline(final);
+        journal?.finalSynced(text);
+        return done(text);
+      }
+    }
+  }
+
+  /** The owner's choice for an interrupted job: "resume", "stop", or null (no choice possible). */
+  async #askInterrupted(
+    jobId: string,
+    report: RecoveryReport,
+    signal: AbortSignal,
+  ): Promise<"resume" | "stop" | null> {
+    const sink = this.#sink(jobId);
+    // The job shows as interrupted while the owner decides (§6).
+    await sink("set_status", {
+      status: "interrupted",
+      line: "Interrupted: waiting for your decision",
+    }).catch(() => undefined);
+    let choiceId: string | null;
+    try {
+      choiceId = parseChoiceId(
+        await sink(
+          OPS_0_10.requestChoice,
+          requestChoicePayload(
+            "interrupted",
+            {
+              step: report.runningWriteStep?.kind ?? null,
+              provider: report.runningWriteStep?.provider ?? null,
+              phase: report.phase,
+            },
+            ["resume", "stop"],
+            `${jobId}:interrupted:${report.attempt}`,
+          ),
+        ),
+      );
+    } catch {
+      return null;
+    }
+    if (!choiceId) return null;
+    const clock = this.#o.clock ?? {
+      now: () => Date.now(),
+      sleep: (ms: number, s: AbortSignal) =>
+        new Promise<void>((r) => {
+          const t = setTimeout(r, ms);
+          s.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
+        }),
+    };
+    const deadline = clock.now() + (this.#o.choiceWaitMs ?? 24 * 60 * 60_000);
+    while (!signal.aborted && clock.now() < deadline) {
+      const state = parseChoices(
+        await sink(OPS_0_10.readChoices, readChoicesPayload([choiceId])),
+      ).find((c) => c.id === choiceId);
+      if (state?.status === "chosen") return state.chosenKey === "resume" ? "resume" : "stop";
+      if (state && state.status !== "pending") return "stop";
+      await clock.sleep(this.#o.choicePollMs ?? 15_000, signal);
+    }
+    return "stop";
   }
 }
 
@@ -194,4 +455,22 @@ export function teamReport(room: string, goal: string, outcome: TeamOutcome): st
     "The full team log, with every review and decision, is available from get_team_log.",
   );
   return lines.join("\n");
+}
+
+/** A stand-in journal state when there is no journal store (tests, embedded). */
+function emptyJournal(jobId: string): JobJournalState {
+  return {
+    version: 1,
+    jobId,
+    runtimePid: process.pid,
+    attempt: 1,
+    phase: "unknown",
+    activeSteps: [],
+    writeStarted: true,
+    lastSafeStep: null,
+    final: null,
+    finalSynced: false,
+    report: null,
+    updatedAt: new Date().toISOString(),
+  };
 }

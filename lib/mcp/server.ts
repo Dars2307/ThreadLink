@@ -4,18 +4,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
   acknowledgeResultTool,
+  createChatTool,
   createRoomTool,
   describeError,
   ensureSession,
+  getChatStatusTool,
+  getChatTool,
+  getJobResultTool,
   getRoomTool,
   getTaskResultTool,
   getTaskStatus,
   getTeamLogTool,
   getTeamStatusTool,
   linkToClaude,
+  listChatsTool,
   listLinks,
   listRecentTasks,
   listRoomsTool,
+  sendMessageTool,
   sendToAgent,
   startTeamJobTool,
   threadlinkStatus,
@@ -235,6 +241,83 @@ export function buildThreadLinkMcpServer(ctx: McpContext): McpServer {
       annotations: READ_ONLY,
     },
     (input) => run(() => getTeamLogTool(ctx, input)),
+  );
+
+  // Chat-first (0.10) --------------------------------------------------------
+  server.registerTool(
+    "list_chats",
+    {
+      title: "List chats",
+      description:
+        "List the user's ThreadLink chats this conversation can reach (in projects linked to it), " +
+        "and those projects. A chat is where the user's agents (Claude Code, Codex) work together.",
+      inputSchema: toolInputs.list_chats,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => listChatsTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_chat",
+    {
+      title: "Read a chat",
+      description:
+        "A chat's agents and their readiness, what is running, and its recent messages. Pass " +
+        "`after` with the returned cursor to read only new messages.",
+      inputSchema: toolInputs.get_chat,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => getChatTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "create_chat",
+    {
+      title: "Create a chat",
+      description: "Create a new chat in one of the linked projects (projectId from list_chats).",
+      inputSchema: toolInputs.create_chat,
+      annotations: { openWorldHint: false, destructiveHint: false },
+    },
+    (input) => run(() => createChatTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "send_message",
+    {
+      title: "Send a message to a chat",
+      description:
+        "Give the agents in a chat work, as this conversation (the user sees it in the chat, " +
+        "labelled as coming from here). Routed by the chat's mode, or a leading @claude / @codex " +
+        "/ @team. Refused while work is already running in that chat. Returns a jobId " +
+        "immediately; check get_chat_status, then get_job_result.",
+      inputSchema: toolInputs.send_message,
+      annotations: { openWorldHint: false, destructiveHint: false },
+    },
+    (input) => run(() => sendMessageTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_chat_status",
+    {
+      title: "Chat status",
+      description:
+        "What is happening in a chat now: the running job (or the latest one) with its phase, " +
+        "rounds and open findings. Use this for polling.",
+      inputSchema: toolInputs.get_chat_status,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => getChatStatusTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_job_result",
+    {
+      title: "Job result",
+      description: "The outcome of a job: verdict, summary and open findings.",
+      inputSchema: toolInputs.get_job_result,
+      annotations: READ_ONLY,
+    },
+    (input) => run(() => getJobResultTool(ctx, input)),
   );
 
   return server;

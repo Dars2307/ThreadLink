@@ -9,8 +9,10 @@ import {
   deleteRoomAs,
   listRoomsFor,
   renameRoomAs,
+  setRoomStepTimeoutsAs,
   updateRoomPolicyAs,
   type OwnerRoom,
+  type StepKind,
 } from "./queries";
 
 /**
@@ -44,4 +46,13 @@ export async function deleteMyRoom(roomId: unknown): Promise<void> {
 export async function updateMyRoomPolicy(roomId: unknown, policy: unknown): Promise<RoomView> {
   await requireThreadLinkUser();
   return updateRoomPolicyAs(createUserSupabaseClient(), roomId, policy);
+}
+
+/** 0.10: the project's step timeouts in minutes ({} = the Runtime's defaults). */
+export async function setMyRoomStepTimeouts(
+  roomId: unknown,
+  timeouts: unknown,
+): Promise<Partial<Record<StepKind, number>>> {
+  await requireThreadLinkUser();
+  return setRoomStepTimeoutsAs(createUserSupabaseClient(), roomId, timeouts);
 }

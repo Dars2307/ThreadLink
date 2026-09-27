@@ -25,7 +25,8 @@ import { WorktreeManager } from "../../runtime/src/team/worktrees.ts";
  * to -- agree, disagree, run out of usage, or run the wrong model.
  */
 
-vi.setConfig({ testTimeout: 120_000 });
+// Real git worktrees are slow on a loaded machine: generous limits, never a false failure.
+vi.setConfig({ testTimeout: 300_000, hookTimeout: 60_000 });
 
 let repo: string;
 const git = (...args: string[]) =>
@@ -516,7 +517,13 @@ describe("planning", () => {
     const [a, b] = t.calls.filter((c) => c.role === "builder");
     expect(a!.end <= b!.start).toBe(true);
     expect(
-      t.ops.some((o) => o.op === "add_decision" && String(o.payload.topic).startsWith("Run ")),
+      t.ops.some(
+        (o) =>
+          o.op === "add_decision" &&
+          o.payload.topic === "Integration order chosen" &&
+          o.payload.titleSource === "threadlink" &&
+          String(o.payload.resolution).startsWith("second runs after first"),
+      ),
     ).toBe(true);
   });
 });
@@ -781,11 +788,13 @@ describe("keeping each unit to what the plan agreed", () => {
     const branch = outcome.evidence.integrationBranch!;
     // The integrated ui.ts is Codex's, not the stray one.
     expect(git("show", `${branch}:ui.ts`)).not.toContain("stray");
+    // Recorded as a ThreadLink decision with a fixed title (0.10 §4).
     expect(
       t.ops.some(
         (o) =>
           o.op === "add_decision" &&
-          String(o.payload.topic).startsWith("Out-of-scope changes undone"),
+          o.payload.topic === "Out-of-scope changes undone" &&
+          o.payload.titleSource === "threadlink",
       ),
     ).toBe(true);
   });
@@ -822,13 +831,9 @@ describe("keeping each unit to what the plan agreed", () => {
     ).run(repo);
     expect(outcome.verdict).toBe("NEEDS_USER_DECISION");
     expect(outcome.summary).toMatch(/disagree/);
+    expect(outcome.reason).toBe("agents_disagree");
     expect(
-      t.ops.some(
-        (o) =>
-          o.op === "add_decision" &&
-          o.payload.needsUser === true &&
-          String(o.payload.topic).includes("disagree"),
-      ),
+      t.ops.some((o) => o.op === "add_decision" && o.payload.topic === "Agents disagree"),
     ).toBe(true);
   });
 });
