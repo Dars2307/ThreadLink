@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 
 import { ApiError, ThreadLinkApi } from "./api.ts";
 import { ChatApiError, chatClientFor, type ChatApi } from "./chat-client.ts";
+import { runtimePlatform } from "./platform.ts";
 import { maskSessionId, NATIVE_SESSION_ID } from "./claude-sessions.ts";
 import type { RuntimeEngine } from "./engine.ts";
 import {
@@ -442,32 +443,33 @@ async function main(): Promise<number> {
   }
 
   if (command === "status") {
-    await engine.detectProviders();
-    const runtime = await engine.register();
-    await engine.sync();
-    await engine.heartbeat();
+    // Read-only. `status` never registers, heartbeats or re-labels this
+    // computer's Runtime (doing so once turned the desktop app's Runtime into
+    // a "cli" one). Presence, version and protocol come from the server; the
+    // workspaces come from this computer's own saved state.
+    const client = await chatClientFor(ctx, "terminal");
+    const host = client ? await client.runtimeInfo().catch(() => null) : null;
+    await engine.loadWorkspaces();
     const snap = engine.snapshot();
     for (const line of formatStatus({
-      runtimeLabel: runtime.label,
-      platform: runtime.platform,
-      kind: runtime.kind,
-      paused: runtime.paused,
-      online: snap.status === "online" || snap.status === "paused",
-      lastHeartbeatAt: snap.lastHeartbeatAt,
-      version: runtimeModule.RUNTIME_VERSION,
-      protocol: runtimeProtocol(),
-      updateRequired: updateRequired(runtime),
+      runtimeLabel: host?.label ?? "This computer",
+      platform: runtimePlatform(),
+      kind: "execution host",
+      paused: false,
+      online: host?.online ?? false,
+      lastHeartbeatAt: null,
+      version: host?.version ?? runtimeModule.RUNTIME_VERSION,
+      protocol: host?.protocol ?? runtimeProtocol(),
+      updateRequired: host?.updateRequired ?? false,
       agents: await serverAgents(api),
       working: workingAgents(snap.team),
     }))
       say(line);
+    if (!host) say("ThreadLink could not be reached; presence is unknown.");
     for (const w of snap.workspaces) {
       say(`Workspace: ${w.name} (${w.path})`);
       w.conversations.forEach((c, i) => say(`  ${i + 1}) ${c.title}${c.busy ? " · in use" : ""}`));
     }
-    const pending = await engine.refreshPendingLinks();
-    if (pending.length)
-      say(`${pending.length} link request(s) waiting - run \`threadlink links\`.`);
     return 0;
   }
 

@@ -99,6 +99,16 @@ export type ChatDetailView = ChatListItem & { lastReadSeq: number };
 /** A project the owner can start a chat in (from the list's `projects`). */
 export type ChatProject = { roomId: string; name: string; runtimeLabel: string | null };
 
+/** The server's view of the computer this client runs on. */
+export type RuntimeInfo = {
+  label: string | null;
+  online: boolean;
+  version: string | null;
+  protocol: number | null;
+  minProtocol: number | null;
+  updateRequired: boolean;
+};
+
 export type ChatDelivery =
   | { state: "sent" }
   | { state: "queued"; for: string[] }
@@ -435,6 +445,25 @@ export class ChatClient implements ChatApi {
     return (Array.isArray(res?.chats) ? res.chats : [])
       .map(parseChatItem)
       .filter((c): c is ChatListItem => c !== null && !c.archived);
+  }
+
+  /**
+   * This computer as the server sees it (label, presence, version, protocol,
+   * whether an update is needed). Read-only: nothing is registered or changed.
+   */
+  async runtimeInfo(): Promise<RuntimeInfo | null> {
+    const body = obj(await this.#request("GET", CHAT_API.list));
+    const r = obj(body?.runtime);
+    if (!r) return null;
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    return {
+      label: str(r.label, 100) ?? null,
+      online: r.online === true,
+      version: str(r.version, 40) ?? null,
+      protocol: num(r.protocol),
+      minProtocol: num(r.minProtocol),
+      updateRequired: r.updateRequired === true,
+    };
   }
 
   async listProjects(): Promise<ChatProject[]> {
