@@ -13,6 +13,7 @@ import {
   findCodexExecutable,
   findOnPath,
   readCodexConfiguredModel,
+  endOfFirstJsonObject,
   readCodexModelCatalog,
   type ProviderDiscovery,
 } from "../../runtime/src/team/discovery.ts";
@@ -305,5 +306,35 @@ describe("Claude discovery", { timeout: 30_000 }, () => {
   it("reports not installed when claude is not on PATH", async () => {
     const d = await discoverClaude({ env: { PATH: mkdtempSync(join(root, "empty-path-")) } });
     expect(d).toMatchObject({ installed: false, executable: null, authenticated: false });
+  });
+});
+
+describe("a Codex model cache left damaged by Codex itself", () => {
+  const model = (slug: string) => ({
+    slug,
+    display_name: slug,
+    visibility: "list",
+    supported_reasoning_levels: [],
+  });
+
+  it("recovers a complete document followed by leftovers of an older, longer file", () => {
+    // Seen for real: Codex rewrote models_cache.json shorter without truncating it.
+    const dir = mkdtempSync(join(tmpdir(), "tl-codex-cache-"));
+    const doc = JSON.stringify({ models: [model("gpt-6-sol"), model("gpt-6-luna")] }, null, 2);
+    writeFileSync(join(dir, "models_cache.json"), `${doc}\n  ]\n}]\n}`);
+    expect(readCodexModelCatalog(dir).map((m) => m.id)).toEqual(["gpt-6-sol", "gpt-6-luna"]);
+  });
+
+  it("finds the end of the first object, ignoring braces inside strings", () => {
+    expect(endOfFirstJsonObject('{"a":"}{","b":[1,{"c":2}]}  ]}')).toBe(26);
+    expect(endOfFirstJsonObject('  {"a":"\\"}"}x')).toBe(13);
+    expect(endOfFirstJsonObject('[{"a":1}]')).toBeNull();
+    expect(endOfFirstJsonObject('{"a":')).toBeNull();
+  });
+
+  it("still gives nothing for a file that is broken in any other way", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tl-codex-cache-"));
+    writeFileSync(join(dir, "models_cache.json"), '{"models": [ {"slug": "gpt-6-sol",');
+    expect(readCodexModelCatalog(dir)).toEqual([]);
   });
 });

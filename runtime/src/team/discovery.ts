@@ -258,6 +258,32 @@ type CatalogModel = {
   priority?: unknown;
 };
 
+/**
+ * The index just past the first complete top-level JSON object in `text`
+ * (string- and escape-aware), or null if there is none.
+ */
+export function endOfFirstJsonObject(text: string): number | null {
+  const start = text.search(/\S/);
+  if (start < 0 || text[start] !== "{") return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return i + 1;
+      if (depth < 0) return null;
+    }
+  }
+  return null;
+}
 /** Selectable models from models_cache.json (visibility "list" only). */
 export function readCodexModelCatalog(codexHome: string): DiscoveredModel[] {
   let text: string;
@@ -267,11 +293,21 @@ export function readCodexModelCatalog(codexHome: string): DiscoveredModel[] {
     return [];
   }
   let parsed: unknown;
+  // The reviver drops `identity` (account data) while parsing, at any depth.
+  const reviver = (key: string, value: unknown) => (key === "identity" ? undefined : value);
   try {
-    // The reviver drops `identity` (account data) while parsing, at any depth.
-    parsed = JSON.parse(text, (key, value: unknown) => (key === "identity" ? undefined : value));
+    parsed = JSON.parse(text, reviver);
   } catch {
-    return [];
+    // Seen for real: Codex rewrote its cache with shorter content without
+    // truncating the file, leaving the old tail after a complete document.
+    // Only that case is recovered: exactly one complete JSON object first.
+    const end = endOfFirstJsonObject(text);
+    if (end === null) return [];
+    try {
+      parsed = JSON.parse(text.slice(0, end), reviver);
+    } catch {
+      return [];
+    }
   }
   if (!isPlainObject(parsed) || !Array.isArray(parsed.models)) return [];
   const models: { model: DiscoveredModel; priority: number }[] = [];
