@@ -286,12 +286,6 @@ function runtimeProtocol(): number | null {
   return typeof value === "number" ? value : null;
 }
 
-/** The server's "this Runtime is too old" flag, under whichever name it uses. */
-function updateRequired(runtime: unknown): boolean {
-  const r = (runtime ?? {}) as Record<string, unknown>;
-  return r.updateRequired === true || r.update_required === true || r.outdated === true;
-}
-
 /** How many distinct agents are doing something in a running team job right now. */
 function workingAgents(team: unknown): number {
   const busy = new Set<string>();

@@ -90,6 +90,12 @@ function specText(spec: TeamSpec): string {
  * and ThreadLink never writes one on an agent's behalf.
  */
 export const TEAM_MESSAGE_MAX = 1_200;
+/**
+ * Below this a teamMessage says nothing useful ("Test", "Done."): the same
+ * run's own summary is posted instead when it says more. Seen for real: a
+ * builder answered an owner's question with teamMessage "Test".
+ */
+export const TEAM_MESSAGE_MIN = 20;
 
 const TEAM_MESSAGE_RULE =
   "`teamMessage` is a short message (a few sentences, under 1200 characters) to your teammates " +
@@ -97,7 +103,12 @@ const TEAM_MESSAGE_RULE =
   "under your name. It is not your private reasoning: do not describe your thought process, and " +
   "never include credentials or secrets.";
 
-const teamMessageField = { type: "string" } as const;
+const teamMessageField = {
+  type: "string",
+  description:
+    "A few sentences to your teammates and the project owner: what you propose, found, changed " +
+    "or answered. Never a placeholder. Not your private reasoning.",
+} as const;
 
 /** What an agent is shown of the team's work so far: only what bears on its task (scoped context). */
 export type PromptContext = {
@@ -439,13 +450,14 @@ export type Inspection = {
 export function teamMessageOf(structured: unknown): string | null {
   if (!structured || typeof structured !== "object") return null;
   const s = structured as { teamMessage?: unknown; summary?: unknown };
-  for (const candidate of [s.teamMessage, s.summary]) {
-    if (typeof candidate !== "string") continue;
-    const text = candidate.trim();
-    if (!text) continue;
-    return text.length <= TEAM_MESSAGE_MAX ? text : `${text.slice(0, TEAM_MESSAGE_MAX - 1)}…`;
-  }
-  return null;
+  const texts = [s.teamMessage, s.summary]
+    .map((c) => (typeof c === "string" ? c.trim() : ""))
+    .filter(Boolean);
+  // The run's own words only: a meaningful teamMessage, else its own summary
+  // when that says more, else whatever it wrote. Never text ThreadLink made up.
+  const text = texts.find((t) => t.length >= TEAM_MESSAGE_MIN) ?? texts[0];
+  if (!text) return null;
+  return text.length <= TEAM_MESSAGE_MAX ? text : `${text.slice(0, TEAM_MESSAGE_MAX - 1)}…`;
 }
 
 /** Only these reopen a round. Style and preference never do. */
@@ -579,6 +591,8 @@ export function buildPrompt(
       : ["`findingResponses` is empty: there are no findings to answer yet."]),
     ...contextSection(context),
     TEAM_MESSAGE_RULE,
+    "If the request asks a question or asks you not to change files, answer it fully in " +
+      "`teamMessage`: that message is the answer the owner reads.",
     "When you are done, answer with JSON matching the schema.",
   ].join("\n\n");
 }

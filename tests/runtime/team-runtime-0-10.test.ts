@@ -24,6 +24,7 @@ import { parseTeamJob, TeamJobError } from "../../runtime/src/team/job.ts";
 import {
   BUILD_SCHEMA,
   INSPECTION_SCHEMA,
+  buildPrompt,
   planPrompt,
   planSchema,
   REVIEW_SCHEMA,
@@ -346,7 +347,7 @@ describe("structured answers", () => {
       INSPECTION_SCHEMA,
     ]) {
       expect(schema.required as readonly string[]).toContain("teamMessage");
-      expect((schema.properties as Record<string, unknown>).teamMessage).toEqual({
+      expect((schema.properties as Record<string, unknown>).teamMessage).toMatchObject({
         type: "string",
       });
     }
@@ -394,6 +395,37 @@ describe("structured answers", () => {
     expect(teamMessageOf({ teamMessage: "   " })).toBeNull();
     expect(teamMessageOf({})).toBeNull();
     expect(teamMessageOf({ teamMessage: "x".repeat(5_000) })!.length).toBe(1_200);
+  });
+
+  it("posts the run's own summary when its teamMessage is a placeholder (seen in Production)", () => {
+    expect(
+      teamMessageOf({
+        teamMessage: "Test",
+        summary: "Prism is an internal AcronIQ analytics tool; the README describes its setup.",
+      }),
+    ).toBe("Prism is an internal AcronIQ analytics tool; the README describes its setup.");
+    // A short message stands when nothing better was written by the same run.
+    expect(teamMessageOf({ teamMessage: "Done.", summary: "ok" })).toBe("Done.");
+  });
+
+  it("tells the builder to answer a question in its message", () => {
+    const prompt = buildPrompt(
+      {
+        goal: "Explain the README. Do not edit files.",
+        requirements: [],
+        constraints: [],
+        architectureConstraints: [],
+        securityConstraints: [],
+        filesAndSystems: [],
+        testsRequired: [],
+        doNotChange: [],
+        deploymentRules: [],
+        definitionOfDone: [],
+      } as never,
+      { key: "work", title: "Explain", scope: "Answer", files: [], dependsOn: [] } as never,
+      "claude-code",
+    );
+    expect(prompt).toMatch(/answer it fully in\s+`teamMessage`/);
   });
 });
 

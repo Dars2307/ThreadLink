@@ -72,7 +72,7 @@ export { maskSessionId } from "./claude-sessions.ts";
 export { CHAT_API, ChatApiError, ChatClient, chatClientFor } from "./chat-client.ts";
 export type * from "./chat-client.ts";
 
-export const RUNTIME_VERSION = "0.10.0";
+export const RUNTIME_VERSION = "0.10.1";
 
 export type RuntimeContext = {
   configDir: string;
