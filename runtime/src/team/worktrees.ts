@@ -265,6 +265,16 @@ export class WorktreeManager {
   }
 
   /**
+   * 0.11.1: throws away every uncommitted change in this worktree (tracked and
+   * untracked) -- what a read-only job does if an agent wrote anyway. Only
+   * ThreadLink's own worktree is touched, never the owner's checkout.
+   */
+  async discardChanges(record: WorktreeRecord): Promise<void> {
+    await this.#git(record.path, ["reset", "--hard", "--quiet", "HEAD"]);
+    await this.#git(record.path, ["clean", "-fdq"]);
+  }
+
+  /**
    * Puts the given files back as they were at the job's base, inside this
    * worktree only, and commits that. Used when a builder changed files outside
    * the unit's agreed scope: the plan decides who owns which files, and a

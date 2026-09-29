@@ -18,6 +18,7 @@ import {
   FAST_CHAT_DEFAULT_FOLLOWUPS,
   FAST_CHAT_MAX_FOLLOWUPS,
   FastChatCoordinator,
+  type ChatWorkStatus,
 } from "./fast-chat.ts";
 import { parseTeamJob, TeamJobError } from "./job.ts";
 import { classifyModels, isSelectable, type ModelClassOverrides } from "./models.ts";
@@ -112,6 +113,8 @@ export type TeamExecutorOptions = {
   chatSessions?: ChatSessionStore;
   /** 0.11 (§5): failover notices already sent (one per chat per exhaustion). */
   noticesSent?: Set<string>;
+  /** 0.11.1: the work job running in a chat on this Runtime, for Fast Chat prompts. */
+  workInChat?: (chatId: string) => ChatWorkStatus | null;
   /** FAST_CHAT_MAX_FOLLOWUPS (default 1, hard cap 2). */
   maxFollowups?: number;
   /** Fast Chat: the working-tree fingerprint used to verify read-only Claude runs. */
@@ -212,6 +215,7 @@ export class TeamExecutor implements Executor {
       maxFollowups: this.#o.maxFollowups ?? maxFollowupsFromEnv(),
       queueMs,
       noticesSent: this.#o.noticesSent,
+      workInChat: this.#o.workInChat,
       log: this.#o.log,
     });
     const outcome = await coordinator.run(this.#o.workspace);

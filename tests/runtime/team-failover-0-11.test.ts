@@ -887,3 +887,57 @@ describe("an agent out of usage before the job starts (§5)", () => {
     expect(old.ops.some((o) => o.op === "failover_notice")).toBe(false);
   });
 });
+
+describe("a step fails after the owner asked to stop (0.11.1)", () => {
+  // Production: "@team stop" while Claude reviewed; the review then timed out
+  // and ThreadLink asked "Retry this step · Give it more time · Stop".
+  const cases = [
+    { failure: "timeout" as const, policy: "auto" as const },
+    { failure: "provider_error" as const, policy: "auto" as const },
+    { failure: "quota_exhausted" as const, policy: "ask" as const },
+  ];
+  it.each(cases)(
+    "$failure: ends as stopped, asks nothing, retries nothing",
+    async ({ failure, policy }) => {
+      const h = harness({
+        fail: (req) => (req.role === "reviewer" ? { failure, error: "failed" } : null),
+        choose: () => "retry",
+      });
+      let stopped = false;
+      const sink = h.deps.sink;
+      const outcome = await new TeamOrchestrator(baseJob({ failoverPolicy: policy }), {
+        ...h.deps,
+        sink: async (op: TeamOp, payload: Record<string, unknown>) => {
+          const answer = await sink(op, payload);
+          // The owner's stop arrives while the reviewer runs.
+          if (op === "run_started" && payload.role === "reviewer") stopped = true;
+          return stopped ? { ...answer, stopRequestedAt: "2026-09-29T12:00:00Z" } : answer;
+        },
+      }).run(repo);
+      expect(outcome).toMatchObject({ verdict: "NEEDS_USER_DECISION", reason: "stopped_by_owner" });
+      expect(h.ops.filter((o) => o.op === "request_choice")).toHaveLength(0);
+      expect(h.ops.filter((o) => o.op === "failover_notice")).toHaveLength(0);
+      expect(h.calls.filter((c) => c.role === "reviewer")).toHaveLength(1);
+    },
+  );
+
+  it("stops the wait for an exhausted provider as soon as the owner asks to stop", async () => {
+    let stop = false;
+    const { deps } = failoverDeps(
+      (op) => (op === "request_choice" ? { choiceId: CHOICE } : undefined),
+      { shouldStop: () => stop },
+    );
+    let polls = 0;
+    const write = deps.write;
+    deps.write = async (op, payload) => {
+      if (op === "read_choices" && ++polls === 2) stop = true;
+      return write(op, payload);
+    };
+    expect(
+      await handleExhausted(
+        { provider: "codex", resetsAt: null, policy: "wait", alternatives: [], key: "k" },
+        deps,
+      ),
+    ).toEqual({ action: "stop", why: "owner" });
+  });
+});

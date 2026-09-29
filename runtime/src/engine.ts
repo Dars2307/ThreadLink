@@ -61,6 +61,7 @@ import { CHATGPT_PLANS, CLAUDE_PLANS } from "./team/types.ts";
 import { UsageGovernor } from "./team/usage.ts";
 import { claimTask, runClaimedTask, type Outcome, type WorkerDeps } from "./worker.ts";
 import { ChatSessionStore } from "./team/chat-sessions.ts";
+import type { ChatWorkStatus } from "./team/fast-chat.ts";
 
 /**
  * The ThreadLink Runtime engine, shared by the CLI (`threadlink run`) and the
@@ -1364,6 +1365,7 @@ export class RuntimeEngine {
       cachedDiscovery: () => (this.#found.length ? this.#found : null),
       chatSessions: this.#chatSessions,
       noticesSent: this.#noticesSent,
+      workInChat: (chatId) => this.#workInChat(chatId),
       onProgress: (progress) => {
         this.#team.delete(progress.jobId);
         this.#team.set(progress.jobId, progress);
@@ -1373,6 +1375,30 @@ export class RuntimeEngine {
       },
       log: this.#o.log,
     });
+  }
+
+  /**
+   * 0.11.1: the work job running in `chatId` in this process now, from the
+   * orchestrator's own progress (never a guess). Null when there is none.
+   */
+  #workInChat(chatId: string): ChatWorkStatus | null {
+    const progress = [...this.#team.values()]
+      .reverse()
+      .find(
+        (p) =>
+          p.chatId === chatId &&
+          p.verdict === null &&
+          this.#activeJobs.has(p.jobId) &&
+          !["completed", "failed", "cancelled"].includes(p.status),
+      );
+    if (!progress) return null;
+    return {
+      goal: progress.goal,
+      status: progress.status,
+      line: progress.line,
+      agents: progress.agents,
+      units: progress.units.map((u) => ({ title: u.title, owner: u.owner, status: u.status })),
+    };
   }
 
   /**

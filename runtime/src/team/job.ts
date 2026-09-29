@@ -13,6 +13,7 @@
  */
 
 import type { TeamSpec } from "./prompts.ts";
+import { isReadOnlyRequest } from "./read-only.ts";
 import { parseTimeoutOverrides, type TimeoutOverrides } from "./timeouts.ts";
 import {
   type FailoverPolicy,
@@ -87,6 +88,11 @@ export type TeamJobDefinition = {
   sourceEventId?: string | null;
   /** 0.11, chat lane: who answers (provider ids), in order. Empty: derived from the mode. */
   responders?: AgentProvider[];
+  /**
+   * 0.11.1: the owner's request explicitly forbids changing files
+   * (read-only.ts). A work job then only inspects and reports.
+   */
+  readOnly?: boolean;
 };
 
 export class TeamJobError extends Error {
@@ -339,6 +345,7 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     failoverPolicy,
     sourceEventId: (sourceIn as string | null | undefined) ?? null,
     responders,
+    readOnly: lane === "work" && isReadOnlyRequest(String(raw.goal)),
   };
 }
 

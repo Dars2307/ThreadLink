@@ -640,6 +640,64 @@ export function buildPrompt(
   ].join("\n\n");
 }
 
+/**
+ * 0.11.1: a READ-ONLY work job (read-only.ts). The owner said not to change
+ * anything: the agent does what was asked (inspect, explain, run read-only
+ * commands) and reports findings for the owner to act on. Nothing is fixed.
+ */
+export const READ_ONLY_RULE =
+  "The owner asked that NO files be changed. This is a read-only job: do not create, edit, " +
+  "move or delete any file, do not commit, and do not run commands that write to the " +
+  "repository. Report problems as findings for the owner to fix; do not fix them yourself.";
+
+export function readOnlyTaskPrompt(
+  spec: TeamSpec,
+  provider: string,
+  context?: PromptContext,
+): string {
+  return [
+    roleLine("investigator", provider),
+    "Carry out the owner's request below, read-only. Inspect the code, and where it helps run " +
+      "commands that only read (tests may be run by ThreadLink itself afterwards). Raise a " +
+      "finding for every real problem: blocking or important only for something that is wrong, " +
+      "unsafe or broken; style and preference are non_blocking at most.",
+    READ_ONLY_RULE,
+    INJECTION_RULE,
+    PROJECT_RULES,
+    block("SPECIFICATION", specText(spec)),
+    ...contextSection(context),
+    "`verdict` is APPROVED when you found nothing blocking or important, otherwise REVISE. " +
+      "`priorFindings` and `ownershipObjections` are empty; `disagreementCategory` is none " +
+      "or technical.",
+    TEAM_MESSAGE_RULE,
+    "Answer with JSON matching the schema.",
+  ].join("\n\n");
+}
+
+export function readOnlyReviewPrompt(
+  spec: TeamSpec,
+  provider: string,
+  context?: PromptContext,
+): string {
+  return [
+    roleLine("reviewer", provider),
+    "A teammate has just carried out the owner's read-only request below; their report is in " +
+      "the team context. Take your own independent look at the same code: confirm or dispute " +
+      "their findings and add any they missed. Raise a finding only for something that is " +
+      "wrong, unsafe or broken; style and preference are non_blocking at most.",
+    READ_ONLY_RULE,
+    INJECTION_RULE,
+    PROJECT_RULES,
+    block("SPECIFICATION", specText(spec)),
+    ...contextSection(context),
+    "`verdict` is APPROVED when nothing blocking or important stands, otherwise REVISE. " +
+      "`priorFindings` and `ownershipObjections` are empty; `disagreementCategory` is none " +
+      "or technical.",
+    TEAM_MESSAGE_RULE,
+    "Answer with JSON matching the schema.",
+  ].join("\n\n");
+}
+
 export function codeReviewPrompt(
   spec: TeamSpec,
   node: PlannedNode,

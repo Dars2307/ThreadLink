@@ -62,6 +62,7 @@ export { SESSION_REASONS, RUN_TIMING_KEYS } from "./team/wire.ts";
 export type { FailoverPolicy, JobLane, RunTimings, SessionReason } from "./team/wire.ts";
 export { FAST_CHAT_DEFAULT_FOLLOWUPS, FAST_CHAT_MAX_FOLLOWUPS } from "./team/fast-chat.ts";
 export { parseResetTime } from "./team/runner.ts";
+export { isReadOnlyRequest, readOnlyRule } from "./team/read-only.ts";
 export { detectIdentity, remoteEnvironment, runtimePlatform } from "./platform.ts";
 export type * from "./platform.ts";
 export { defaultConfigDir, loadConfig, migrateBaseUrl, saveConfig } from "./state.ts";
@@ -81,7 +82,7 @@ export type * from "./chat-client.ts";
 // this package) places rows exactly like the web and the terminal.
 export { agentShortName, chatPlacement, humanSystemText } from "./chat-presentation.ts";
 
-export const RUNTIME_VERSION = "0.11.0";
+export const RUNTIME_VERSION = "0.11.1";
 
 export type RuntimeContext = {
   configDir: string;

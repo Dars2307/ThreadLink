@@ -756,6 +756,53 @@ decided only by message like any other.
     (builder role / reviewer role), and say nothing when nobody ran (e.g. a BLOCKED preflight).
     After a Runtime failover, `builder_provider` can also be the wrong agent.
 
+- **0.11.1: "Do not change any files" makes a work job read-only.** Production acceptance: a
+  pair job asked to review without changing anything went into fix rounds and changed 7 files.
+  Isolation held, but the owner's instruction was ignored.
+  - **Detector** (`team/read-only.ts`, table-driven, conservative). It fires only on an
+    instruction addressed to the agents, at a sentence or clause start or after
+    "please/and/but/just/…". Accepted forms: "do not/don't/never change|edit|modify|touch|write
+    any files|the code|the repo|anything", "don't make any changes", "without changing
+    anything/any files", a read-only mode request ("read-only review", "keep it read-only",
+    "Read-only:"), and "No changes." as its own sentence.
+  - It does not fire on scoped constraints ("anything else", "outside src/", "the code in X"),
+    other objects ("the public API"), other subjects ("users do not modify…"), or "read-only"
+    used as a noun or adjective ("a read-only flag", "the read-only mode bug").
+  - Where it applies: `parseTeamJob` sets `readOnly` for work-lane jobs from the goal.
+    `isReadOnlyRequest` and `readOnlyRule` are exported, so the server or UI can show it.
+  - **Read-only flow** (`#runReadOnly`, all modes): no plan, units, build or fix rounds, commits,
+    `add_change` or integration.
+    - One agent (pair: the builder; team: the first builder) carries out the request as role
+      `investigator`, access read-only (Claude plan mode, Codex `-s read-only`).
+    - In a pair or team, the other agent then reviews independently, read-only. Its review is
+      skipped and left pending if it is out of usage.
+    - Findings are recorded. ThreadLink runs the owner's checks itself, afterwards, in its own
+      worktree.
+    - Verdict: NEEDS_FIX (`review_not_passed`) when a blocking finding stands, meaning the owner
+      should fix it; the summary lists up to 5. NEEDS_FIX (`tests_failed`) when the checks fail.
+      PASS otherwise.
+    - The summary starts "Read-only review, as you asked: no files were changed."
+    - If an agent's run leaves ThreadLink's worktree dirty anyway, the changes are discarded
+      (`WorktreeManager.discardChanges`: `reset --hard` + `clean -fd` in that worktree only) and
+      recorded as uncertainty. The job does not stop.
+    - The "review" worktree branch is kept like every job branch, with no commits of its own.
+- **0.11.1: a mid-work question in the same chat gets the work's context.** The orchestrator's
+  `TeamProgress` now carries `chatId`. The engine answers `workInChat(chatId)` from the progress
+  of a work job running in this process now: phase, ThreadLink's latest progress line, what each
+  agent is doing, and the units.
+  - The Fast Chat first-turn prompt then gets a fixed-text block, "WORK IN PROGRESS IN THIS CHAT
+    (ThreadLink's own status)". It marks "You (Claude Code): …", or says no step is running for
+    this agent right now.
+  - The agent is told to answer as a teammate from that status and the work agents' messages
+    (already in `read_chat_context`), never to say it is idle or only chatting, and never to
+    claim progress or test results that are not shown.
+  - Only work running on this Runtime is known (the chat's execution host, so the normal case);
+    no new server op was needed.
+- **Versions:** RUNTIME_VERSION and runtime/package.json are 0.11.1 (the desktop version is the
+  lead's).
+
+- **0.11.1: a stop request is final.** Production: "@team stop" was posted while Claude was reviewing; the review then timed out and ThreadLink asked "Retry this step · Give it more time · Stop". Now, after any failed step (timeout, provider error, usage exhausted, sign-in), the Runtime re-reads the job control, and if a stop was requested (`stop_now` or `cancel_queued`/`stopRequestedAt`) the job ends NEEDS_USER_DECISION `stopped_by_owner`. Nothing is retried, and no `timeout`, `provider_failure`, `usage_exhausted` or `plan_disagreement` choice is asked. `#ask` refuses to ask after a stop, and a pending choice or a usage wait ends as soon as a stop is seen (`FailoverDeps.shouldStop`).
+
 ### Database + server engineer — final (deviations and limitations)
 
 Migration `supabase/migrations/20260929000100_threadlink_0_11.sql`; pgTAP

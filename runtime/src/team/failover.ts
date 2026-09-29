@@ -57,6 +57,8 @@ export type FailoverDeps = {
   /** Notices already sent, shared per Runtime: at most one per chat per exhaustion. */
   noticesSent?: Set<string>;
   chatId?: string | null;
+  /** 0.11.1: the owner asked to stop: nothing is asked, retried or waited for. */
+  shouldStop?(): boolean;
   /** Called once when the provider is confirmed ready again. */
   onRecovered?(provider: AgentProvider): void;
   log?(message: string): void;
@@ -129,6 +131,7 @@ export async function handleExhausted(
   input: ExhaustedInput,
   deps: FailoverDeps,
 ): Promise<FailoverAction> {
+  if (deps.shouldStop?.()) return { action: "stop", why: "owner" };
   const other = input.alternatives[0] ?? null;
   const skip = input.reviewPending ?? null;
   if (input.policy === "auto") {
@@ -228,7 +231,7 @@ async function askOrWait(
   };
 
   for (;;) {
-    if (deps.signal.aborted) return { action: "stop", why: "owner" };
+    if (deps.signal.aborted || deps.shouldStop?.()) return { action: "stop", why: "owner" };
     if (clock.now() >= deadline) return { action: "stop", why: "expired" };
 
     if (choiceId) {

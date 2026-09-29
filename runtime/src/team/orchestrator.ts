@@ -80,6 +80,8 @@ import {
   isSubstantive,
   normalisePrompt,
   OWNER_DISAGREEMENTS,
+  readOnlyReviewPrompt,
+  readOnlyTaskPrompt,
   planPrompt,
   planReviewPrompt,
   planSchema,
@@ -363,6 +365,8 @@ export type OrchestratorDeps = {
 
 export type TeamProgress = {
   jobId: string;
+  /** 0.11.1: the chat the job belongs to (null for older jobs). */
+  chatId?: string | null;
   /** The room's friendly name, e.g. "Prism". */
   room: string;
   /** One safe line about the goal, for the card title. */
@@ -809,7 +813,11 @@ export class TeamOrchestrator {
         );
       }
 
-      let outcome = this.#mode === "team" ? await this.#runTeam(set) : await this.#runSimple(set);
+      let outcome = this.#job.readOnly
+        ? await this.#runReadOnly(set)
+        : this.#mode === "team"
+          ? await this.#runTeam(set)
+          : await this.#runSimple(set);
       this.#noteUndelivered();
       let pendingFor: AgentProvider | null = null;
       // A review the job needed did not happen: never a PASS (§5).
@@ -1175,6 +1183,7 @@ export class TeamOrchestrator {
         choiceWaitMs: this.#d.choiceWaitMs,
         noticesSent: this.#d.noticesSent,
         chatId: this.#job.chatId ?? null,
+        shouldStop: () => this.#stopRequested || this.#stopNow,
         onRecovered: (p) => this.#d.onRecovered?.(p),
       },
     );
@@ -1359,6 +1368,127 @@ export class TeamOrchestrator {
         return this.#verdict("NEEDS_USER_DECISION", parts.join(" "), "no_review_or_tests");
       }
     }
+    return this.#verdict("PASS", parts.join(" "));
+  }
+
+  /**
+   * 0.11.1: a READ-ONLY work job (the owner said not to change any files).
+   * One agent carries out the request read-only; in a pair or team another
+   * independently reviews it, read-only. Findings are recorded and reported,
+   * never fixed: no build or fix round, no commit, no code change, no
+   * integration. ThreadLink runs the owner's checks itself. The verdict is
+   * the review's: PASS when nothing blocking stands and the checks pass,
+   * NEEDS_FIX (for the owner to fix) otherwise.
+   */
+  async #runReadOnly(set: Awaited<ReturnType<WorktreeManager["begin"]>>): Promise<TeamOutcome> {
+    const spec = this.#specFromJob();
+    await this.#write("set_spec", { spec: redactDeep(spec) });
+    this.#specDone = true;
+    await this.#checkStop();
+    await this.#setStatus("reviewing", "Read-only review");
+    const record = await this.#d.worktrees.create(set, "review");
+    const lead =
+      this.#mode === "team"
+        ? (this.#roles?.builders[0] ?? this.#participants[0]!)
+        : this.#builderHolder!;
+    const second =
+      this.#mode === "solo"
+        ? null
+        : this.#mode === "pair"
+          ? this.#reviewer
+          : (this.#roles?.reviewers.find((p) => p !== lead) ?? null);
+    const schema = reviewSchema(this.#participants);
+    const raised: TrackedFinding[] = [];
+
+    this.#doing.set(lead, "Reviewing, read-only");
+    const first = await this.#call(lead, "investigator", {
+      step: "review",
+      unit: null,
+      round: 0,
+      cwd: record.path,
+      worktree: record,
+      prompt: (p) => readOnlyTaskPrompt(spec, providerName(p), this.#context([])),
+      access: "read-only",
+      outputSchema: schema,
+      exclude: second ? [second] : [],
+      route: { complexity: "medium", risk: NO_RISK },
+    });
+    this.#doing.delete(lead);
+    const firstMessage = await this.#message(first, second ?? "threadlink", "review", 0);
+    for (const f of (first.structured as Review).findings ?? []) {
+      raised.push(await this.#finding(null, 0, "review", f, first.provider, first.runId));
+    }
+    await this.#checkStop();
+
+    if (second) {
+      this.#doing.set(second, "Reviewing independently, read-only");
+      const reviewed = await this.#reviewOrSkip(second, "reviewer", {
+        step: "review",
+        unit: null,
+        round: 0,
+        cwd: record.path,
+        worktree: record,
+        prompt: (p) =>
+          readOnlyReviewPrompt(
+            spec,
+            providerName(p),
+            this.#context(firstMessage ? [firstMessage] : []),
+          ),
+        access: "read-only",
+        outputSchema: schema,
+        exclude: [first.provider],
+        route: { complexity: "medium", risk: NO_RISK },
+      });
+      this.#doing.delete(second);
+      if (reviewed) {
+        await this.#message(reviewed, first.provider, "review", 0, {
+          replyTo: firstMessage?.id ? { kind: "message", id: firstMessage.id } : null,
+        });
+        for (const f of (reviewed.structured as Review).findings ?? []) {
+          raised.push(await this.#finding(null, 0, "review", f, reviewed.provider, reviewed.runId));
+        }
+      }
+    }
+
+    // ThreadLink's own checks, after every agent (they may write build output
+    // into ThreadLink's worktree; never into the owner's checkout).
+    if (this.#job.verifyCommands.length) {
+      const results = await this.#d.verify(record.path, this.#job.verifyCommands, {
+        timeoutMs: this.#timeout("verify"),
+      });
+      this.#evidence.tests = results.map((r) => ({ ...r, output: redactText(r.output, 4_000) }));
+    } else {
+      this.#evidence.uncertainty.push(
+        "No test commands were given, so ThreadLink ran no tests of its own.",
+      );
+    }
+
+    const blocking = raised.filter((f) => f.finding.severity === "blocking");
+    const important = raised.filter((f) => f.finding.severity === "important");
+    const failed = this.#evidence.tests.filter((t) => !t.ok);
+    const parts = ["Read-only review, as you asked: no files were changed."];
+    parts.push(
+      raised.length
+        ? `${raised.length} finding${raised.length === 1 ? "" : "s"} (${blocking.length} blocking, ${important.length} important).`
+        : "No findings.",
+    );
+    if (blocking.length) {
+      parts.push(
+        `To fix: ${blocking
+          .slice(0, 5)
+          .map((f) => redactText(f.finding.summary, 160))
+          .join("; ")}.`,
+      );
+    }
+    if (this.#evidence.tests.length) {
+      parts.push(
+        failed.length
+          ? `Checks failed: ${failed.map((t) => t.command).join(", ")}.`
+          : "ThreadLink ran your checks and they passed.",
+      );
+    }
+    if (blocking.length) return this.#verdict("NEEDS_FIX", parts.join(" "), "review_not_passed");
+    if (failed.length) return this.#verdict("NEEDS_FIX", parts.join(" "), "tests_failed");
     return this.#verdict("PASS", parts.join(" "));
   }
 
@@ -2626,6 +2756,10 @@ export class TeamOrchestrator {
         throw new Stop("BLOCKED", `${providerName(current)} was stopped.`, "agent_failed");
       }
       this.#noteFailure(current, result);
+      // 0.11.1: the owner asked to stop. A failed or timed-out step then ends
+      // the job as stopped: nothing is retried and no choice is asked.
+      await this.#pollControl(true);
+      if (this.#stopRequested || this.#stopNow) throw this.#stopped();
       if (result.failure === "quota_exhausted") {
         const action = await this.#onExhausted(current, role, options, result, attempt);
         if (action.action === "other") {
@@ -2755,6 +2889,7 @@ export class TeamOrchestrator {
         choiceWaitMs: this.#d.choiceWaitMs,
         noticesSent: this.#d.noticesSent,
         chatId: this.#job.chatId ?? null,
+        shouldStop: () => this.#stopRequested || this.#stopNow,
         onRecovered: (p) => {
           this.#health.set(p, "ready");
           this.#d.onRecovered?.(p);
@@ -2957,6 +3092,13 @@ export class TeamOrchestrator {
             "BLOCKED",
             "A read-only run had no workspace ThreadLink could check afterwards.",
             "access_mismatch",
+          );
+        } else if (!clean && this.#job.readOnly) {
+          // 0.11.1: the owner said not to change anything. The change is
+          // thrown away (ThreadLink's worktree only) and said, never kept.
+          await this.#d.worktrees.discardChanges(options.worktree);
+          this.#evidence.uncertainty.push(
+            `${providerName(provider)} changed files during this read-only job although you asked for no changes. ThreadLink discarded those changes; nothing was kept.`,
           );
         } else if (!clean) {
           accessProblem = new Stop(
@@ -3218,6 +3360,8 @@ export class TeamOrchestrator {
     idempotencyKey: string,
     runId: string | null = null,
   ): Promise<string | "expired" | null> {
+    // 0.11.1: never ask the owner anything after they asked to stop.
+    if (this.#stopNow || this.#stopRequested) throw this.#stopped();
     let choiceId: string | null;
     try {
       choiceId = parseChoiceId(
@@ -3234,10 +3378,10 @@ export class TeamOrchestrator {
     const clock = this.#d.clock ?? realClock;
     const deadline = clock.now() + (this.#d.choiceWaitMs ?? 24 * 60 * MINUTE);
     for (;;) {
-      if (this.#stopNow) throw this.#stopped();
+      if (this.#stopNow || this.#stopRequested) throw this.#stopped();
       const answer = await this.#write(OPS_0_10.readChoices, readChoicesPayload([choiceId]));
       const state = parseChoices(answer).find((c) => c.id === choiceId);
-      if (this.#stopNow) throw this.#stopped();
+      if (this.#stopNow || this.#stopRequested) throw this.#stopped();
       if (state?.status === "chosen") {
         const chosen =
           state.chosenKey && options.includes(state.chosenKey) ? state.chosenKey : "stop";
@@ -3573,6 +3717,7 @@ export class TeamOrchestrator {
   #progress(line: string): void {
     this.#d.onProgress?.({
       jobId: this.#job.jobId,
+      chatId: this.#job.chatId ?? null,
       room: this.#job.roomName,
       goal: summarize(this.#job.goal) ?? "Team job",
       status: this.#status,

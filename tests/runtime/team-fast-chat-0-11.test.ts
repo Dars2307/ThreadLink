@@ -17,6 +17,7 @@ import {
   FastChatCoordinator,
   isPlaceholder,
   isSmallTalk,
+  workStatusText,
   type FastChatDeps,
 } from "../../runtime/src/team/fast-chat.ts";
 import { parseTeamJob, type TeamJobDefinition } from "../../runtime/src/team/job.ts";
@@ -647,5 +648,57 @@ describe("the chat job document (§2.2)", () => {
     expect(() => chatJob({ lane: "fast" })).toThrow(/lane/);
     expect(() => chatJob({ failoverPolicy: "pay" })).toThrow(/failoverPolicy/);
     expect(() => chatJob({ responders: ["cursor"] })).toThrow(/responders/);
+  });
+});
+
+describe("a question while engineering work runs in the same chat (0.11.1)", () => {
+  const work = {
+    goal: "Run the project's tests and review the authentication code",
+    status: "building",
+    line: "Codex — building Auth review",
+    agents: [
+      { provider: "codex" as const, doing: "Building Auth review" },
+      { provider: "claude-code" as const, doing: "Reviewing Codex's Auth review" },
+    ],
+    units: [{ title: "Auth review", owner: "codex" as const, status: "in_review" }],
+  };
+
+  it("tells the agent what the team is doing, from ThreadLink's status, and not to claim it is idle", async () => {
+    const asked: string[] = [];
+    const h = harness(
+      {},
+      {
+        workInChat: (chatId) => {
+          asked.push(chatId);
+          return work;
+        },
+      },
+    );
+    await new FastChatCoordinator(
+      chatJob({
+        goal: "@Claude what are you doing right now? One sentence.",
+        responders: ["claude-code"],
+      }),
+      h.deps,
+    ).run(dir);
+    expect(asked).toEqual([CHAT_1]);
+    const prompt = h.requests[0]!.req.prompt;
+    expect(prompt).toContain("WORK IN PROGRESS IN THIS CHAT");
+    expect(prompt).toContain("You (Claude Code): Reviewing Codex's Auth review");
+    expect(prompt).toContain("Codex: Building Auth review");
+    expect(prompt).toContain("Stage: building and reviewing the work.");
+    expect(prompt).toMatch(/Do not say you are idle/);
+    expect(prompt).toMatch(/Do not claim progress, results or test outcomes that are not shown/);
+    // The work agents' own messages reach it through the chat context as usual.
+    expect(prompt).toContain("RECENT CHAT");
+  });
+
+  it("says plainly when the asked agent has no step running, and adds nothing without work", async () => {
+    expect(workStatusText({ ...work, agents: [work.agents[0]!] }, "claude-code")).toContain(
+      "You (Claude Code): no step of that job is running for you at this moment.",
+    );
+    const idle = harness({}, { workInChat: () => null });
+    await new FastChatCoordinator(chatJob({ responders: ["codex"] }), idle.deps).run(dir);
+    expect(idle.requests[0]!.req.prompt).not.toContain("WORK IN PROGRESS");
   });
 });

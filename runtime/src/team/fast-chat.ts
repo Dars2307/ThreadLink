@@ -103,6 +103,58 @@ export const CHAT_SCHEMA = {
 
 export type ChatAnswer = { message: string; needsWork: boolean; workReason: string };
 
+/** A running work job of the same chat, as ThreadLink itself tracks it (TeamProgress). */
+export type ChatWorkStatus = {
+  /** One safe line about the job's goal. */
+  goal: string;
+  /** The job's phase (normalising, planning, building, reviewing, …). */
+  status: string;
+  /** ThreadLink's latest progress line. */
+  line: string;
+  /** What each agent is doing in the job now, in ThreadLink's words. */
+  agents: { provider: AgentProvider; doing: string }[];
+  /** Units of work and where they stand. */
+  units: { title: string; owner: AgentProvider; status: string }[];
+};
+
+const PHASE_WORDS: Record<string, string> = {
+  queued: "waiting to start",
+  normalising: "turning the request into a specification",
+  planning: "planning",
+  building: "building and reviewing the work",
+  reviewing: "reviewing",
+  integrating: "integrating the work",
+  inspecting: "doing the final inspection",
+  paused: "paused by the owner",
+  interrupted: "interrupted, waiting for the owner",
+};
+
+/**
+ * The fixed-text status block for a Fast Chat prompt (0.11.1). Only what
+ * ThreadLink tracked: phase, progress line, each agent's current step, units.
+ * Nothing is estimated or invented.
+ */
+export function workStatusText(work: ChatWorkStatus, you: AgentProvider): string {
+  const lines = [
+    `Engineering work the owner asked for is running in this chat right now: ${work.goal.slice(0, 300)}`,
+    `Stage: ${PHASE_WORDS[work.status] ?? work.status.replace(/_/g, " ")}.`,
+  ];
+  if (work.line) lines.push(`Latest ThreadLink status: ${work.line.slice(0, 300)}`);
+  for (const a of work.agents.slice(0, 6)) {
+    const who = a.provider === you ? `You (${name(a.provider)})` : name(a.provider);
+    lines.push(`${who}: ${a.doing.slice(0, 200)}`);
+  }
+  if (!work.agents.some((a) => a.provider === you)) {
+    lines.push(`You (${name(you)}): no step of that job is running for you at this moment.`);
+  }
+  for (const u of work.units.slice(0, 10)) {
+    lines.push(
+      `Unit "${u.title.slice(0, 120)}" (owner ${name(u.owner)}): ${u.status.replace(/_/g, " ")}`,
+    );
+  }
+  return lines.join("\n");
+}
+
 /** Answers that are not answers (0.10.1 placeholder guard): never posted as an agent's message. */
 const PLACEHOLDER =
   /^(?:test(?:ing)?|done|ok(?:ay)?|n\/?a|none|null|placeholder|todo|tbd|\.+|-+|…)\.?$/i;
@@ -168,6 +220,12 @@ export type FastChatDeps = {
   queueMs?: number | null;
   /** Shared per Runtime: at most one failover notice per chat per exhaustion. */
   noticesSent?: Set<string>;
+  /**
+   * 0.11.1: the engineering work running in this chat on this Runtime right
+   * now (the orchestrator's own progress), or null. Lets an agent asked "what
+   * are you doing?" mid-job answer as the teammate it is.
+   */
+  workInChat?: (chatId: string) => ChatWorkStatus | null;
   log?(message: string): void;
 };
 
@@ -479,11 +537,41 @@ export class FastChatCoordinator {
       "If answering properly needs real repository work (changing code, running tests or builds), " +
         "do not attempt it: answer what you can and set `needsWork` to true with a one-line " +
         "`workReason`. Otherwise `needsWork` is false and `workReason` is empty.",
+      ...this.#workSection(provider),
       INJECTION_RULE,
       ...(history ? [block("RECENT CHAT (oldest first)", history)] : []),
       block("OWNER'S MESSAGE", this.#job.goal.slice(0, 8_000)),
       "Answer with JSON matching the schema.",
     ].join("\n\n");
+  }
+
+  /**
+   * 0.11.1: when engineering work runs in this same chat, the agent answers as
+   * a member of that team, from ThreadLink's status and the agents' messages
+   * in the chat -- never as if it were idle, and never with invented progress.
+   */
+  #workSection(provider: AgentProvider): string[] {
+    const chatId = this.#job.chatId;
+    if (!chatId || !this.#d.workInChat) return [];
+    let work: ChatWorkStatus | null = null;
+    try {
+      work = this.#d.workInChat(chatId);
+    } catch {
+      work = null;
+    }
+    if (!work) return [];
+    return [
+      "You are also part of the engineering team working on a job in this chat right now (this " +
+        "answer runs separately, read-only, beside that job). If the owner asks what you or the " +
+        "team are doing, answer as a teammate describing that work, from the status below and " +
+        "the agents' messages in the recent chat. Do not say you are idle, only chatting, or not " +
+        "working on anything. Do not claim progress, results or test outcomes that are not shown " +
+        "there; if something is not known yet, say so.",
+      block(
+        "WORK IN PROGRESS IN THIS CHAT (ThreadLink's own status)",
+        workStatusText(work, provider),
+      ),
+    ];
   }
 
   #followupPrompt(provider: AgentProvider, answers: Posted[]): string {

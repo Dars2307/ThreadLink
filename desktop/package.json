@@ -1,7 +1,7 @@
 {
   "name": "threadlink-desktop",
   "productName": "ThreadLink",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "ThreadLink desktop app: runs the ThreadLink Runtime in the background with a tray/menu-bar icon.",
   "type": "module",
   "main": "dist/main.js",
