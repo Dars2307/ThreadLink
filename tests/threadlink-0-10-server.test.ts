@@ -92,12 +92,16 @@ const CHOICE = `tlchc_${hex("d")}`;
 const ART = `tlart_${hex("e")}`;
 const SESSION = `tlses_${hex("f")}`;
 const SQL10 = readFileSync("supabase/migrations/20260927000200_threadlink_0_10.sql", "utf8");
+// 0.11 re-states some vocabularies (and the event-type check) as supersets; the
+// LAST definition in migration order is the one in force.
+const SQL11 = readFileSync("supabase/migrations/20260929000100_threadlink_0_11.sql", "utf8");
 
-/** The last `select array[...]` list a function of the 0.10 migration returns. */
+/** The last `select array[...]` list a function returns (0.11 first, then 0.10). */
 const sqlList = (fn: string) => {
-  const m = new RegExp(
+  const re = new RegExp(
     `function threadlink_private\\.${fn}\\(\\) returns text\\[\\][\\s\\S]*?select array\\[([\\s\\S]*?)\\]`,
-  ).exec(SQL10);
+  );
+  const m = re.exec(SQL11) ?? re.exec(SQL10);
   if (!m) throw new Error(`no ${fn}`);
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
 };
@@ -191,7 +195,7 @@ describe("vocabularies: the shared types equal the 0.10 migration", () => {
     expect(sqlList("chat_event_types")).toEqual([...chatTypes.CHAT_EVENT_TYPES]);
     const check =
       /constraint chat_events_event_type_check check \(event_type in \(([^)]*)\)\)/.exec(
-        SQL10,
+        SQL11,
       )?.[1];
     expect([...(check ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1])).toEqual([
       ...chatTypes.CHAT_EVENT_TYPES,

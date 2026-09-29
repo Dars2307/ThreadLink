@@ -2,7 +2,6 @@
 
 import { revalidatePath } from "next/cache";
 
-import type { RunProvenance } from "@/lib/chat/types";
 import { failed, saved, type ActionResult } from "@/lib/dashboard/action-result";
 import { ATTACHMENT_MAX_BYTES, checkAttachment, decodeText } from "@/lib/dashboard/attachments";
 import {
@@ -13,7 +12,12 @@ import {
   loadRunProvenance,
   revealNativeSession,
 } from "@/lib/dashboard/chats-data";
-import { CONTROL_TEXT, isJobControl, parseProvenance } from "@/lib/dashboard/timeline";
+import {
+  CONTROL_TEXT,
+  isJobControl,
+  parseProvenance11,
+  type RunProvenance11,
+} from "@/lib/dashboard/timeline";
 
 /**
  * 0.10 owner actions used from the chat view: decide a choice, control a job,
@@ -98,10 +102,10 @@ export async function controlJobAction(formData: FormData): Promise<ActionResult
 export async function provenanceAction(
   chatId: unknown,
   runId: unknown,
-): Promise<RunProvenance | null> {
+): Promise<RunProvenance11 | null> {
   if (typeof chatId !== "string" || !ID.test(chatId)) return null;
   if (typeof runId !== "string" || !ID.test(runId)) return null;
-  return parseProvenance(await loadRunProvenance(chatId, runId));
+  return parseProvenance11(await loadRunProvenance(chatId, runId));
 }
 
 /** Owner-only: the native session id and the documented resume command, if the provider offers one. */

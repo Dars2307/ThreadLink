@@ -44,7 +44,9 @@ describe("runtime write envelope", () => {
         payload: { nodes: [{ key: "a", title: "A", owner: "codex", reviewer: "codex" }] },
       }).success,
     ).toBe(false);
-    for (const status of ["completed", "needs_fix", "blocked", "needs_user_decision", "failed"]) {
+    // 0.11: "completed" / "failed" pass the wire for a Fast Chat job (no verdict);
+    // the database refuses them for a work job (pgTAP 020). Verdict statuses never pass.
+    for (const status of ["needs_fix", "blocked", "needs_user_decision", "review_pending"]) {
       expect(
         teamWriteOpSchema.safeParse({ op: "set_status", payload: { status } }).success,
         status,

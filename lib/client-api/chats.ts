@@ -1,7 +1,20 @@
 import { z } from "zod";
 
 import { CHAT_ERROR_MESSAGES, type ChatErrorReason } from "@/lib/chat/model";
-import type { MessageDelivery } from "@/lib/chat/types";
+import { classifyIntent } from "@/lib/chat/intent";
+import { composeContextRowSchema, laneChoiceSchema, planPost } from "@/lib/chat/compose";
+import {
+  EXECUTION_LANES,
+  FAILOVER_POLICIES,
+  HOST_PRESENCES,
+  LANE_REASONS,
+  type ExecutionLane,
+  type FailoverPolicy,
+  type HostPresence,
+  type LaneReason,
+  type MessageDelivery,
+  type OwnerSettings,
+} from "@/lib/chat/types";
 import {
   healthMessage,
   parseHealthDetail,
@@ -61,6 +74,11 @@ export const CHAT_API_REASONS = [
   "unavailable",
   // 0.10 security review I1: posting or starting work from another computer.
   "other_computer",
+  // 0.11: deciding a choice on its card from the desktop app / terminal.
+  "choice_not_found",
+  "choice_closed",
+  "choice_expired",
+  "invalid_choice",
 ] as const;
 export type ChatApiReason = (typeof CHAT_API_REASONS)[number];
 
@@ -117,6 +135,10 @@ export const CHAT_API_STATUS: Record<ChatApiReason, number> = {
   conflict: 409,
   unavailable: 503,
   other_computer: 409,
+  choice_not_found: 404,
+  choice_closed: 409,
+  choice_expired: 409,
+  invalid_choice: 400,
 };
 
 const KIND_OF: Record<number, ClientErrorKind> = {
@@ -180,6 +202,10 @@ const HINTS: Record<string, ChatApiReason> = {
   limit_reached: "limit_reached",
   conflict: "conflict",
   other_computer: "other_computer",
+  choice_not_found: "choice_not_found",
+  choice_closed: "choice_closed",
+  choice_expired: "choice_expired",
+  invalid_choice: "invalid_choice",
 };
 
 const CODES: Record<string, ChatApiReason> = {
@@ -286,7 +312,13 @@ const participantRow = z.object({
   health: healthSchema.nullable(),
 });
 const activeJobRow = z
-  .object({ job_id: jobIdSchema, mode: modeSchema, status: z.string() })
+  .object({
+    job_id: jobIdSchema,
+    mode: modeSchema,
+    status: z.string(),
+    // 0.11
+    lane: z.enum(EXECUTION_LANES).optional(),
+  })
   .nullable();
 const summaryRow = z.object({
   chat_id: chatIdSchema,
@@ -306,6 +338,9 @@ const summaryRow = z.object({
       runs_on: z.string().nullable(),
       runtime_online: z.boolean(),
       this_computer: z.boolean(),
+      // 0.11 presence v2 (section 4)
+      runtime_presence: z.enum(HOST_PRESENCES).nullable().optional(),
+      runtime_last_seen_at: z.string().nullable().optional(),
     })
     .nullable(),
   group_name: z.string().nullable(),
@@ -329,7 +364,13 @@ export type ChatApiParticipant = {
   shortName: string;
   health: z.infer<typeof healthSchema> | null;
 };
-export type ChatApiActiveJob = { jobId: string; mode: "solo" | "pair" | "team"; status: string };
+export type ChatApiActiveJob = {
+  jobId: string;
+  mode: "solo" | "pair" | "team";
+  status: string;
+  /** 0.11: the running job's lane (work is preferred when both run). */
+  lane?: ExecutionLane;
+};
 
 /** One chat, as the desktop app / terminal / controller sees it. Ids are opaque handles. */
 export type ChatApiSummary = {
@@ -348,6 +389,9 @@ export type ChatApiSummary = {
   /** The computer the project runs on ("Runs on <label>"), and whether it is online. */
   runtimeLabel: string | null;
   runtimeOnline: boolean | null;
+  /** 0.11: the execution host's presence (online | working | reconnecting | offline), and when it was last seen. */
+  hostPresence: HostPresence | null;
+  hostLastSeenAt: string | null;
   /** Runtime API only: the project runs on the calling computer. */
   thisComputer: boolean | null;
   groupName: string | null;
@@ -367,7 +411,9 @@ export type ChatApiSummary = {
 };
 
 const toActiveJob = (j: z.infer<typeof activeJobRow>): ChatApiActiveJob | null =>
-  j ? { jobId: j.job_id, mode: j.mode, status: j.status } : null;
+  j
+    ? { jobId: j.job_id, mode: j.mode, status: j.status, ...(j.lane ? { lane: j.lane } : {}) }
+    : null;
 
 function toSummary(r: z.infer<typeof summaryRow>): ChatApiSummary {
   return {
@@ -384,6 +430,8 @@ function toSummary(r: z.infer<typeof summaryRow>): ChatApiSummary {
     projectName: r.project?.name ?? null,
     runtimeLabel: r.project?.runs_on ?? null,
     runtimeOnline: r.project ? r.project.runtime_online : null,
+    hostPresence: r.project?.runtime_presence ?? null,
+    hostLastSeenAt: r.project?.runtime_last_seen_at ?? null,
     thisComputer: r.project ? r.project.this_computer : null,
     groupName: r.group_name,
     pinned: r.pinned,
@@ -543,7 +591,20 @@ const toProject = (p: z.infer<typeof projectRow>): ChatApiProject => ({
 });
 
 const postRow = z.object({
-  routed: z.enum(["note_to_active_job", "stop_requested", "new_job", "provider_blocked"]),
+  routed: z.enum([
+    "note_to_active_job",
+    "stop_requested",
+    "new_job",
+    "provider_blocked",
+    // 0.11
+    "chat_job",
+    "choice_resolved",
+  ]),
+  lane: z.enum(EXECUTION_LANES).optional(),
+  lane_reason: z.enum(LANE_REASONS).nullable().optional(),
+  choice_id: z.string().optional(),
+  chosen_key: z.string().optional(),
+  chosen_label: z.string().nullable().optional(),
   job_id: z.string().nullable(),
   event_id: z
     .string()
@@ -557,10 +618,17 @@ const postRow = z.object({
 export type ChatApiPostResult =
   | {
       ok: true;
-      routed: "note_to_active_job" | "stop_requested" | "new_job";
+      routed: "note_to_active_job" | "stop_requested" | "new_job" | "chat_job" | "choice_resolved";
       jobId: string | null;
       eventId: string | null;
       replayed: boolean;
+      /** 0.11: the lane and why (Details). */
+      lane?: ExecutionLane;
+      laneReason?: LaneReason | null;
+      /** 0.11, routed choice_resolved: which choice and the chosen label. */
+      choiceId?: string;
+      chosenKey?: string;
+      chosenLabel?: string;
     }
   | {
       ok: false;
@@ -590,6 +658,9 @@ const liveRow = z.object({
   activity: z.string().nullable(),
   started_at: z.string().nullable(),
   last_activity_at: z.string().nullable(),
+  // 0.11
+  subject: z.string().nullable().optional(),
+  lane: z.enum(EXECUTION_LANES).optional(),
 });
 /** A run that is working but has not produced its message yet (lib/chat/types LiveActivity). */
 export type ChatApiLiveActivity = {
@@ -600,6 +671,10 @@ export type ChatApiLiveActivity = {
   activity: string | null;
   startedAt: string | null;
   lastActivityAt: string | null;
+  /** 0.11: what the run is doing, in fixed words ("Reviewing"); never agent text. */
+  subject?: string | null;
+  /** 0.11: the lane of the run's job. */
+  lane?: ExecutionLane;
 };
 const toLive = (r: z.infer<typeof liveRow>): ChatApiLiveActivity => ({
   runId: r.run_id,
@@ -609,11 +684,29 @@ const toLive = (r: z.infer<typeof liveRow>): ChatApiLiveActivity => ({
   activity: r.activity,
   startedAt: r.started_at,
   lastActivityAt: r.last_activity_at,
+  ...(r.subject !== undefined ? { subject: r.subject } : {}),
+  ...(r.lane !== undefined ? { lane: r.lane } : {}),
 });
+
+// 0.11: the execution host of a chat (presence v2), on every chat read.
+const hostRow = z
+  .object({
+    label: z.string(),
+    presence: z.enum(HOST_PRESENCES),
+    last_seen_at: z.string().nullable(),
+  })
+  .nullable()
+  .optional();
+export type ChatApiHost = { label: string; presence: HostPresence; lastSeenAt: string | null };
+const toHost = (h: z.infer<typeof hostRow>): ChatApiHost | null =>
+  h ? { label: h.label, presence: h.presence, lastSeenAt: h.last_seen_at } : null;
 
 const runtimeRow = z.object({
   label: z.string(),
   online: z.boolean(),
+  // 0.11
+  presence: z.enum(HOST_PRESENCES).nullable().optional(),
+  last_seen_at: z.string().nullable().optional(),
   version: z.string().nullable(),
   protocol: z.coerce.number().int(),
   min_protocol: z.coerce.number().int(),
@@ -624,6 +717,9 @@ const runtimeRow = z.object({
 export type ChatApiRuntime = {
   label: string;
   online: boolean;
+  /** 0.11 presence v2 of this computer as the server sees it. */
+  presence: HostPresence | null;
+  lastSeenAt: string | null;
   version: string | null;
   protocol: number;
   minProtocol: number;
@@ -635,7 +731,13 @@ export async function listRuntimeChats(
   db: ClientDatabase,
   hash: string,
   rawOptions: unknown = {},
-): Promise<{ chats: ChatApiSummary[]; projects: ChatApiProject[]; runtime: ChatApiRuntime }> {
+): Promise<{
+  chats: ChatApiSummary[];
+  projects: ChatApiProject[];
+  runtime: ChatApiRuntime;
+  /** 0.11: the owner's settings (failover policy). */
+  settings: { failoverPolicy: FailoverPolicy };
+}> {
   const o = valid(listOptions, rawOptions);
   const r = await rpc(
     db,
@@ -645,14 +747,22 @@ export async function listRuntimeChats(
       p_include_archived: o.includeArchived ?? false,
       p_search: o.search?.trim() ? o.search.trim() : null,
     },
-    z.object({ chats: z.array(summaryRow), projects: z.array(projectRow), runtime: runtimeRow }),
+    z.object({
+      chats: z.array(summaryRow),
+      projects: z.array(projectRow),
+      runtime: runtimeRow,
+      settings: z.object({ failover_policy: z.enum(FAILOVER_POLICIES) }).optional(),
+    }),
   );
   return {
     chats: r.chats.map(toSummary),
     projects: r.projects.map(toProject),
+    settings: { failoverPolicy: r.settings?.failover_policy ?? "auto" },
     runtime: {
       label: r.runtime.label,
       online: r.runtime.online,
+      presence: r.runtime.presence ?? null,
+      lastSeenAt: r.runtime.last_seen_at ?? null,
       version: r.runtime.version,
       protocol: r.runtime.protocol,
       minProtocol: r.runtime.min_protocol,
@@ -666,15 +776,31 @@ export async function getRuntimeChat(
   db: ClientDatabase,
   hash: string,
   rawChatId: unknown,
-): Promise<ChatApiSummary & { activity: ChatApiLiveActivity[] }> {
+): Promise<
+  ChatApiSummary & {
+    activity: ChatApiLiveActivity[];
+    /** 0.11: the execution host now, and the server's clock to age it against. */
+    host: ChatApiHost | null;
+    serverNow: string | null;
+  }
+> {
   const chatId = validId(chatIdSchema, rawChatId, "chat_not_found");
   const r = await rpc(
     db,
     "runtime_get_chat",
     { p_token_hash: hash, p_chat_id: chatId },
-    summaryRow.extend({ activity: z.array(liveRow) }),
+    summaryRow.extend({
+      activity: z.array(liveRow),
+      host: hostRow,
+      server_now: z.string().optional(),
+    }),
   );
-  return { ...toSummary(r), activity: r.activity.map(toLive) };
+  return {
+    ...toSummary(r),
+    activity: r.activity.map(toLive),
+    host: toHost(r.host),
+    serverNow: r.server_now ?? null,
+  };
 }
 
 export const eventsQuerySchema = z
@@ -722,6 +848,9 @@ export async function runtimeChatEvents(
     activeJob: ChatApiActiveJob | null;
     activity: ChatApiLiveActivity[];
     deliveries: { cursor: number; delivery: MessageDelivery }[];
+    /** 0.11: the execution host now, and the server's clock to age it against. */
+    host: ChatApiHost | null;
+    serverNow: string | null;
   }
 > {
   const chatId = validId(chatIdSchema, rawChatId, "chat_not_found");
@@ -744,6 +873,8 @@ export async function runtimeChatEvents(
       deliveries: z.array(
         z.object({ cursor: z.coerce.number().int().min(1), delivery: deliverySchema }),
       ),
+      host: hostRow,
+      server_now: z.string().optional(),
     }),
   );
   return {
@@ -752,6 +883,101 @@ export async function runtimeChatEvents(
     activeJob: toActiveJob(r.active_job),
     activity: r.activity.map(toLive),
     deliveries: r.deliveries,
+    host: toHost(r.host),
+    serverNow: r.server_now ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 0.11: settings and choices from the desktop app / terminal
+// ---------------------------------------------------------------------------
+const settingsRow = z.object({
+  failover_policy: z.enum(FAILOVER_POLICIES),
+  updated_at: z.string().nullable(),
+});
+export const runtimeSettingsInputSchema = z
+  .object({ failoverPolicy: z.enum(FAILOVER_POLICIES) })
+  .strict();
+
+export async function getRuntimeSettings(db: ClientDatabase, hash: string): Promise<OwnerSettings> {
+  const r = await rpc(db, "runtime_get_settings", { p_token_hash: hash }, settingsRow);
+  return { failoverPolicy: r.failover_policy, updatedAt: r.updated_at };
+}
+
+export async function setRuntimeFailoverPolicy(
+  db: ClientDatabase,
+  hash: string,
+  rawInput: unknown,
+): Promise<OwnerSettings> {
+  const i = valid(runtimeSettingsInputSchema, rawInput);
+  const r = await rpc(
+    db,
+    "runtime_set_failover_policy",
+    { p_token_hash: hash, p_policy: i.failoverPolicy },
+    settingsRow,
+  );
+  return { failoverPolicy: r.failover_policy, updatedAt: r.updated_at };
+}
+
+export const decideChoiceInputSchema = z
+  .object({ key: z.string().regex(/^[a-z_]{1,40}$/) })
+  .strict();
+const choiceIdSchema = z.string().regex(/^tlchc_[0-9a-f]{32}$/);
+
+export type ChatApiChoiceDecision = {
+  choiceId: string;
+  kind: string;
+  status: "pending" | "chosen" | "expired" | "cancelled";
+  chosenKey: string | null;
+  chosenLabel: string | null;
+  decidedAt: string | null;
+  replayed: boolean;
+  /** start_work "Run this as work": the work job it started (or null when agents were not ready). */
+  startedJobId: string | null;
+};
+
+/**
+ * The owner answers a choice on its card (the dashboard's rules), for a
+ * choice of this chat, from the computer the chat's project runs on.
+ */
+export async function decideRuntimeChoice(
+  db: ClientDatabase,
+  hash: string,
+  rawChatId: unknown,
+  rawChoiceId: unknown,
+  rawInput: unknown,
+): Promise<ChatApiChoiceDecision> {
+  const chatId = validId(chatIdSchema, rawChatId, "chat_not_found");
+  const choiceId = validId(choiceIdSchema, rawChoiceId, "choice_not_found");
+  const i = valid(decideChoiceInputSchema, rawInput);
+  const r = await rpc(
+    db,
+    "runtime_decide_choice",
+    { p_token_hash: hash, p_chat_id: chatId, p_choice_id: choiceId, p_key: i.key },
+    z.object({
+      choice_id: choiceIdSchema,
+      kind: z.string(),
+      status: z.enum(["pending", "chosen", "expired", "cancelled"]),
+      chosen_key: z.string().nullable(),
+      decided_at: z.string().nullable(),
+      chosen_label: z.string().nullable().optional(),
+      replayed: z.boolean().optional(),
+      started: z
+        .object({ job_id: z.string().nullable().optional() })
+        .passthrough()
+        .nullable()
+        .optional(),
+    }),
+  );
+  return {
+    choiceId: r.choice_id,
+    kind: r.kind,
+    status: r.status,
+    chosenKey: r.chosen_key,
+    chosenLabel: r.chosen_label ?? null,
+    decidedAt: r.decided_at,
+    replayed: r.replayed === true,
+    startedJobId: r.started?.job_id ?? null,
   };
 }
 
@@ -784,6 +1010,8 @@ export const postMessageInputSchema = z
     body: z.string().max(CHAT_API_MESSAGE_MAX_CHARS),
     idempotencyKey: idempotencyKeySchema.optional(),
     client: z.enum(CHAT_CLIENTS).optional(),
+    /** 0.11: "auto" (default) | "chat" | "work"; a leading /chat or /work also works. */
+    lane: laneChoiceSchema.optional(),
   })
   .strict();
 
@@ -803,15 +1031,28 @@ export async function postRuntimeChatMessage(
   const i = valid(postMessageInputSchema, rawInput);
   if (!(CHAT_CLIENTS as readonly string[]).includes(client)) throw new ChatApiError("invalid");
   if (i.body.trim() === "") throw new ChatApiError("empty");
+  // 0.11: the lane (section 2.4) and a natural answer to an open choice (section 6).
+  const context = await rpc(
+    db,
+    "runtime_chat_compose_context",
+    { p_token_hash: hash, p_chat_id: chatId },
+    composeContextRowSchema,
+  );
+  const plan = planPost({ body: i.body, lane: i.lane ?? null, context, allowChoiceAnswers: true });
+  if (plan.body.trim() === "") throw new ChatApiError("empty");
   const r = await rpc(
     db,
     "runtime_post_chat_message",
     {
       p_token_hash: hash,
       p_chat_id: chatId,
-      p_body: i.body,
+      p_body: plan.body,
       p_idempotency_key: i.idempotencyKey ?? null,
       p_client: client,
+      p_lane: plan.lane,
+      p_lane_reason: plan.laneReason,
+      p_choice_id: plan.choice?.choiceId ?? null,
+      p_choice_key: plan.choice?.key ?? null,
     },
     postRow,
   );
@@ -835,6 +1076,10 @@ export async function postRuntimeChatMessage(
     jobId: r.job_id,
     eventId: r.event_id ?? null,
     replayed: r.replayed === true,
+    ...(r.lane ? { lane: r.lane, laneReason: r.lane_reason ?? null } : {}),
+    ...(r.routed === "choice_resolved" && r.choice_id
+      ? { choiceId: r.choice_id, chosenKey: r.chosen_key, chosenLabel: r.chosen_label ?? undefined }
+      : {}),
   };
 }
 
@@ -970,8 +1215,20 @@ export async function createControllerChat(
 export async function postControllerChatMessage(
   db: ClientDatabase,
   hash: string,
-  input: { sessionId: unknown; chatId: unknown; body: unknown; idempotencyKey?: unknown },
-): Promise<{ job: TeamStatus; created: boolean }> {
+  input: {
+    sessionId: unknown;
+    chatId: unknown;
+    body: unknown;
+    idempotencyKey?: unknown;
+    /** 0.11: "auto" (default) | "chat" | "work". Controllers never answer choices by typing. */
+    lane?: unknown;
+  },
+): Promise<{
+  job: TeamStatus;
+  created: boolean;
+  lane: ExecutionLane;
+  laneReason: LaneReason | null;
+}> {
   const sessionId = valid(sessionIdSchema, input.sessionId);
   const chatId = validId(chatIdSchema, input.chatId, "chat_not_found");
   const { body } = valid(z.object({ body: z.string().max(CHAT_API_MESSAGE_MAX_CHARS) }), {
@@ -980,6 +1237,11 @@ export async function postControllerChatMessage(
   if (body.trim() === "") throw new ChatApiError("empty");
   const key =
     input.idempotencyKey === undefined ? null : valid(idempotencyKeySchema, input.idempotencyKey);
+  const laneChoice =
+    input.lane === undefined || input.lane === null ? "auto" : valid(laneChoiceSchema, input.lane);
+  // The lane only; a controller's message never answers a choice (section 6).
+  const intent = classifyIntent({ body, explicit: laneChoice, activeWorkJob: false, mode: "team" });
+  if (intent.body.trim() === "") throw new ChatApiError("empty");
   const row = await rpc(
     db,
     "controller_post_chat_message",
@@ -987,12 +1249,22 @@ export async function postControllerChatMessage(
       p_token_hash: hash,
       p_session_id: sessionId,
       p_chat_id: chatId,
-      p_body: body,
+      p_body: intent.body,
       p_idempotency_key: key,
+      p_lane: intent.lane,
+      p_lane_reason: intent.reason,
     },
-    teamStatusRowSchema,
+    teamStatusRowSchema.extend({
+      lane: z.enum(EXECUTION_LANES).optional(),
+      lane_reason: z.enum(LANE_REASONS).nullable().optional(),
+    }),
   );
-  return { job: toTeamStatus(row), created: row.created === true };
+  return {
+    job: toTeamStatus(row),
+    created: row.created === true,
+    lane: row.lane ?? intent.lane,
+    laneReason: row.lane_reason ?? null,
+  };
 }
 
 export async function controllerChatStatus(

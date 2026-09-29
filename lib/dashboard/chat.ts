@@ -448,16 +448,44 @@ export function routeBanner(
   };
 }
 
+/** 0.11 post result: any routed value the server adds (choice_resolved, …) is accepted. */
+export type PostResult11 =
+  | PostChatMessageResult
+  | {
+      ok: true;
+      routed: string;
+      jobId?: string | null;
+      /** choice_resolved: the chosen option's label. */
+      chosenLabel?: string | null;
+      label?: string | null;
+      lane?: string | null;
+    };
+
 /** What happened after sending, in words. */
-export function sendOutcome(result: PostChatMessageResult): { ok: boolean; message: string } {
+export function sendOutcome(result: PostResult11): { ok: boolean; message: string } {
   if (!result.ok) return { ok: false, message: safeServerMessage(result.message) };
+  if (result.routed === "choice_resolved") {
+    const r = result as { chosenLabel?: unknown; label?: unknown };
+    const label =
+      typeof r.chosenLabel === "string"
+        ? r.chosenLabel
+        : typeof r.label === "string"
+          ? r.label
+          : null;
+    const safe = label ? safeServerMessage(label) : null;
+    return {
+      ok: true,
+      message: safe && safe !== SEND_FAILED ? `Answered: ${safe}.` : "Answered.",
+    };
+  }
   if (result.routed === "note_to_active_job") {
     return { ok: true, message: "Sent to the running job. The agents will read it next." };
   }
   if (result.routed === "stop_requested") {
     return { ok: true, message: "Stop requested. The job stops after the current round." };
   }
-  return { ok: true, message: "Started a new job." };
+  if (result.routed === "new_job") return { ok: true, message: "Started a new job." };
+  return { ok: true, message: "Sent." };
 }
 
 export const SEND_FAILED = "Could not send your message. Check your connection and try again.";
@@ -475,14 +503,31 @@ export function safeServerMessage(message: unknown): string {
   return m;
 }
 
-export function isPostResult(value: unknown): value is PostChatMessageResult {
+export function isPostResult(value: unknown): value is PostResult11 {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (v.ok === false) return typeof v.message === "string";
-  return (
-    v.ok === true &&
-    (v.routed === "note_to_active_job" || v.routed === "stop_requested" || v.routed === "new_job")
-  );
+  return v.ok === true && typeof v.routed === "string" && /^[a-z_]{1,40}$/.test(v.routed);
+}
+
+/** 0.11 execution control (§2.1): sent as `lane` in the post body. */
+export const LANES = [
+  {
+    value: "auto",
+    label: "Auto",
+    hint: "ThreadLink decides: questions get a quick reply, repository changes run as work.",
+  },
+  { value: "chat", label: "Chat only", hint: "A quick answer. Nothing in the project changes." },
+  {
+    value: "work",
+    label: "Run work",
+    hint: "Plan, build, review and check it in the project.",
+  },
+] as const;
+export type Lane = (typeof LANES)[number]["value"];
+
+export function parseLane(v: unknown): Lane {
+  return v === "chat" || v === "work" ? v : "auto";
 }
 
 // ---------------------------------------------------------------------------
@@ -505,4 +550,24 @@ export function announcement(added: ChatEvent[], technical: boolean): string | n
   }
   if (messages.length > 1) return `${messages.length} new messages.`;
   return shown.length === 1 ? `Update: ${milestoneText(shown[0]!)}` : `${shown.length} updates.`;
+}
+
+/**
+ * What a key press in the composer does (§8): Enter sends, Shift+Enter is a
+ * new line; Ctrl/Cmd+Enter always sends; on touch keyboards Enter is a new
+ * line (the Send button sends); never while an IME is composing.
+ */
+export function composerKey(e: {
+  key: string;
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey?: boolean;
+  isComposing: boolean;
+  coarsePointer: boolean;
+}): "send" | "newline" | null {
+  if (e.key !== "Enter" || e.isComposing) return null;
+  if (e.ctrlKey || e.metaKey) return "send";
+  if (e.shiftKey || e.altKey) return "newline";
+  return e.coarsePointer ? "newline" : "send";
 }

@@ -20,6 +20,7 @@ import {
   failResult,
   forbiddenArg,
   isPlainObject,
+  parseResetTime,
   parseStructured,
   processFailure,
   runProcess,
@@ -99,6 +100,15 @@ export function buildCodexArgs(request: AgentRunRequest, options: CodexArgsOptio
 }
 
 export function buildCodexPrompt(request: AgentRunRequest): string {
+  if (request.purpose === "chat") {
+    // Fast Chat (0.11 §3.4); starts with "[" like every prompt, never a flag.
+    return [
+      "[ThreadLink Fast Chat] You are answering in a ThreadLink chat (Codex, non-interactive).",
+      "Access: READ-ONLY. Do not modify any file.",
+      "",
+      request.prompt,
+    ].join("\n");
+  }
   return [
     `[ThreadLink Team Mode] You are the ${request.role} in a ThreadLink team run (Codex, non-interactive).`,
     request.access === "read-only"
@@ -384,7 +394,8 @@ export class CodexTeamRunner implements AgentRunner {
         hooks: request.onProcess,
       });
       const processError = processFailure(request, outcome, "Codex", timeoutMs);
-      if (processError) return { ...processError, threadId: state.threadId };
+      if (processError)
+        return { ...processError, threadId: state.threadId, timings: outcome.timing };
 
       const text = state.lastMessage ?? "";
       const base: AgentRunResult = {
@@ -399,6 +410,7 @@ export class CodexTeamRunner implements AgentRunner {
         usage: state.sawUsage
           ? { inputTokens: state.inputTokens, outputTokens: state.outputTokens }
           : undefined,
+        timings: outcome.timing,
       };
 
       const failedTurn = state.turnFailed ?? (state.turnCompleted ? null : state.errors.at(-1));
@@ -406,10 +418,12 @@ export class CodexTeamRunner implements AgentRunner {
         const diagnostics = [failedTurn, ...state.errors, outcome.stderr]
           .filter(Boolean)
           .join("\n");
+        const failure = classifyFailureText(diagnostics) ?? "provider_error";
         return {
           ...base,
           error: `Codex failed (exit ${outcome.code ?? "?"}): ${tail(diagnostics) || "no detail"}`,
-          failure: classifyFailureText(diagnostics) ?? "provider_error",
+          failure,
+          resetsAt: failure === "quota_exhausted" ? parseResetTime(diagnostics) : null,
         };
       }
       if (!state.threadId) {

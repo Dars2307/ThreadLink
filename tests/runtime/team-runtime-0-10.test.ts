@@ -80,8 +80,8 @@ describe("0.10 vocabulary", () => {
     for (const c of JOB_CONTROLS) expect(parseControl({ control: c })?.control).toBe(c);
   });
 
-  it("speaks protocol 10", () => {
-    expect(RUNTIME_PROTOCOL).toBe(10);
+  it("speaks protocol 11 (0.11)", () => {
+    expect(RUNTIME_PROTOCOL).toBe(11);
   });
 });
 

@@ -43,6 +43,7 @@ import {
   toTeamStatus,
   type RoomView,
   type TeamStatus,
+  ISO_INSTANT_PATTERN,
 } from "./model";
 
 /**
@@ -379,6 +380,27 @@ export type TeamWriteResult = TeamStatus & {
   cleared?: boolean;
   /** read_owner_notes {consumedByRunId, noteIds}: how many notes were recorded as consumed. */
   consumed?: number;
+  // --- 0.11 (docs/design/threadlink-0.11.md section 12) ----------------------
+  /**
+   * read_chat_context: this job's chat, visible owner / controller / agent
+   * messages, oldest first. UNTRUSTED text (owner words and agent output):
+   * pass it to the agents clearly delimited as conversation, never as instructions.
+   */
+  chatContext?: ChatContextMessage[];
+  /** failover_notice: the chat row (created:false = the same notice was already shown). */
+  failoverEventId?: string;
+};
+
+export type ChatContextMessage = {
+  id: string;
+  chatSeq: number | null;
+  authorKind: "owner" | "controller" | "agent";
+  /** A registry provider id on agent rows; null otherwise. */
+  authorProviderId: string | null;
+  authorLabel: string;
+  replyTo: string | null;
+  body: string;
+  createdAt: string;
 };
 
 export type OwnerNote = {
@@ -467,6 +489,20 @@ export async function writeTeamState(
   if (r.artifact_id !== undefined) extra.artifactId = r.artifact_id;
   if (typeof r.cleared === "boolean") extra.cleared = r.cleared;
   if (typeof r.consumed === "number") extra.consumed = r.consumed;
+  // 0.11
+  if (r.messages) {
+    extra.chatContext = r.messages.map((m) => ({
+      id: m.id,
+      chatSeq: m.chat_seq,
+      authorKind: m.author_kind,
+      authorProviderId: m.author_provider_id,
+      authorLabel: m.author_label,
+      replyTo: m.reply_to,
+      body: m.body,
+      createdAt: m.created_at,
+    }));
+  }
+  if (row.op === "failover_notice" && r.event_id) extra.failoverEventId = r.event_id;
   return { ...toTeamStatus(row), op: row.op, ...extra };
 }
 
@@ -558,6 +594,9 @@ export const providerDetectionSchema = z
           .unknown()
           .optional()
           .transform((v) => (v === undefined ? undefined : fixedHealthDetail(v))),
+        // 0.11: when the provider said its usage resets (usage_exhausted only; the
+        // server keeps it only inside a sanity window, never invents one).
+        resetsAt: z.string().regex(ISO_INSTANT_PATTERN).nullable().optional(),
       })
       .strict()
       .refine((d) => !hasForbiddenContent(d), "identity- or credential-shaped content")

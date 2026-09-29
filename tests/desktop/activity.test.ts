@@ -185,6 +185,7 @@ describe("what one mirrored line says", () => {
   const lineFor = async (over: Partial<Activity>) => {
     mount(appState([conversation()], [activity(over)]));
     await settle();
+    await navTo("This computer");
     return feedText()[0] ?? "";
   };
 
@@ -243,6 +244,7 @@ describe("what one mirrored line says", () => {
     const at = minutesAgo(12);
     mount(appState([conversation()], [activity({ at })]));
     await settle();
+    await navTo("This computer");
     const text = feedText()[0] ?? "";
     expect(text).toContain("12 min ago");
     expect(text).not.toContain(at);
@@ -286,11 +288,12 @@ describe("whose conversation a line belongs to", () => {
     expect(groups[1]!.lines.join(" ")).not.toContain("Fix the sign-in redirect");
   });
 
-  it("names the conversation on the mixed feed on Home", async () => {
+  it("names the conversation on the mixed feed on This computer", async () => {
     mount(two());
     await settle();
+    await navTo("This computer");
 
-    const home = document.getElementById("home-activity")?.textContent ?? "";
+    const home = document.getElementById("runtime-requests")?.textContent ?? "";
     expect(home).toContain(`in ${BOOTSTRAP}`);
     expect(home).toContain(`in ${DASHBOARD}`);
   });
@@ -324,6 +327,7 @@ describe("order and quantity", () => {
   it("keeps the newest line first", async () => {
     mount(appState([conversation()], completedRun()));
     await settle();
+    await navTo("This computer");
 
     const [first, second] = feedText();
     expect(first).toContain("Task completed");
@@ -336,6 +340,7 @@ describe("order and quantity", () => {
     );
     mount(appState([conversation()], many));
     await settle();
+    await navTo("This computer");
 
     const shown = feedItems().length;
     expect(shown).toBeGreaterThan(0);
@@ -345,11 +350,12 @@ describe("order and quantity", () => {
 });
 
 describe("what the feed must never show", () => {
-  it("keeps identifiers out of the feed, on Home and on Agents", async () => {
+  it("keeps identifiers out of the feed, on This computer and on Agents", async () => {
     const state = appState([conversation()], completedRun());
     mount(state);
     await settle();
-    const home = document.getElementById("view")?.textContent ?? "";
+    await navTo("This computer");
+    const home = document.getElementById("runtime-requests")?.textContent ?? "";
     expect(home).toContain("Task completed");
     expect(home).not.toMatch(/tltsk_|tlses_|tlrun_|tlwsp_|cc:|31a711b2/);
 
@@ -373,6 +379,7 @@ describe("what the feed must never show", () => {
       ),
     );
     await settle();
+    await navTo("This computer");
 
     const item = feedItems()[0]!;
     expect(item.querySelector("img")).toBeNull();
@@ -382,11 +389,12 @@ describe("what the feed must never show", () => {
 });
 
 describe("seeing the whole story", () => {
-  it("offers the dashboard from Home rather than showing the full result", async () => {
+  it("offers the dashboard rather than showing the full result", async () => {
     mount(appState([conversation()], completedRun()));
     await settle();
+    await navTo("This computer");
 
-    document.getElementById("home-activity-dashboard")!.dispatchEvent(new Event("click"));
+    document.getElementById("requests-dashboard")!.dispatchEvent(new Event("click"));
     expect(openDashboard).toHaveBeenCalledTimes(1);
   });
 
@@ -405,13 +413,14 @@ describe("seeing the whole story", () => {
 });
 
 describe("before anything has run", () => {
-  it("says something useful on Home instead of an empty box", async () => {
+  it("says something useful instead of an empty box", async () => {
     mount(appState([conversation()]));
     await settle();
+    await navTo("This computer");
 
-    const home = document.getElementById("home-activity")?.textContent ?? "";
+    const home = document.getElementById("runtime-requests")?.textContent ?? "";
     expect(feedItems()).toHaveLength(0);
-    expect(home).toMatch(/No activity yet/i);
+    expect(home).toMatch(/No requests yet/i);
     expect(home).toMatch(/shows up here/i);
   });
 

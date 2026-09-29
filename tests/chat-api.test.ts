@@ -111,6 +111,17 @@ const event = (cursor: number, over: Record<string, unknown> = {}) => ({
 });
 
 const ok = (data: unknown) => ({ data, error: null });
+/** 0.11: a post first reads the chat's compose context (lane + open choices), then posts. */
+const CONTEXT = {
+  chat_id: "tlcht_" + "0".repeat(32),
+  mode: "team",
+  active_work_job: false,
+  choices: [],
+};
+const withContext = (post: unknown) =>
+  rpc.mockImplementation((fn: string) =>
+    Promise.resolve(fn === "runtime_chat_compose_context" ? ok(CONTEXT) : post),
+  );
 const err = (code: string, hint?: string, details?: string) => ({
   data: null,
   error: { message: "database text that must never be shown", code, hint, details },
@@ -228,6 +239,8 @@ describe("runtime chat routes: shapes", () => {
       minProtocol: 10,
       currentProtocol: 10,
       updateRequired: true,
+      presence: null,
+      lastSeenAt: null,
     });
   });
 
@@ -379,7 +392,7 @@ describe("runtime chat routes: shapes", () => {
 
 describe("runtime chat routes: posting as the owner", () => {
   it("records the client from the header; the author is the database's", async () => {
-    rpc.mockResolvedValue(ok({ routed: "new_job", job_id: JOB, event_id: EV, chat_id: CHAT }));
+    withContext(ok({ routed: "new_job", job_id: JOB, event_id: EV, chat_id: CHAT }));
     const res = await messagesRoute.POST(
       req(
         `/api/runtime/chats/${CHAT}/messages`,
@@ -395,25 +408,32 @@ describe("runtime chat routes: posting as the owner", () => {
       eventId: EV,
       replayed: false,
     });
+    expect(rpc).toHaveBeenCalledWith("runtime_chat_compose_context", {
+      p_token_hash: "ab".repeat(32),
+      p_chat_id: CHAT,
+    });
     expect(rpc).toHaveBeenCalledWith("runtime_post_chat_message", {
       p_token_hash: "ab".repeat(32),
       p_chat_id: CHAT,
       p_body: "Build it",
       p_idempotency_key: "k-1",
       p_client: "terminal",
+      // 0.11: classified server-side (lib/chat/intent.ts); no open choice to answer.
+      p_lane: "work",
+      p_lane_reason: "edit_requested",
+      p_choice_id: null,
+      p_choice_key: null,
     });
   });
 
   it("the client may come from the body instead; both must agree; one is required", async () => {
-    rpc.mockResolvedValue(
-      ok({ routed: "note_to_active_job", job_id: JOB, event_id: EV, replayed: true }),
-    );
+    withContext(ok({ routed: "note_to_active_job", job_id: JOB, event_id: EV, replayed: true }));
     const viaBody = await messagesRoute.POST(
       req(`/api/runtime/chats/${CHAT}/messages`, post({ body: "x", client: "desktop" })),
       params(CHAT),
     );
     expect(await viaBody.json()).toMatchObject({ ok: true, replayed: true });
-    expect(rpc.mock.calls[0]![1]).toMatchObject({ p_client: "desktop" });
+    expect(rpc.mock.calls[1]![1]).toMatchObject({ p_client: "desktop" });
     rpc.mockClear();
     for (const [body, headers] of [
       [{ body: "x" }, {}],
@@ -477,7 +497,7 @@ describe("runtime chat routes: posting as the owner", () => {
   });
 
   it("the health gate: 409 provider_unhealthy with who is not ready, stored:true", async () => {
-    rpc.mockResolvedValue(
+    withContext(
       ok({
         routed: "provider_blocked",
         job_id: null,

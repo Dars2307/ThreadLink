@@ -425,6 +425,10 @@ describe("the chat timeline by chat", () => {
     const { db, rpc } = fakeDb(
       {},
       {
+        // 0.11: the lane and open choices are read first (lib/chat/compose.ts).
+        chat_compose_context: {
+          data: { chat_id: CHAT, mode: "team", active_work_job: false, choices: [] },
+        },
         post_chat_message: {
           data: {
             routed: "provider_blocked",
@@ -444,10 +448,15 @@ describe("the chat timeline by chat", () => {
       body: "Build it",
       idempotencyKey: "k1",
     });
+    expect(rpc).toHaveBeenCalledWith("chat_compose_context", { p_chat_id: CHAT });
     expect(rpc).toHaveBeenCalledWith("post_chat_message", {
       p_chat_id: CHAT,
       p_body: "Build it",
       p_idempotency_key: "k1",
+      p_lane: "work",
+      p_lane_reason: "edit_requested",
+      p_choice_id: null,
+      p_choice_key: null,
     });
     expect(out).toEqual({
       ok: false,
@@ -471,6 +480,9 @@ describe("the chat timeline by chat", () => {
     const { db } = fakeDb(
       {},
       {
+        chat_compose_context: {
+          data: { chat_id: CHAT, mode: "team", active_work_job: false, choices: [] },
+        },
         post_chat_message: { error: { code: "55000", hint: "needs_project", message: "db text" } },
       },
     );

@@ -46,10 +46,19 @@ export const JOB_STATUSES = [
   // 0.10: non-terminal waits (a step was interrupted; paused by the owner).
   "interrupted",
   "paused",
+  // 0.11: terminal. Work complete, the independent review is pending (verdict REVIEW_PENDING).
+  "review_pending",
 ] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
-export const JOB_VERDICTS = ["PASS", "NEEDS_FIX", "BLOCKED", "NEEDS_USER_DECISION"] as const;
+export const JOB_VERDICTS = [
+  "PASS",
+  "NEEDS_FIX",
+  "BLOCKED",
+  "NEEDS_USER_DECISION",
+  // 0.11: the work finished but the independent reviewer could not review it yet.
+  "REVIEW_PENDING",
+] as const;
 export type JobVerdict = (typeof JOB_VERDICTS)[number];
 
 export const NODE_STATUSES = [
@@ -202,6 +211,8 @@ export const TERMINAL_JOB_STATUSES = [
   "needs_user_decision",
   "failed",
   "cancelled",
+  // 0.11
+  "review_pending",
 ] as const;
 
 /** Server-side byte bounds. The Runtime redacts; the server enforces size. */
@@ -377,6 +388,9 @@ export const CHOICE_KIND_VALUES = [
   "paid_usage",
   "permission_expansion",
   "secret_change",
+  // 0.11
+  "start_work",
+  "usage_exhausted",
 ] as const;
 export const REF_KINDS = ["finding", "decision", "node", "artifact", "message", "choice"] as const;
 export const ARTIFACT_KINDS = [
@@ -446,6 +460,27 @@ const nodeInput = z
   .strict()
   // Safety invariant, checked here and by the table: never self-review.
   .refine((n) => !n.reviewer || n.reviewer !== n.owner, "reviewer must differ from owner");
+
+// 0.11 (docs/design/threadlink-0.11.md section 12, "wire").
+export const SESSION_REASON_VALUES = [
+  "resumed",
+  "fresh_first_turn",
+  "fresh_rotated",
+  "fresh_resume_failed",
+] as const;
+export const ISO_INSTANT_PATTERN =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$/;
+const timingMs = z.number().int().min(0).max(86_400_000);
+export const runTimingsSchema = z
+  .object({
+    queueMs: timingMs.optional(),
+    spawnMs: timingMs.optional(),
+    contextMs: timingMs.optional(),
+    firstEventMs: timingMs.optional(),
+    providerMs: timingMs.optional(),
+    persistMs: timingMs.optional(),
+  })
+  .strict();
 
 export const teamWriteOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("set_spec"), payload: z.object({ spec: teamSpecSchema }).strict() }),
@@ -620,7 +655,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
     op: z.literal("set_status"),
     payload: z
       .object({
-        // Phase moves only; verdict statuses belong to set_final.
+        // Phase moves only; verdict statuses belong to set_final. 0.11: a Fast
+        // Chat job finishes with completed | failed | cancelled (no verdict).
         status: z.enum([
           "normalising",
           "planning",
@@ -631,6 +667,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
           "cancelled",
           "interrupted",
           "paused",
+          "completed",
+          "failed",
         ]),
         line: oneLine(200).optional(),
       })
@@ -693,6 +731,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         continuity: z.enum(["fresh", "resumed", "forked"]).optional(),
         resumedFromRunKey: wireKey.nullish(),
         activity: z.enum(RUN_ACTIVITY_VALUES).optional(),
+        /** 0.11: why the native session was resumed or started fresh. */
+        sessionReason: z.enum(SESSION_REASON_VALUES).optional(),
       })
       .strict(),
   }),
@@ -717,6 +757,8 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
         nativeSessionKind: z.enum(["claude_session", "codex_thread", "other"]).nullish(),
         failure: z.enum(RUN_FAILURES).nullish(),
         exitClean: z.boolean().optional(),
+        /** 0.11: per-run timings in ms (no prompt text). */
+        timings: runTimingsSchema.optional(),
       })
       .strict(),
   }),
@@ -804,6 +846,28 @@ export const teamWriteOpSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("ack_control"),
     payload: z.object({ control: z.enum(JOB_CONTROL_VALUES) }).strict(),
+  }),
+  // ---------------------------------------------------------------- 0.11 ops
+  z.object({
+    // This job's chat: visible owner / controller / agent messages, newest N, oldest first.
+    op: z.literal("read_chat_context"),
+    payload: z
+      .object({ limit: z.number().int().min(1).max(40).optional() })
+      .strict()
+      .default({}),
+  }),
+  z.object({
+    // "Codex usage is exhausted. Continuing with Claude." (fixed server text, deduplicated).
+    op: z.literal("failover_notice"),
+    payload: z
+      .object({
+        from: z.string().regex(PROVIDER_ID_PATTERN),
+        to: z.string().regex(PROVIDER_ID_PATTERN).nullable(),
+        reviewPending: z.boolean(),
+        resetsAt: z.string().regex(ISO_INSTANT_PATTERN).nullable().optional(),
+      })
+      .strict()
+      .refine((p) => p.to === null || p.to !== p.from, "from and to differ"),
   }),
 ]);
 export type TeamWriteOp = z.infer<typeof teamWriteOpSchema>;
@@ -949,6 +1013,15 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
     }
     case "set_status":
       return compact({ status: input.payload.status, line: input.payload.line });
+    case "read_chat_context":
+      return compact({ limit: input.payload.limit });
+    case "failover_notice":
+      return compact({
+        from: input.payload.from,
+        to: input.payload.to,
+        review_pending: input.payload.reviewPending,
+        resets_at: input.payload.resetsAt ?? undefined,
+      });
     case "set_final":
       return compact({
         verdict: input.payload.verdict,
@@ -979,6 +1052,7 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         continuity: p.continuity,
         resumed_from_run_key: p.resumedFromRunKey ? wireKeyToSql(p.resumedFromRunKey) : undefined,
         activity: p.activity,
+        session_reason: p.sessionReason,
       });
     }
     case "run_activity":
@@ -995,6 +1069,7 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
         native_session_kind: p.nativeSessionId ? (p.nativeSessionKind ?? undefined) : undefined,
         failure: p.failure ?? undefined,
         exit_clean: p.exitClean,
+        timings: p.timings,
       });
     }
     case "request_choice": {
@@ -1022,6 +1097,9 @@ export function toSqlPayload(input: TeamWriteOp): Record<string, unknown> {
             : undefined,
         node_key: str(params.unit) ?? str(params.nodeKey),
         options: p.options?.map((o) => (typeof o === "string" ? o : o.key)),
+        // 0.11: start_work names the owner message; usage_exhausted may carry the provider's reset time.
+        source_event_id: str(params.sourceEventId),
+        resets_at: str(params.resetsAt),
       });
     }
     case "read_choices":
@@ -1313,6 +1391,9 @@ export const teamStatusRowSchema = z.object({
   control: z.enum(JOB_CONTROL_VALUES).nullable().optional(),
   control_requested_at: z.string().nullable().optional(),
   pending_choices: count.optional(),
+  // 0.11 (optional: older rows parse).
+  lane: z.enum(["chat", "work"]).optional(),
+  failover_policy: z.enum(["auto", "ask", "wait"]).nullable().optional(),
   rounds: z.object({
     planning: z.object({ n: z.number(), max: z.number() }),
     review: z.object({ n: z.number(), max: z.number() }),
@@ -1373,6 +1454,10 @@ export type TeamStatus = {
   controlRequestedAt?: string | null;
   /** 0.10: choices waiting for the owner. */
   pendingChoices?: number;
+  /** 0.11: chat = Fast Chat (no plan/units/verdict), work = Engineering Work. */
+  lane?: "chat" | "work";
+  /** 0.11: the owner's failover preference when the job was created. */
+  failoverPolicy?: "auto" | "ask" | "wait" | null;
   rounds: { planning: { n: number; max: number }; review: { n: number; max: number } };
   parallelAgents: number;
   planHash: string | null;
@@ -1417,6 +1502,8 @@ export function toTeamStatus(r: TeamStatusRow): TeamStatus {
     ...(r.control !== undefined ? { control: r.control } : {}),
     ...(r.control_requested_at !== undefined ? { controlRequestedAt: r.control_requested_at } : {}),
     ...(r.pending_choices !== undefined ? { pendingChoices: r.pending_choices } : {}),
+    ...(r.lane !== undefined ? { lane: r.lane } : {}),
+    ...(r.failover_policy !== undefined ? { failoverPolicy: r.failover_policy } : {}),
     rounds: r.rounds,
     parallelAgents: r.parallel_agents,
     planHash: r.plan_hash,
@@ -1491,6 +1578,22 @@ export const teamWriteResultSchema = teamStatusRowSchema.extend({
       .optional(),
     artifact_id: z.string().nullable().optional(),
     cleared: z.boolean().optional(),
+    // 0.11: read_chat_context
+    messages: z
+      .array(
+        z.object({
+          id: z.string(),
+          chat_seq: z.number().nullable(),
+          author_kind: z.enum(["owner", "controller", "agent"]),
+          author_provider_id: z.string().nullable(),
+          author_label: z.string(),
+          reply_to: z.string().nullable(),
+          body: z.string(),
+          created_at: z.string(),
+        }),
+      )
+      .max(40)
+      .optional(),
   }),
 });
 

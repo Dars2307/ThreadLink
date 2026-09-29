@@ -831,6 +831,8 @@ describe("orchestrator writes", () => {
         },
       ],
       ownershipObjections: [],
+      // 0.11 §3.5: an owner-level disagreement (a technical one is arbitrated).
+      disagreementCategory: "unresolved_requirement",
     };
     const { ops, outcome } = await run({
       planReview: revise,

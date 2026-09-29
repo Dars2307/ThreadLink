@@ -475,8 +475,8 @@ describe("the tray", () => {
   });
 });
 
-it("is version 0.10.2", () => {
-  expect(PKG.version).toBe("0.10.2");
+it("is version 0.11.0", () => {
+  expect(PKG.version).toBe("0.11.0");
 });
 
 // ---------------------------------------------------------------------------
@@ -587,12 +587,22 @@ afterEach(() => {
 });
 
 describe("navigation", () => {
-  it("reads Home · Chats · Agents · This computer · Notifications · Settings", async () => {
+  it("reads Home · Chats · Agents · Notifications · This computer · Projects · Settings", async () => {
     mount(appState());
     await settle();
-    expect([...document.querySelectorAll("#nav button")].map((b) => b.textContent?.trim())).toEqual(
-      ["Home", "Chats", "Agents", "This computer", "Notifications", "Settings"],
-    );
+    expect(
+      [...document.querySelectorAll("#nav .nav-item")].map((b) =>
+        b.querySelector(".sb-text")?.textContent?.trim(),
+      ),
+    ).toEqual([
+      "Home",
+      "Chats",
+      "Agents",
+      "Notifications",
+      "This computer",
+      "Projects",
+      "Settings",
+    ]);
     expect(APP_JS).not.toMatch(/label: "(Team|Conversations)"/);
   });
 
@@ -609,15 +619,18 @@ describe("navigation", () => {
 });
 
 describe("provider health on screen", () => {
-  it("shows each provider's health on Home, with the sign-in instruction", async () => {
+  it("summarises health on Home and details it once, on Agents", async () => {
     mount(appState());
     await settle();
-    expect(healthLines()).toEqual(["Claude Code — Needs sign-in", "Codex — Ready"]);
-    expect(viewText()).toContain(SIGN_IN_INSTRUCTION);
+    // Home is a summary: the per-provider lines live on Agents only (0.11).
+    expect(healthLines()).toEqual([]);
     // Health, not "signed in", decides who is online.
     const tiles = [...document.querySelectorAll("#home-summary .tile")].map((t) => t.textContent);
     expect(tiles[0]).toBe("CodexAgents online");
     expect(tiles[3]).toBe("1Needs attention");
+    await navTo("Agents");
+    expect(healthLines()).toEqual(["Claude Code — Needs sign-in", "Codex — Ready"]);
+    expect(viewText()).toContain(SIGN_IN_INSTRUCTION);
   });
 
   it("shows it on Agents, with each agent's own section (Agents → <provider>)", async () => {
@@ -649,12 +662,14 @@ describe("provider health on screen", () => {
     const state = { ...appState(), health: undefined };
     mount(state);
     await settle();
+    await navTo("Agents");
     expect(healthLines()).toEqual(["Claude Code — Not checked yet", "Codex — Not checked yet"]);
   });
 
   it("Check again asks main once, then waits 30 s", async () => {
     mount(appState());
     await settle();
+    await navTo("Agents");
     const button = () => document.querySelector("#view .check-again") as HTMLButtonElement;
     expect(button().textContent).toBe("Check again");
     button().dispatchEvent(new Event("click"));
@@ -675,6 +690,7 @@ describe("provider health on screen", () => {
       error: "<img src=x onerror=alert(1)> stderr",
     }));
     await settle();
+    await navTo("Agents");
     (document.querySelector("#view .check-again") as HTMLButtonElement).dispatchEvent(
       new Event("click"),
     );
@@ -686,7 +702,7 @@ describe("provider health on screen", () => {
   });
 });
 
-describe("the Chats page", () => {
+describe("work running on This computer", () => {
   const steps = () =>
     [...document.querySelectorAll(".team-job .step")].map(
       (s) =>
@@ -702,7 +718,7 @@ describe("the Chats page", () => {
     state.work = workView(state.snapshot.team, memory);
     mount(state);
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect(steps()).toEqual([
       "✕ Understanding request",
       "– Plan",
@@ -738,7 +754,7 @@ describe("the Chats page", () => {
       }),
     );
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect(steps()).toEqual([
       "✓ Understanding request",
       "● Plan",
@@ -760,7 +776,7 @@ describe("the Chats page", () => {
       }),
     );
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect([...document.querySelectorAll(".chat-name")].map((n) => n.textContent)).toEqual([
       evil,
       `${evil} room`,

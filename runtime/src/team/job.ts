@@ -15,6 +15,8 @@
 import type { TeamSpec } from "./prompts.ts";
 import { parseTimeoutOverrides, type TimeoutOverrides } from "./timeouts.ts";
 import {
+  type FailoverPolicy,
+  type JobLane,
   parseChatId,
   parseParticipants,
   parseRoleOverrides,
@@ -23,6 +25,7 @@ import {
 } from "./wire.ts";
 import {
   AGENT_PROVIDERS,
+  DEFAULT_TEAM_POLICY,
   JOB_MODES,
   TEAM_LIMITS,
   TEAM_ROLES,
@@ -73,6 +76,17 @@ export type TeamJobDefinition = {
    * 2-120 (timeouts.ts). Absent: the defaults.
    */
   timeouts?: TimeoutOverrides;
+  /**
+   * 0.11 (docs/design/threadlink-0.11.md §2): how the job runs. Absent in
+   * older job documents, which were all engineering work; parseTeamJob sets it.
+   */
+  lane?: JobLane;
+  /** 0.11 (§5): the owner's failover preference at job creation. Default auto. */
+  failoverPolicy?: FailoverPolicy;
+  /** 0.11, chat lane: the owner's message this job answers (a chat event id). */
+  sourceEventId?: string | null;
+  /** 0.11, chat lane: who answers (provider ids), in order. Empty: derived from the mode. */
+  responders?: AgentProvider[];
 };
 
 export class TeamJobError extends Error {
@@ -152,6 +166,51 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     throw new TeamJobError("it is not a version 1 ThreadLink team job.");
   }
 
+  // 0.11 fields: top-level on the job document (the spec object is accepted
+  // too, for a server that nests them). A present value must be exactly right.
+  const specRaw = (raw.spec && typeof raw.spec === "object" ? raw.spec : {}) as Record<
+    string,
+    unknown
+  >;
+  const field = (name: string) => raw[name] ?? specRaw[name];
+  const laneIn = field("lane");
+  if (laneIn !== undefined && laneIn !== null && laneIn !== "chat" && laneIn !== "work") {
+    throw new TeamJobError("lane is not chat or work.");
+  }
+  const lane: JobLane = laneIn === "chat" ? "chat" : "work";
+  const policyIn = field("failoverPolicy");
+  if (
+    policyIn !== undefined &&
+    policyIn !== null &&
+    policyIn !== "auto" &&
+    policyIn !== "ask" &&
+    policyIn !== "wait"
+  ) {
+    throw new TeamJobError("failoverPolicy is not auto, ask or wait.");
+  }
+  // Absent (a job from a server before 0.11): a chat job defaults to the
+  // owner default "auto"; a work job keeps the 0.10 behaviour of asking,
+  // because an older server could not show the switch (no failover_notice).
+  const failoverPolicy: FailoverPolicy =
+    (policyIn as FailoverPolicy | null | undefined) ?? (lane === "chat" ? "auto" : "ask");
+  const sourceIn = field("sourceEventId");
+  if (
+    sourceIn !== undefined &&
+    sourceIn !== null &&
+    (typeof sourceIn !== "string" || !/^[A-Za-z0-9_:-]{1,64}$/.test(sourceIn))
+  ) {
+    throw new TeamJobError("sourceEventId is malformed.");
+  }
+  let responders: AgentProvider[] = [];
+  const respondersIn = field("responders");
+  if (respondersIn !== undefined && respondersIn !== null) {
+    try {
+      responders = parseParticipants(respondersIn) ?? [];
+    } catch {
+      throw new TeamJobError("responders must name supported agents.");
+    }
+  }
+
   const jobId = str(raw.jobId, "jobId", 64);
   const roomId = str(raw.roomId, "roomId", 64);
   if (!ID.job.test(jobId)) throw new TeamJobError("jobId is malformed.");
@@ -167,8 +226,20 @@ export function parseTeamJob(content: string): TeamJobDefinition {
       spec[field] = strings(specIn[field], `spec.${field}`, 50, 2_000);
   }
 
-  const b = (raw.budgets ?? {}) as Record<string, unknown>;
-  const p = (raw.policy ?? {}) as Record<string, unknown>;
+  const b = { ...((raw.budgets ?? {}) as Record<string, unknown>) };
+  const p = { ...((raw.policy ?? {}) as Record<string, unknown>) };
+  if (lane === "chat") {
+    // A Fast Chat job never plans, builds or reviews: the engineering budgets
+    // and policy switches do not apply, so absent ones take their defaults.
+    b.maxPlanningRounds ??= DEFAULT_TEAM_POLICY.maxPlanningRounds;
+    b.maxReviewRounds ??= DEFAULT_TEAM_POLICY.maxReviewRounds;
+    b.parallelAgents ??= DEFAULT_TEAM_POLICY.parallelAgents;
+    p.usagePolicy ??= DEFAULT_TEAM_POLICY.usagePolicy;
+    p.paidUsage ??= false;
+    p.crossReview ??= DEFAULT_TEAM_POLICY.crossReview;
+    p.finalInspection ??= DEFAULT_TEAM_POLICY.finalInspection;
+    p.worktreeIsolation ??= DEFAULT_TEAM_POLICY.worktreeIsolation;
+  }
   if (!USAGE_POLICIES.includes(p.usagePolicy as UsagePolicy)) {
     throw new TeamJobError("policy.usagePolicy is not a known policy.");
   }
@@ -264,6 +335,10 @@ export function parseTeamJob(content: string): TeamJobDefinition {
     participants,
     chatId,
     timeouts,
+    lane,
+    failoverPolicy,
+    sourceEventId: (sourceIn as string | null | undefined) ?? null,
+    responders,
   };
 }
 

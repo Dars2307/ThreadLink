@@ -57,6 +57,8 @@ export const CHAT_EVENT_TYPES = [
   "timeout",
   "interrupted",
   "control_requested",
+  // 0.11: a visible ThreadLink row "Codex usage is exhausted. Continuing with Claude."
+  "failover",
 ] as const;
 export type ChatEventType = (typeof CHAT_EVENT_TYPES)[number];
 
@@ -135,7 +137,19 @@ export type PostChatMessageInput = {
 };
 
 export type PostChatMessageResult =
-  | { ok: true; routed: "note_to_active_job" | "stop_requested" | "new_job"; jobId: string | null }
+  | {
+      ok: true;
+      /** 0.11 adds "chat_job" (a Fast Chat reply was started) and "choice_resolved". */
+      routed: PostRouted;
+      jobId: string | null;
+      /** 0.11: the lane the message was routed to, and why. */
+      lane?: ExecutionLane;
+      laneReason?: LaneReason | null;
+      /** 0.11, routed "choice_resolved": the choice and the chosen option's label. */
+      choiceId?: string;
+      chosenKey?: string;
+      chosenLabel?: string;
+    }
   | {
       ok: false;
       message: string;
@@ -155,6 +169,8 @@ export type ChatPostInput = {
   chatId: string;
   body: string;
   idempotencyKey?: string;
+  /** 0.11: the composer's execution setting (default auto). A leading /chat or /work also works. */
+  lane?: LaneChoice;
 };
 
 // ---------------------------------------------------------------------------
@@ -279,7 +295,15 @@ export type RunProvenance = {
   effort: string | null;
   access: "read-only" | "workspace-write" | null;
   accessVerified: boolean;
-  nativeSession: { available: boolean; kind: string | null; continuity: string | null };
+  nativeSession: {
+    available: boolean;
+    kind: string | null;
+    continuity: string | null;
+    /** 0.11: why it was resumed or started fresh (null before 0.11). */
+    reason?: SessionReason | null;
+  };
+  /** 0.11: the run's timings in ms, when the Runtime reported them. */
+  timings?: RunTimings | null;
   executionHost: string | null;
   worktreeLabel: string | null;
   status: RunStatus;
@@ -300,6 +324,8 @@ export type LiveActivity = {
   activity: RunActivity | null;
   startedAt: string | null;
   lastActivityAt: string | null;
+  /** 0.11: what it is doing, in fixed words ("Reviewing"); never agent text. */
+  subject?: string | null;
 };
 
 export const FINDING_STATES = [
@@ -324,6 +350,9 @@ export const CHOICE_KINDS = [
   "paid_usage",
   "permission_expansion",
   "secret_change",
+  // 0.11
+  "start_work",
+  "usage_exhausted",
 ] as const;
 export type ChoiceKind = (typeof CHOICE_KINDS)[number];
 
@@ -451,12 +480,20 @@ export type ArtifactView = {
 /** "Runs on <label>", presence, and each agent's health with the time of the check. */
 export type ChatHostStatus = {
   now: string;
+  /** 0.11: the server's clock (age `lastSeenAt` against this, not the client clock). */
+  serverNow?: string;
   runtime: {
     label: string;
-    presence: "online" | "offline" | "working";
+    /** 0.11 presence v2 (section 4): working > online (<75 s) > reconnecting (<3 min) > offline. */
+    presence: HostPresence;
     lastSeenAt: string | null;
     protocol: number;
+    /** Below the minimum protocol (10): work cannot start until it updates. */
     needsUpdate: boolean;
+    /** 0.11: a newer protocol exists (a 0.10 Runtime gets no Fast Chat). */
+    updateAvailable?: boolean;
+    /** 0.11: this computer runs Fast Chat (protocol >= 11). */
+    fastChat?: boolean;
   } | null;
   agents: {
     provider: ProviderId;
@@ -468,6 +505,8 @@ export type ChatHostStatus = {
     checkedAt: string | null;
     /** "Ready · checked 23 s ago" / "Stale · last checked 2 h ago" / "Needs sign-in". */
     label: string;
+    /** 0.11: when the provider said its usage resets (only if it said so; never invented). */
+    resetsAt?: string | null;
   }[];
 };
 
@@ -483,3 +522,114 @@ export type ChatSearchResult = {
   chatSeq: number | null;
   at: string;
 };
+
+// ---------------------------------------------------------------------------
+// 0.11 — execution lanes, Fast Chat, presence v2, quota failover, natural
+// choice answers. See docs/design/threadlink-0.11.md. Server: migration
+// 20260929000100_threadlink_0_11.sql, lib/chat/intent.ts, lib/chat/choice-intent.ts.
+// ---------------------------------------------------------------------------
+
+/** How a job runs: `chat` = Fast Chat (conversational, read-only), `work` = Engineering Work. */
+export const EXECUTION_LANES = ["chat", "work"] as const;
+export type ExecutionLane = (typeof EXECUTION_LANES)[number];
+
+/** The owner's per-message execution setting (composer): Auto (default), Chat only, Run work. */
+export const LANE_CHOICES = ["auto", "chat", "work"] as const;
+export type LaneChoice = (typeof LANE_CHOICES)[number];
+
+/** Why a message went to its lane (recorded on the owner row's payload; Details only). */
+export const LANE_REASONS = [
+  "explicit_chat",
+  "explicit_work",
+  "small_talk",
+  "negated",
+  "edit_requested",
+  "tests_requested",
+  "repo_action",
+  "repo_review",
+  "question",
+  "discussion",
+  "status",
+  "continuation",
+  "default_chat",
+  // Server-side: a chat message downgraded because the project's Runtime is older than protocol 11.
+  "runtime_outdated",
+  // Server-side: the message answered an open choice.
+  "choice_answer",
+] as const;
+export type LaneReason = (typeof LANE_REASONS)[number];
+
+/** The result of lib/chat/intent.ts classifyIntent. */
+export type IntentResult = {
+  lane: ExecutionLane;
+  reason: LaneReason;
+  /** Greeting / thanks / acknowledgement only (the Runtime skips the follow-up round). */
+  smallTalk: boolean;
+  /** The body to store: a leading "/chat" or "/work" is removed. */
+  body: string;
+};
+
+/** What `routed` says after an owner post. */
+export type PostRouted =
+  "note_to_active_job" | "stop_requested" | "new_job" | "chat_job" | "choice_resolved";
+
+/** Execution-host presence (section 4). */
+export const HOST_PRESENCES = ["online", "working", "reconnecting", "offline"] as const;
+export type HostPresence = (typeof HOST_PRESENCES)[number];
+
+/** When an agent's included usage runs out (section 5). Default auto. */
+export const FAILOVER_POLICIES = ["auto", "ask", "wait"] as const;
+export type FailoverPolicy = (typeof FAILOVER_POLICIES)[number];
+
+export type OwnerSettings = { failoverPolicy: FailoverPolicy; updatedAt: string | null };
+
+/** Why a run's native session was resumed or started fresh (run provenance). */
+export const SESSION_REASONS = [
+  "resumed",
+  "fresh_first_turn",
+  "fresh_rotated",
+  "fresh_resume_failed",
+] as const;
+export type SessionReason = (typeof SESSION_REASONS)[number];
+
+/** Per-run timings in milliseconds (section 3.6). Every field optional. */
+export type RunTimings = {
+  queueMs?: number | null;
+  spawnMs?: number | null;
+  contextMs?: number | null;
+  firstEventMs?: number | null;
+  providerMs?: number | null;
+  persistMs?: number | null;
+};
+
+/** Payload of a `failover` chat row. */
+export type FailoverPayload = {
+  from: ProviderId;
+  to: ProviderId | null;
+  reviewPending: boolean;
+  /** ISO time the provider said its usage resets, or null. Clients localise it. */
+  resetsAt: string | null;
+};
+
+/** An open choice as the natural-answer matcher sees it (lib/chat/choice-intent.ts). */
+export type ChoiceForMatch = {
+  choiceId: string;
+  kind: ChoiceKind;
+  options: { key: string; label: string }[];
+  /** The provider the choice is about (e.g. the one that failed), and the alternative. */
+  provider?: ProviderId | null;
+  otherProvider?: ProviderId | null;
+  /** That provider's current health on the project's computer. */
+  providerHealth?: ProviderHealth | null;
+};
+
+/** The approval kinds: never answered by typing, only on their card. */
+export const APPROVAL_CHOICE_KINDS = [
+  "migration",
+  "production_deploy",
+  "destructive_action",
+  "security_action",
+  "paid_usage",
+  "permission_expansion",
+  "secret_change",
+] as const satisfies readonly ChoiceKind[];

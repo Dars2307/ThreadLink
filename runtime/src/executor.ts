@@ -54,6 +54,9 @@ export type TaskInput = {
    * task run as a team job by shaping its text.
    */
   taskType?: string;
+  /** 0.11 (§3.6): the server's own timestamps, for queue time. Never used for decisions. */
+  createdAt?: string | null;
+  claimedAt?: string | null;
 };
 
 export type FailureReason =

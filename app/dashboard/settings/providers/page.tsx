@@ -7,6 +7,7 @@ import {
 } from "@/app/dashboard/team-actions";
 import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { ConfirmAction } from "@/components/dashboard/confirm-action";
+import { FailoverSetting } from "@/components/dashboard/failover-setting";
 import { SettingsNav } from "@/components/dashboard/settings-nav";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { Badge, buttonStyles, Card } from "@/components/ui";
@@ -24,6 +25,10 @@ export default async function ProvidersPage() {
     <Shell>
       <PageHeader title="Settings" />
       <SettingsNav current="/dashboard/settings/providers" />
+
+      <Card>
+        <FailoverSetting />
+      </Card>
 
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold tracking-tight">Providers &amp; plans</h2>

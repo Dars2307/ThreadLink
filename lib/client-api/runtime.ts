@@ -8,7 +8,7 @@ import {
   sessionRowSchema,
 } from "@/lib/sessions/model";
 
-import { call, validate, type ClientDatabase } from "./operations";
+import { call, ClientOperationError, validate, type ClientDatabase } from "./operations";
 
 /**
  * Runtime (agent credential) operations. The database derives owner, runtime
@@ -33,6 +33,9 @@ const runtimeRowSchema = z.object({
   protocol_reported: z.boolean().optional(),
   min_protocol: z.number().int().optional(),
   update_required: z.boolean().optional(),
+  // 0.11: the newest protocol, and whether this Runtime is older than it.
+  current_protocol: z.number().int().optional(),
+  update_available: z.boolean().optional(),
 });
 
 export type RuntimeView = {
@@ -48,8 +51,12 @@ export type RuntimeView = {
   protocol?: number;
   /** 0.10: the current protocol (RUNTIME_PROTOCOL); older Runtimes should update. */
   minProtocol?: number;
-  /** 0.10: true when this Runtime is older than the current protocol ("needs an update"). */
+  /** 0.10: true when this Runtime is older than the minimum protocol ("needs an update"). */
   updateRequired?: boolean;
+  /** 0.11: the newest protocol (11); a 0.10 Runtime keeps working but gets no Fast Chat. */
+  currentProtocol?: number;
+  /** 0.11: true when a newer protocol exists (offer the update; work still runs). */
+  updateAvailable?: boolean;
 };
 
 const toView = (r: z.infer<typeof runtimeRowSchema>): RuntimeView => ({
@@ -64,6 +71,8 @@ const toView = (r: z.infer<typeof runtimeRowSchema>): RuntimeView => ({
   ...(r.protocol !== undefined ? { protocol: r.protocol } : {}),
   ...(r.min_protocol !== undefined ? { minProtocol: r.min_protocol } : {}),
   ...(r.update_required !== undefined ? { updateRequired: r.update_required } : {}),
+  ...(r.current_protocol !== undefined ? { currentProtocol: r.current_protocol } : {}),
+  ...(r.update_available !== undefined ? { updateAvailable: r.update_available } : {}),
 });
 
 const VERSION = z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/);
@@ -296,4 +305,74 @@ export async function listRuntimeLinks(
       workspacePath: row.conversation.workspace_path,
     },
   }));
+}
+
+// ---------------------------------------------------------------------------
+// 0.11 wake long-poll (docs/design/threadlink-0.11.md section 3.2)
+// ---------------------------------------------------------------------------
+export const WAKE_MAX_WAIT_SECONDS = 25;
+export const WAKE_DEFAULT_WAIT_SECONDS = 20;
+export const WAKE_POLL_MS = 750;
+
+const pendingRowSchema = z.object({
+  pending: z.number().int().min(0),
+  paused: z.boolean().optional(),
+});
+
+export type WakeResult = { pending: number; paused?: boolean };
+
+/** `?wait=` in whole seconds, 0..25 (default 20). Anything else is invalid. */
+export function parseWakeWait(raw: string | null): number {
+  if (raw === null || raw === "") return WAKE_DEFAULT_WAIT_SECONDS;
+  if (!/^[0-9]{1,3}$/.test(raw)) throw new ClientOperationError("invalid");
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > WAKE_MAX_WAIT_SECONDS)
+    throw new ClientOperationError("invalid");
+  return n;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+/**
+ * Holds the request until this Runtime has something to claim (a queued task
+ * for one of its sessions, or a lapsed lease), checking the database about
+ * every 750 ms, or until `wait` seconds pass ({pending: 0}) or the client goes
+ * away. The first check counts against the owner's wake rate limit; waiting is
+ * also proof of life (it refreshes the Runtime's last_seen_at, throttled).
+ */
+export async function waitForWork(
+  db: ClientDatabase,
+  hash: string,
+  rawWait: string | null,
+  signal?: AbortSignal,
+  options: { pollMs?: number; now?: () => number } = {},
+): Promise<WakeResult> {
+  const waitSeconds = parseWakeWait(rawWait);
+  const pollMs = options.pollMs ?? WAKE_POLL_MS;
+  const now = options.now ?? Date.now;
+  const deadline = now() + waitSeconds * 1000;
+  const check = (begin: boolean) =>
+    call(db, "runtime_pending_count", { p_token_hash: hash, p_begin: begin }, (d) =>
+      pendingRowSchema.parse(d),
+    );
+  let row = await check(true);
+  while (row.pending === 0 && !row.paused && !signal?.aborted) {
+    const left = deadline - now();
+    if (left <= 0) break;
+    await sleep(Math.min(pollMs, left), signal);
+    if (signal?.aborted) break;
+    row = await check(false);
+  }
+  return { pending: row.pending, ...(row.paused ? { paused: true } : {}) };
 }

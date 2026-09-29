@@ -13,6 +13,12 @@ import type { ExecutionResult, Executor, TaskInput } from "../executor.ts";
 import { summarize } from "../summary.ts";
 import { discoverProviders, type ProviderDiscovery } from "./discovery.ts";
 import type { ProviderHealthMonitor } from "./health.ts";
+import type { ChatSessionStore } from "./chat-sessions.ts";
+import {
+  FAST_CHAT_DEFAULT_FOLLOWUPS,
+  FAST_CHAT_MAX_FOLLOWUPS,
+  FastChatCoordinator,
+} from "./fast-chat.ts";
 import { parseTeamJob, TeamJobError } from "./job.ts";
 import { classifyModels, isSelectable, type ModelClassOverrides } from "./models.ts";
 import {
@@ -96,6 +102,20 @@ export type TeamExecutorOptions = {
   choicePollMs?: number;
   choiceWaitMs?: number;
   controlPollMs?: number;
+  /**
+   * 0.11: the Runtime's last discovery, when it is recent. A Fast Chat turn
+   * uses it instead of spawning every CLI again (seconds per turn). Work jobs
+   * always discover afresh, as before.
+   */
+  cachedDiscovery?: () => ProviderDiscovery[] | null;
+  /** 0.11 (§3.4.6): native session continuity for Fast Chat, in configDir. */
+  chatSessions?: ChatSessionStore;
+  /** 0.11 (§5): failover notices already sent (one per chat per exhaustion). */
+  noticesSent?: Set<string>;
+  /** FAST_CHAT_MAX_FOLLOWUPS (default 1, hard cap 2). */
+  maxFollowups?: number;
+  /** Fast Chat: the working-tree fingerprint used to verify read-only Claude runs. */
+  snapshot?: (cwd: string) => Promise<string | null>;
 };
 
 const NAME: Record<AgentProvider, string> = { "claude-code": "Claude Code", codex: "Codex" };
@@ -131,7 +151,9 @@ export class TeamExecutor implements Executor {
     }
     active.add(job.jobId);
     try {
-      return await this.#execute(job, signal);
+      const queueMs = queueTime(task);
+      if (job.lane === "chat") return await this.#executeChat(job, signal, queueMs);
+      return await this.#execute(job, signal, queueMs);
     } finally {
       active.delete(job.jobId);
     }
@@ -143,9 +165,73 @@ export class TeamExecutor implements Executor {
       this.#o.write(jobId, this.#o.sessionId, this.#o.claimRef, op, payload);
   }
 
+  /**
+   * 0.11 Fast Chat (fast-chat.ts): no journal, no worktree, no DAG. Read-only
+   * turns in the project folder; the carrier task completes when the turn does.
+   */
+  async #executeChat(
+    job: ReturnType<typeof parseTeamJob>,
+    signal: AbortSignal,
+    queueMs: number | null,
+  ): Promise<ExecutionResult> {
+    const cached = this.#o.cachedDiscovery?.() ?? null;
+    const found = cached?.length
+      ? cached
+      : await (this.#o.discover ?? (() => discoverProviders()))();
+    const available = selectable(found, this.#o.classOverrides);
+    const monitor = this.#o.health;
+    const governor = this.#o.governor;
+    const coordinator = new FastChatCoordinator(job, {
+      runners: (this.#o.runners ?? createRunners)(found),
+      route: routePort({
+        available,
+        policy: job.policy.usagePolicy,
+        overrides: job.policy.overrides as RouteOverride[],
+        governor,
+      }),
+      sink: this.#sink(job.jobId),
+      health: monitor
+        ? {
+            peek: (providers) =>
+              Object.fromEntries(providers.map((p) => [p, monitor.get(p).health])),
+            recheck: (provider) => monitor.confirm(provider),
+            noteFailure: (provider, failure, details) =>
+              monitor.noteFailure(provider, failure, details),
+          }
+        : undefined,
+      sessions: this.#o.chatSessions,
+      processes: this.#o.processes,
+      onExhausted: (provider, resetsAt) => governor.markExhausted(provider, null, epoch(resetsAt)),
+      isExhausted: (provider) => !governor.isAvailable(provider, null, Date.now()),
+      snapshot: this.#o.snapshot,
+      signal,
+      clock: this.#o.clock,
+      choicePollMs: this.#o.choicePollMs,
+      choiceWaitMs: this.#o.choiceWaitMs,
+      controlPollMs: this.#o.controlPollMs,
+      maxFollowups: this.#o.maxFollowups ?? maxFollowupsFromEnv(),
+      queueMs,
+      noticesSent: this.#o.noticesSent,
+      log: this.#o.log,
+    });
+    const outcome = await coordinator.run(this.#o.workspace);
+    const who = outcome.answered.map((p) => NAME[p]).join(", ");
+    return {
+      ok: true,
+      result:
+        outcome.status === "completed"
+          ? `Fast chat answered by ${who || "nobody"}.`
+          : outcome.status === "cancelled"
+            ? "Fast chat stopped by the owner."
+            : "Fast chat: no agent could answer.",
+      artifacts: [],
+    };
+  }
+
   async #execute(
     job: ReturnType<typeof parseTeamJob>,
     signal: AbortSignal,
+    queueMs: number | null = null,
   ): Promise<ExecutionResult> {
     // Crash recovery (docs/design/threadlink-0.10.md §6): a journal left by a
     // Runtime that stopped mid-job says what may and may not happen next.
@@ -198,8 +284,10 @@ export class TeamExecutor implements Executor {
             const records = await monitor.ensureFresh(providers, { found });
             return Object.fromEntries(providers.map((p) => [p, records[p]?.health ?? "unknown"]));
           },
-          noteFailure: (provider, failure) => monitor.noteFailure(provider, failure),
+          noteFailure: (provider, failure, details) =>
+            monitor.noteFailure(provider, failure, details),
           confirm: (provider) => monitor.confirm(provider),
+          resetsAt: (provider) => monitor.get(provider).resetsAt ?? null,
           recentFailures: () => monitor.recentFailures(),
         }
       : undefined;
@@ -218,6 +306,7 @@ export class TeamExecutor implements Executor {
           health,
           journal,
           recoveryNote,
+          queueMs,
         );
       } catch (error) {
         if (!(error instanceof InterruptedRefusal) || attempt >= 2) throw error;
@@ -250,6 +339,7 @@ export class TeamExecutor implements Executor {
     health: HealthPort | undefined,
     journal: JobJournal | undefined,
     recoveryNote: string | null,
+    queueMs: number | null = null,
   ): Promise<ExecutionResult> {
     const orchestrator = new TeamOrchestrator(job, {
       runners: (this.#o.runners ?? createRunners)(found),
@@ -273,8 +363,14 @@ export class TeamExecutor implements Executor {
       choicePollMs: this.#o.choicePollMs,
       choiceWaitMs: this.#o.choiceWaitMs,
       controlPollMs: this.#o.controlPollMs,
-      // Remembered across jobs, so the next one does not retry a spent provider.
-      onExhausted: (provider, model) => this.#o.governor.markExhausted(provider, model),
+      // Remembered across jobs, so the next one does not retry a spent
+      // provider. Subscription usage is per account: the whole provider is out
+      // until the reset it stated (or until a fresh check says it is back).
+      onExhausted: (provider, _model, resetsAt) =>
+        this.#o.governor.markExhausted(provider, null, epoch(resetsAt ?? null)),
+      onRecovered: (provider) => this.#o.governor.clearExhausted(provider),
+      queueMs,
+      noticesSent: this.#o.noticesSent,
       signal,
     });
 
@@ -473,4 +569,41 @@ function emptyJournal(jobId: string): JobJournalState {
     report: null,
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** Job created → claimed, from the server's own timestamps on the envelope (§3.6). */
+function queueTime(task: TaskInput): number | null {
+  const created = task.createdAt ? Date.parse(task.createdAt) : NaN;
+  const claimed = task.claimedAt ? Date.parse(task.claimedAt) : NaN;
+  if (!Number.isFinite(created) || !Number.isFinite(claimed) || claimed < created) return null;
+  return Math.round(claimed - created);
+}
+
+function epoch(iso: string | null): number | null {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
+function selectable(found: ProviderDiscovery[], overrides?: ModelClassOverrides) {
+  return found.flatMap((p) =>
+    classifyModels(
+      p.provider,
+      p.models.map((m) => ({
+        id: m.id,
+        displayName: m.displayName,
+        description: m.description,
+        efforts: m.efforts,
+        defaultEffort: m.defaultEffort,
+      })),
+      overrides,
+    ).filter(isSelectable),
+  );
+}
+
+/** FAST_CHAT_MAX_FOLLOWUPS from the environment: 0-2, default 1. */
+export function maxFollowupsFromEnv(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.FAST_CHAT_MAX_FOLLOWUPS;
+  const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  if (!Number.isInteger(n) || n < 0) return FAST_CHAT_DEFAULT_FOLLOWUPS;
+  return Math.min(n, FAST_CHAT_MAX_FOLLOWUPS);
 }

@@ -33,10 +33,11 @@ export const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "Ctrl + K", action: "Search" },
   { keys: "Alt + ↑ / Alt + ↓", action: "Previous / next chat" },
   { keys: "/", action: "Focus the message box" },
-  { keys: "Ctrl + Enter", action: "Send" },
+  { keys: "Enter", action: "Send (Shift + Enter for a new line)" },
   { keys: "@", action: "Mention an agent (in the message box)" },
   { keys: "Esc", action: "Close a panel or leave the message box" },
-  { keys: "Alt + 1 / 2 / 3", action: "Chat · Progress · Details" },
+  { keys: "PageUp / PageDown / Home / End", action: "Scroll the chat (when it has focus)" },
+  { keys: "Alt + 1 / 2 / 3", action: "Chat · Progress panel · Details panel" },
   { keys: "?", action: "Show these shortcuts" },
 ];
 

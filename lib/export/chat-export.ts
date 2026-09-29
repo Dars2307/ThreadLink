@@ -57,8 +57,9 @@ export function redactExportText(input: string): string {
     /((aws_secret_access_key|aws_session_token|aws_access_key_id)\s+)[^\s=:]+/gi,
     `$1${R}`,
   );
+  // 0.11: only a value that looks like a secret (a digit, or 16+ characters).
   t = t.replace(
-    /((password|passphrase|passwd|secret|token|api[ _-]?key)\s+(is|was)\s+)\S+/gi,
+    /((password|passphrase|passwd|secret|token|api[ _-]?key)\s+(is|was)\s+)(["'`]?\S*\d\S*|\S{16,})/gi,
     `$1${R}`,
   );
   t = t.replace(

@@ -31,7 +31,13 @@ export type TaskEnvelope = {
   claimRef?: string | null;
   attemptCount?: number;
   claimedUntil?: string | null;
+  /** 0.11 (§3.6): server timestamps, for queue-time telemetry only. */
+  createdAt?: string | null;
+  claimedAt?: string | null;
 };
+
+/** The longest wake long-poll the Runtime asks for (§3.2: ≤ 25 s). */
+export const WAKE_MAX_WAIT_SECONDS = 25;
 
 /**
  * A link request as the Runtime sees it: scoped to this Runtime's own
@@ -146,8 +152,14 @@ export class ThreadLinkApi {
     this.#timeoutMs = options.timeoutMs ?? 30_000;
   }
 
-  async #request<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<T> {
+  async #request<T>(
+    method: "GET" | "POST" | "PATCH",
+    path: string,
+    body?: unknown,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<T> {
     let response: Response;
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? this.#timeoutMs);
     try {
       response = await this.#fetch(`${this.#baseUrl}${path}`, {
         method,
@@ -156,7 +168,7 @@ export class ThreadLinkApi {
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.#timeoutMs),
+        signal: options.signal ? AbortSignal.any([timeout, options.signal]) : timeout,
         redirect: "error",
       });
     } catch {
@@ -210,6 +222,26 @@ export class ThreadLinkApi {
 
   approvePairing(sessionId: string, linkId: string) {
     return this.#request<LinkView>("POST", "/api/pairing/approve", { sessionId, linkId });
+  }
+
+  /**
+   * 0.11 (§3.2) wake long-poll: answers as soon as a task for one of this
+   * Runtime's sessions is queued, or with `{pending: 0}` after `waitSeconds`.
+   * A server without it answers 404, and the caller falls back to polling.
+   */
+  async wake(waitSeconds: number, signal?: AbortSignal): Promise<{ pending: number }> {
+    const wait = Math.max(0, Math.min(WAKE_MAX_WAIT_SECONDS, Math.floor(waitSeconds)));
+    const res = await this.#request<{ pending?: unknown }>(
+      "GET",
+      `/api/runtime/wake?wait=${wait}`,
+      undefined,
+      // The request itself may take the whole wait; allow for the network too.
+      { timeoutMs: (wait + 15) * 1000, signal },
+    );
+    const pending = res && typeof res === "object" ? res.pending : null;
+    return {
+      pending: typeof pending === "number" && Number.isFinite(pending) && pending > 0 ? pending : 0,
+    };
   }
 
   async inbox(sessionId: string, limit = 10): Promise<TaskEnvelope[]> {

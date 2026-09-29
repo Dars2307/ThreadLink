@@ -41,6 +41,11 @@ export type AgentRunRequest = {
   outputSchema?: object;
   /** Continue this agent's own thread. */
   resumeThreadId?: string;
+  /**
+   * 0.11: "chat" is a Fast Chat turn (§3.4): the prompt wrapper says so and
+   * does not ask the agent to go and read the project's rule files first.
+   */
+  purpose?: "team" | "chat";
   timeoutMs?: number;
   signal?: AbortSignal;
   /**
@@ -95,6 +100,23 @@ export type AgentRunResult = {
   usage?: { inputTokens?: number; outputTokens?: number };
   error?: string;
   failure?: AgentRunFailure;
+  /**
+   * 0.11 (§5): when a quota failure's own output states when the limit resets,
+   * that time (ISO). Null or absent when the provider did not say: never guessed.
+   */
+  resetsAt?: string | null;
+  /** 0.11 (§3.6): process timings measured by ThreadLink. No prompt text. */
+  timings?: ProcessTimings;
+};
+
+/** Milliseconds, measured around the provider process (§3.6). */
+export type ProcessTimings = {
+  /** spawn() called → the OS reported the child started. */
+  spawnMs: number;
+  /** Child started → its first byte on stdout (null when it printed nothing). */
+  firstEventMs: number | null;
+  /** spawn() called → the process exited (or was stopped). */
+  providerMs: number;
 };
 
 export interface AgentRunner {
@@ -222,6 +244,9 @@ const QUOTA_PATTERNS = [
   /\b429\b/,
   /too many requests/i,
   /insufficient[_ ]quota/i,
+  // Seen for real on Codex 0.158 (0.11 benchmark): a ChatGPT workspace with no
+  // credits left. Included usage is spent; ThreadLink never adds credits.
+  /out of credits/i,
 ];
 const AUTH_PATTERNS = [
   /not logged in/i,
@@ -254,6 +279,170 @@ export function classifyFailureText(text: string): "quota_exhausted" | "not_auth
   if (QUOTA_PATTERNS.some((p) => p.test(text))) return "quota_exhausted";
   if (AUTH_PATTERNS.some((p) => p.test(text))) return "not_authenticated";
   return null;
+}
+
+// --- reset time (0.11 §5) -----------------------------------------------------
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Offset (ms) of an IANA zone from UTC at `utcMs`, or null when the zone is unknown. */
+function zoneOffsetMs(zone: string, utcMs: number): number | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(new Date(utcMs));
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    const asUtc = Date.UTC(
+      get("year"),
+      get("month") - 1,
+      get("day"),
+      get("hour") % 24,
+      get("minute"),
+      get("second"),
+    );
+    return asUtc - Math.floor(utcMs / 1000) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+/** The UTC instant of a wall-clock time in `zone` (null zone = this computer's local time). */
+function wallClockToUtc(
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+  zone: string | null,
+): number | null {
+  if (!zone) return new Date(y, mo, d, h, mi, 0, 0).getTime();
+  const guess = Date.UTC(y, mo, d, h, mi, 0, 0);
+  const off1 = zoneOffsetMs(zone, guess);
+  if (off1 === null) return null;
+  const first = guess - off1;
+  const off2 = zoneOffsetMs(zone, first);
+  return off2 === null ? first : guess - off2;
+}
+
+/** "3pm", "3:45 PM", "15:00" → [hour, minute], or null. */
+function parseClock(text: string): [number, number] | null {
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i.exec(text.trim());
+  if (!m) return null;
+  let hour = Number(m[1]);
+  const minute = m[2] ? Number(m[2]) : 0;
+  const ampm = m[3]?.toLowerCase();
+  if (minute > 59) return null;
+  if (ampm) {
+    if (hour < 1 || hour > 12) return null;
+    if (ampm === "pm" && hour !== 12) hour += 12;
+    if (ampm === "am" && hour === 12) hour = 0;
+  } else if (!m[2] || hour > 23) {
+    return null; // a bare number is not a time
+  }
+  return [hour, minute];
+}
+
+/** The calendar date of `utcMs` as seen in `zone` (or locally). */
+function dateIn(utcMs: number, zone: string | null): [number, number, number] {
+  if (!zone) {
+    const d = new Date(utcMs);
+    return [d.getFullYear(), d.getMonth(), d.getDate()];
+  }
+  const off = zoneOffsetMs(zone, utcMs) ?? 0;
+  const d = new Date(utcMs + off);
+  return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()];
+}
+
+/**
+ * When a quota failure message says the limit resets, that instant (ISO).
+ * Only what the provider actually printed is used; anything that cannot be
+ * read exactly is null, never an estimate. Understood forms:
+ *   Claude Code  "… limit reached|1767225600" (epoch seconds),
+ *                "… · resets 3pm (Europe/London)", "resets Oct 3, 5pm", "resets 5:30am"
+ *   Codex        "… try again at 3:45 PM.", "try again at Oct 3rd, 2026 5:12 PM",
+ *                "try again in 2 hours 5 minutes" / "in 3 days"
+ * A time without a date is the next occurrence of that time.
+ */
+export function parseResetTime(text: string, now: number = Date.now()): string | null {
+  if (!text) return null;
+  const iso = (ms: number | null) =>
+    ms !== null && Number.isFinite(ms) && ms > now - 60_000 && ms < now + 60 * 86_400_000
+      ? new Date(ms).toISOString()
+      : null;
+
+  // Claude Code's machine-readable form: "limit reached|<epoch seconds>".
+  const epoch = /limit reached\s*\|\s*(\d{10})\b/i.exec(text);
+  if (epoch) return iso(Number(epoch[1]) * 1000);
+
+  // Relative: "try again in 2 hours 5 minutes", "resets in 45 minutes".
+  const relative =
+    /(?:try again|resets?)\s+in\s+((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,and]*)+)/i.exec(
+      text,
+    );
+  if (relative) {
+    let ms = 0;
+    for (const part of relative[1]!.matchAll(
+      /(\d+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/gi,
+    )) {
+      const n = Number(part[1]);
+      const unit = part[2]!.toLowerCase();
+      ms +=
+        n *
+        (unit.startsWith("d")
+          ? 86_400_000
+          : unit.startsWith("h")
+            ? 3_600_000
+            : unit.startsWith("m")
+              ? 60_000
+              : 1_000);
+    }
+    return ms > 0 ? iso(now + ms) : null;
+  }
+
+  // Absolute: "resets <when> (<zone>)" or "try again at <when>".
+  const absolute =
+    /\bresets?\s+(?:at\s+)?([A-Za-z0-9 ,:.]+?)(?:\s*\(([A-Za-z_]+(?:\/[A-Za-z_+-]+)*)\))?(?=[.;\n|·]|$)/i.exec(
+      text,
+    ) ??
+    /\btry again at\s+([A-Za-z0-9 ,:.]+?)(?:\s*\(([A-Za-z_]+(?:\/[A-Za-z_+-]+)*)\))?(?=\.(?:\s|$)|[;\n|·]|$)/i.exec(
+      text,
+    );
+  if (!absolute) return null;
+  const when = absolute[1]!.trim().replace(/\.$/, "");
+  const zone = absolute[2] ?? null;
+  if (zone && zoneOffsetMs(zone, now) === null) return null;
+
+  // "<Mon> <day>[st|nd|rd|th][,] [<year>][,] <clock>" or just "<clock>".
+  const dated =
+    /^([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(?:(\d{4}),?\s*)?(?:at\s+)?(.+)$/i.exec(
+      when,
+    );
+  if (dated) {
+    const month = MONTHS.indexOf(dated[1]!.toLowerCase());
+    const clock = parseClock(dated[4]!);
+    if (month < 0 || !clock) return null;
+    const day = Number(dated[2]);
+    let year = dated[3] ? Number(dated[3]) : dateIn(now, zone)[0];
+    let at = wallClockToUtc(year, month, day, clock[0], clock[1], zone);
+    if (!dated[3] && at !== null && at < now - 60_000) {
+      year += 1;
+      at = wallClockToUtc(year, month, day, clock[0], clock[1], zone);
+    }
+    return iso(at);
+  }
+  const clock = parseClock(when);
+  if (!clock) return null;
+  const [y, mo, d] = dateIn(now, zone);
+  let at = wallClockToUtc(y, mo, d, clock[0], clock[1], zone);
+  if (at !== null && at <= now) at = wallClockToUtc(y, mo, d + 1, clock[0], clock[1], zone);
+  return iso(at);
 }
 
 // --- structured output --------------------------------------------------------
@@ -357,6 +546,8 @@ export type ProcessOutcome = {
   spawnError: string | null;
   timedOut: boolean;
   aborted: boolean;
+  /** 0.11 (§3.6): measured around the process. */
+  timing?: ProcessTimings;
 };
 
 export type RunProcessOptions = {
@@ -390,6 +581,18 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> 
     let aborted = false;
     const timers: { timeout?: ReturnType<typeof setTimeout> } = {};
     let child: ChildProcess;
+    const t0 = performance.now();
+    let tSpawned: number | null = null;
+    let tFirst: number | null = null;
+    const timing = (): ProcessTimings => {
+      const end = performance.now();
+      const spawned = tSpawned ?? end;
+      return {
+        spawnMs: Math.max(0, Math.round(spawned - t0)),
+        firstEventMs: tFirst === null ? null : Math.max(0, Math.round(tFirst - spawned)),
+        providerMs: Math.max(0, Math.round(end - t0)),
+      };
+    };
 
     const finish = (
       outcome: Omit<ProcessOutcome, "stdout" | "stderr" | "timedOut" | "aborted">,
@@ -406,7 +609,7 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> 
       if (timers.timeout) clearTimeout(timers.timeout);
       signal?.removeEventListener("abort", onAbort);
       if (onStdoutLine && partial.trim()) onStdoutLine(partial);
-      resolve({ ...outcome, stdout, stderr, timedOut, aborted });
+      resolve({ ...outcome, stdout, stderr, timedOut, aborted, timing: timing() });
     };
     const stop = (why: "timeout" | "abort") => {
       if (settled) return;
@@ -437,6 +640,9 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> 
       finish({ code: null, spawnError: error instanceof Error ? error.message : "spawn failed" });
       return;
     }
+    child.once?.("spawn", () => {
+      tSpawned ??= performance.now();
+    });
     if (child.pid) {
       try {
         hooks?.started(child);
@@ -446,6 +652,10 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessOutcome> 
     }
 
     child.stdout?.on("data", (d: Buffer) => {
+      if (tFirst === null) {
+        tFirst = performance.now();
+        tSpawned ??= tFirst;
+      }
       const chunk = d.toString("utf8");
       if (onStdoutLine) {
         partial += chunk;

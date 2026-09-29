@@ -85,3 +85,21 @@ describe("what a mirrored summary must never say", () => {
     expect(summary).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 });
+
+describe("redactText 0.11: prose about secrets stays readable", () => {
+  it("keeps sentences that only mention tokens or passwords", async () => {
+    const { redactText } = await import("../../runtime/src/summary.ts");
+    const text =
+      "An expired token is still accepted after refresh.\nThe password reset flow skips rate limiting.";
+    expect(redactText(text)).toBe(
+      "An expired token is still accepted after refresh.\nThe password reset flow skips rate limiting.",
+    );
+  });
+  it("still hides values", async () => {
+    const { redactText } = await import("../../runtime/src/summary.ts");
+    const out = redactText(
+      "API_KEY=abc123def456\nAuthorization: Bearer abcdefgh12345678\nthe password is hunter2",
+    );
+    expect(out).not.toMatch(/abc123def456|abcdefgh12345678|hunter2/);
+  });
+});

@@ -3,6 +3,7 @@
 import { useClerk, useUser } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { ChevronsUpDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cx } from "@/components/ui";
@@ -48,27 +49,27 @@ export function ProfileMenu({ theme }: { theme: Theme }) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="hover:bg-surface-muted flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors"
+        className="hover:bg-active flex h-12 w-full items-center gap-2.5 rounded-lg px-2 text-left transition-colors motion-reduce:transition-none"
       >
         <span
           aria-hidden
-          className="bg-accent-soft text-accent flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
+          className="bg-accent-soft text-accent-hover flex size-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-semibold"
         >
           {(name[0] ?? "T").toUpperCase()}
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{name}</span>
-          {email ? <span className="text-subtle block truncate text-xs">{email}</span> : null}
+        <span className="flex min-w-0 flex-1 flex-col gap-px">
+          <span className="truncate text-sm leading-tight font-semibold">{name}</span>
+          {email ? (
+            <span className="text-subtle truncate text-xs leading-tight">{email}</span>
+          ) : null}
         </span>
-        <span aria-hidden className="text-subtle text-xs">
-          ▾
-        </span>
+        <ChevronsUpDown aria-hidden className="text-subtle size-4 shrink-0" />
       </button>
 
       {open ? (
         <div
           role="menu"
-          className="border-border bg-surface shadow-card absolute bottom-full left-0 z-30 mb-2 w-60 rounded-xl border p-1"
+          className="tl-glass border-field shadow-float absolute bottom-full left-0 z-30 mb-2 w-60 rounded-xl border p-1"
         >
           <div className="border-border border-b px-3 py-2">
             <p className="truncate text-sm font-medium">{name}</p>

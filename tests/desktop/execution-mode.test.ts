@@ -167,12 +167,22 @@ beforeEach(() => {
 });
 
 describe("the app's shape", () => {
-  it("offers the six sections, not one long page", async () => {
+  it("offers the sections, not one long page", async () => {
     mount(appState([conversation()]));
     await settle();
-    expect([...document.querySelectorAll("#nav button")].map((b) => b.textContent?.trim())).toEqual(
-      ["Home", "Chats", "Agents", "This computer", "Notifications", "Settings"],
-    );
+    expect(
+      [...document.querySelectorAll("#nav .nav-item")].map((b) =>
+        b.querySelector(".sb-text")?.textContent?.trim(),
+      ),
+    ).toEqual([
+      "Home",
+      "Chats",
+      "Agents",
+      "Notifications",
+      "This computer",
+      "Projects",
+      "Settings",
+    ]);
   });
 
   it("keeps identifiers out of the everyday view", async () => {

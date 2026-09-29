@@ -482,7 +482,11 @@ describe("planning", () => {
   });
 
   it("hands an unresolved plan to the owner instead of debating forever", async () => {
-    const t = team({ planReview: () => revise("Still wrong.") });
+    // 0.11 §3.5: only a disagreement the reviewer labels as the owner's to
+    // decide reaches the owner; a technical one is arbitrated (see the 0.11 tests).
+    const t = team({
+      planReview: () => ({ ...revise("Still wrong."), disagreementCategory: "product_direction" }),
+    });
     const outcome = await new TeamOrchestrator(job(), t.deps).run(repo);
     expect(outcome.verdict).toBe("NEEDS_USER_DECISION");
     expect(t.calls.filter((c) => c.role === "planner")).toHaveLength(2);

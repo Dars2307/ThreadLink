@@ -137,6 +137,7 @@ export const VERDICT_LABELS: Record<JobVerdict, string> = {
   NEEDS_FIX: "Needs fixes",
   BLOCKED: "Blocked",
   NEEDS_USER_DECISION: "Needs your decision",
+  REVIEW_PENDING: "Work complete · review pending",
 };
 
 export const VERDICT_TONES: Record<JobVerdict, Tone> = {
@@ -144,6 +145,7 @@ export const VERDICT_TONES: Record<JobVerdict, Tone> = {
   NEEDS_FIX: "warning",
   BLOCKED: "danger",
   NEEDS_USER_DECISION: "warning",
+  REVIEW_PENDING: "warning",
 };
 
 export function verdictLabel(verdict: JobVerdict | null | undefined): string | null {
@@ -166,6 +168,7 @@ const JOB_LABELS: Record<JobStatus, string> = {
   cancelled: "Cancelled",
   paused: "Paused",
   interrupted: "Interrupted — needs your decision",
+  review_pending: "Work complete · review pending",
 };
 
 const JOB_TONES: Record<JobStatus, Tone> = {
@@ -184,6 +187,7 @@ const JOB_TONES: Record<JobStatus, Tone> = {
   cancelled: "neutral",
   paused: "neutral",
   interrupted: "warning",
+  review_pending: "warning",
 };
 
 /** One status for a job: the verdict wins once there is one. */

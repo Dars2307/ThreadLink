@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-backdrop="dusk">
   <head>
     <meta charset="utf-8" />
     <meta
@@ -10,9 +10,14 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <div id="backdrop" class="backdrop" aria-hidden="true">
+      <span class="bd-base"></span>
+      <span class="bd-field f1"></span>
+      <span class="bd-field f2"></span>
+      <span class="bd-field f3"></span>
+    </div>
     <div id="shell" class="shell">
-      <aside id="rail" class="rail">
-        <div class="brand"><span class="mark" aria-hidden="true">⇄</span> ThreadLink</div>
+      <aside id="rail" class="rail" aria-label="ThreadLink">
         <nav id="nav" class="nav" aria-label="Sections"></nav>
         <div class="rail-foot">
           <span id="rail-dot" class="dot"></span>
@@ -22,12 +27,49 @@
 
       <div class="main">
         <header class="topbar">
+          <button
+            id="sidebar-toggle"
+            class="icon-btn sb-toggle"
+            type="button"
+            aria-label="Toggle sidebar"
+            title="Toggle sidebar"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+              <path d="M9 3v18"></path>
+            </svg>
+          </button>
+          <span class="sb-toggle-sep" aria-hidden="true"></span>
           <div class="titles">
+            <span class="crumb">Workspace</span>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m9 18 6-6-6-6"></path>
+            </svg>
             <h1 id="page-title">Home</h1>
             <p id="page-sub" class="sub"></p>
           </div>
           <div class="status-pill">
-            <span id="status-dot" class="dot"></span><span id="status-title">Starting…</span>
+            <span id="status-dot" class="ping"></span><span id="status-title">Starting…</span>
           </div>
         </header>
 
@@ -91,38 +133,18 @@
 
     <template id="tpl-home">
       <section class="stack">
-        <div id="home-summary" class="tiles" aria-label="Summary"></div>
+        <div id="home-presence" class="presence-strip" aria-label="Connection"></div>
         <div id="links" class="stack"></div>
-        <div class="card stack">
-          <h2>Agents on this computer</h2>
-          <div id="home-health" class="health-list"></div>
-        </div>
+        <div id="home-summary" class="tiles" aria-label="Summary"></div>
         <div class="card stack">
           <div class="card-head">
             <h2>Recent chats</h2>
-            <button id="home-chats" class="ghost small-btn" type="button">All chats</button>
+            <div class="row">
+              <button id="home-new-chat" class="primary small-btn" type="button">New chat</button>
+              <button id="home-chats" class="ghost small-btn" type="button">All chats</button>
+            </div>
           </div>
           <div id="home-chat-list" class="list"></div>
-        </div>
-        <div class="card stack">
-          <div class="card-head">
-            <h2>Recent activity</h2>
-            <button id="home-activity-dashboard" class="ghost small-btn" type="button">
-              Open dashboard
-            </button>
-          </div>
-          <div id="home-activity" class="activity"></div>
-        </div>
-        <div class="card stack">
-          <h2>Connect ChatGPT</h2>
-          <p class="muted small">
-            Add ThreadLink as a connector in ChatGPT (Settings → Apps &amp; Connectors), then say
-            “Link this chat to Claude Code”. Approve the request here.
-          </p>
-          <div class="row">
-            <code id="mcp-url" class="grow"></code>
-            <button id="copy-mcp" class="ghost small-btn" type="button">Copy</button>
-          </div>
         </div>
       </section>
     </template>
@@ -158,53 +180,259 @@
     </template>
 
     <template id="tpl-chats">
-      <section class="stack">
-        <div class="card stack">
-          <div class="card-head">
-            <h2>Your chats</h2>
-            <div class="row">
-              <button id="chats-by-recent" class="ghost small-btn" type="button">Recent</button>
-              <button id="chats-by-project" class="ghost small-btn" type="button">
-                By project
-              </button>
-            </div>
+      <section class="chats-page">
+        <div class="chats-page-head">
+          <button id="new-chat" class="new-chat-btn" type="button">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+              <path
+                d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"
+              ></path></svg
+            >New chat
+          </button>
+          <div class="row">
+            <button id="chats-by-recent" class="ghost small-btn" type="button">Recent</button>
+            <button id="chats-by-project" class="ghost small-btn" type="button">By project</button>
           </div>
-          <div id="chat-list" class="stack tight"></div>
         </div>
-        <h2 class="section-title">Running on this computer</h2>
-        <div id="chat-groups" class="stack"></div>
+        <div id="new-chat-form" class="stack tight new-chat" hidden></div>
+        <div id="chat-list" class="stack tight chat-list"></div>
       </section>
     </template>
 
     <template id="tpl-chat">
       <section class="chat-view">
         <header class="chat-head">
-          <button id="chat-back" class="ghost small-btn" type="button">← Chats</button>
-          <div class="chat-titles">
-            <h2 id="chat-title" class="chat-title">Loading…</h2>
-            <p id="chat-sub" class="muted small"></p>
-          </div>
-          <span id="chat-state" class="badge"></span>
-        </header>
-        <p id="chat-host" class="muted small" hidden></p>
-        <div id="chat-timeline" class="chat-timeline" aria-live="polite">
-          <button id="chat-older" class="ghost small-btn chat-older" type="button" hidden>
-            Load earlier messages
+          <button
+            id="chat-sidebar-toggle"
+            class="icon-btn sb-toggle"
+            type="button"
+            aria-label="Toggle sidebar"
+            title="Toggle sidebar"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+              <path d="M9 3v18"></path>
+            </svg>
           </button>
-          <div id="chat-events" class="chat-events"></div>
-          <div id="chat-live" class="chat-live"></div>
+          <span class="sb-toggle-sep" aria-hidden="true"></span>
+          <div class="chat-titles">
+            <div class="chat-title-row">
+              <h2 id="chat-title" class="chat-title">Loading…</h2>
+              <span id="chat-mode" class="chat-mode"></span>
+            </div>
+            <p id="chat-sub" class="chat-sub"></p>
+          </div>
+          <div class="chat-actions">
+            <button id="chat-status" class="status-line" type="button" title="Progress">
+              <span id="chat-status-dot" class="ping"></span><span id="chat-status-text"></span>
+            </button>
+            <button
+              id="chat-more"
+              class="icon-btn"
+              type="button"
+              aria-label="Details"
+              title="Details"
+            >
+              <svg
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                <path d="M15 4v16"></path>
+              </svg>
+            </button>
+          </div>
+        </header>
+        <p id="chat-offline" class="offline-note small" role="status" hidden></p>
+        <div class="chat-body">
+          <div id="chat-timeline" class="chat-timeline" aria-live="polite">
+            <button id="chat-older" class="ghost small-btn chat-older" type="button" hidden>
+              Load earlier messages
+            </button>
+            <div id="chat-events" class="chat-events"></div>
+            <div id="chat-live" class="chat-live"></div>
+          </div>
+          <button id="chat-jump" class="jump-pill" type="button" hidden>
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14"></path>
+              <path d="m19 12-7 7-7-7"></path>
+            </svg>
+            <span id="chat-jump-text">Jump to latest</span>
+          </button>
+          <aside id="chat-drawer" class="drawer" aria-label="Chat details" hidden>
+            <div class="drawer-head">
+              <h2 id="drawer-title">Details</h2>
+              <button id="drawer-close" class="icon-btn" type="button" aria-label="Close details">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l12 12M18 6 6 18"></path>
+                </svg>
+              </button>
+            </div>
+            <nav id="drawer-tabs" class="drawer-tabs" role="tablist"></nav>
+            <div id="drawer-body" class="drawer-body"></div>
+          </aside>
         </div>
-        <p id="chat-problem" class="small danger-text" role="status" hidden></p>
+        <p id="chat-problem" class="small danger-text chat-problem" role="status" hidden></p>
         <div class="composer">
-          <textarea
-            id="chat-input"
-            rows="2"
-            maxlength="4000"
-            spellcheck="true"
-            placeholder="Message the team (start with @codex or @claude to address one agent)"
-          ></textarea>
-          <button id="chat-send" class="primary" type="button">Send</button>
+          <div class="composer-card">
+            <div id="mention-list" class="mentions" role="listbox" hidden></div>
+            <label for="chat-input" class="sr-only">Message this chat</label>
+            <textarea
+              id="chat-input"
+              rows="1"
+              maxlength="4000"
+              spellcheck="true"
+              placeholder="Message the team…"
+            ></textarea>
+            <div class="composer-bar">
+              <div class="composer-left">
+                <button
+                  id="chat-mention"
+                  class="mention-btn"
+                  type="button"
+                  aria-label="Mention an agent"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="4"></circle>
+                    <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"></path>
+                  </svg>
+                </button>
+                <button
+                  id="chat-lane-chip"
+                  class="lane-chip"
+                  type="button"
+                  aria-haspopup="true"
+                  aria-expanded="false"
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"
+                    ></path>
+                  </svg>
+                  <span id="chat-lane-label">Auto</span>
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m6 9 6 6 6-6"></path>
+                  </svg>
+                </button>
+                <div
+                  id="chat-lane"
+                  class="lane"
+                  role="radiogroup"
+                  aria-label="How to run it"
+                  hidden
+                ></div>
+              </div>
+              <div class="composer-right">
+                <button id="chat-stop" class="stop-work" type="button" hidden>
+                  <span class="stop-square" aria-hidden="true"></span>Stop work
+                </button>
+                <button
+                  id="chat-send"
+                  class="send-btn"
+                  type="button"
+                  aria-label="Send"
+                  title="Send"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 19V5M5 12l7-7 7 7"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
+      </section>
+    </template>
+
+    <template id="tpl-projects">
+      <section class="stack">
+        <div id="project-list" class="stack"></div>
       </section>
     </template>
 
@@ -245,7 +473,42 @@
     </template>
 
     <template id="tpl-runtime">
-      <section class="stack">
+      <section class="stack pc">
+        <div class="pc-head">
+          <div class="pc-id">
+            <span class="pc-badge" aria-hidden="true">
+              <svg
+                width="26"
+                height="26"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+                <line x1="8" x2="16" y1="21" y2="21"></line>
+                <line x1="12" x2="12" y1="17" y2="21"></line>
+              </svg>
+            </span>
+            <div class="pc-names">
+              <h2 id="pc-name" class="pc-name">This computer</h2>
+              <p class="muted">
+                Runs the agents for your projects. Chat from any device — repository work happens
+                here.
+              </p>
+            </div>
+          </div>
+          <div class="pc-actions">
+            <button id="pause" type="button"><span class="btn-label">Pause</span></button>
+            <button id="restart" type="button"><span class="btn-label">Restart</span></button>
+            <button id="open-logs" class="dark-btn" type="button">
+              <span class="btn-label">Open logs</span>
+            </button>
+          </div>
+        </div>
         <div id="update-card" class="card stack update" hidden>
           <h2>Update needed</h2>
           <p id="update-text" class="small"></p>
@@ -253,23 +516,37 @@
             <button id="update-get" class="primary" type="button">Get the update</button>
           </div>
         </div>
-        <div class="card stack">
-          <h2>Execution host</h2>
-          <div id="runtime-kv" class="kv"></div>
-          <div class="row">
-            <button id="pause" class="ghost" type="button">Pause</button>
-            <button id="restart" class="ghost" type="button">Restart</button>
-            <button id="open-logs" class="ghost" type="button">Open logs</button>
+        <div id="runtime-stats" class="stat-grid"></div>
+        <div class="pc-grid">
+          <div class="pc-col">
+            <h2>Running here</h2>
+            <div id="runtime-work" class="list-card"></div>
+            <h2>Project folders</h2>
+            <div id="workspaces" class="list-card"></div>
+          </div>
+          <div class="pc-col">
+            <h2>Connection</h2>
+            <div id="runtime-presence" class="presence-strip" aria-label="Connection"></div>
+            <div class="kv-card"><div id="runtime-kv" class="kv"></div></div>
+            <div class="hint">
+              If this computer goes offline, you stay connected everywhere else. Chats keep working
+              where they don't need the repository; repository work resumes when it reconnects.
+            </div>
+            <details class="card advanced">
+              <summary>Advanced: IDs, request feed and diagnostics</summary>
+              <div class="stack">
+                <div id="runtime-advanced"></div>
+                <div class="card-head">
+                  <h2>Requests from linked conversations</h2>
+                  <button id="requests-dashboard" class="ghost small-btn" type="button">
+                    Open dashboard
+                  </button>
+                </div>
+                <div id="runtime-requests" class="activity"></div>
+              </div>
+            </details>
           </div>
         </div>
-        <div class="card stack">
-          <h2>Project folders</h2>
-          <div id="workspaces" class="list"></div>
-        </div>
-        <details class="card advanced">
-          <summary>Advanced</summary>
-          <div id="runtime-advanced"></div>
-        </details>
       </section>
     </template>
 
@@ -287,6 +564,14 @@
             where it ran — never the request, the result or anything secret.
           </p>
         </div>
+        <div class="card stack">
+          <h2>Needs you</h2>
+          <div id="needs-you" class="stack tight"></div>
+        </div>
+        <div class="card stack">
+          <h2>Unread</h2>
+          <div id="unread-chats" class="stack tight"></div>
+        </div>
       </section>
     </template>
 
@@ -300,6 +585,29 @@
           </label>
         </div>
         <div class="card stack">
+          <h2>Appearance</h2>
+          <div class="appearance-row">
+            <span>Theme</span>
+            <div id="set-theme" class="seg" role="radiogroup" aria-label="Theme"></div>
+          </div>
+          <div class="appearance-row">
+            <span>Background</span>
+            <div id="set-backdrop" class="seg" role="radiogroup" aria-label="Background"></div>
+          </div>
+          <label class="toggle">
+            <input id="set-animate" type="checkbox" />
+            <span>Animate background</span>
+          </label>
+          <p class="muted small">
+            Motion pauses while the window is hidden and is off when your system asks for reduced
+            motion.
+          </p>
+        </div>
+        <div class="card stack">
+          <h2>When an agent's included usage runs out</h2>
+          <div id="failover"></div>
+        </div>
+        <div class="card stack">
           <h2>Agents &amp; plans</h2>
           <p class="muted small">
             Each agent's plan, health and execution settings are under Agents. The ThreadLink plan
@@ -310,6 +618,17 @@
             <button id="plan-dashboard" class="ghost small-btn" type="button">
               Open dashboard
             </button>
+          </div>
+        </div>
+        <div class="card stack">
+          <h2>Connect ChatGPT</h2>
+          <p class="muted small">
+            Add ThreadLink as a connector in ChatGPT (Settings → Apps &amp; Connectors), then say
+            “Link this chat to Claude Code”. Approve the request on Home.
+          </p>
+          <div class="row">
+            <code id="mcp-url" class="grow"></code>
+            <button id="copy-mcp" class="ghost small-btn" type="button">Copy</button>
           </div>
         </div>
         <details class="card advanced">

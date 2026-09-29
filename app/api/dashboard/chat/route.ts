@@ -17,7 +17,9 @@ export const dynamic = "force-dynamic";
  *
  * GET  ?chat=<tlcht_...>&after=<seq>&technical=0|1  -> ChatPage   (0.9, one chat)
  * GET  ?room=<tlrom_...>&after=<seq>&technical=0|1  -> ChatPage   (0.8, a project's timeline)
- * POST {chatId, body, idempotencyKey?}                   -> PostChatMessageResult (0.9)
+ * POST {chatId, body, idempotencyKey?, lane?}           -> PostChatMessageResult (0.9; 0.11 lane:
+ *      "auto" | "chat" | "work", default auto; a leading /chat or /work also works; the answer
+ *      carries lane, laneReason and, for routed "choice_resolved", choiceId + chosenLabel)
  * POST {roomId, body, mode?, builder?, idempotencyKey?}  -> PostChatMessageResult (0.8)
  *
  * A post refused by the health gate answers 409 {ok:false, reason:"provider_unhealthy",
@@ -66,7 +68,19 @@ export async function POST(request: Request): Promise<Response> {
       });
     }
     return Response.json(
-      { ok: true, routed: outcome.routed, jobId: outcome.jobId },
+      {
+        ok: true,
+        routed: outcome.routed,
+        jobId: outcome.jobId,
+        ...(outcome.lane ? { lane: outcome.lane, laneReason: outcome.laneReason ?? null } : {}),
+        ...(outcome.choiceId
+          ? {
+              choiceId: outcome.choiceId,
+              chosenKey: outcome.chosenKey,
+              chosenLabel: outcome.chosenLabel,
+            }
+          : {}),
+      },
       { headers: NO_STORE },
     );
   } catch (error) {

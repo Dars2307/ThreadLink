@@ -15,6 +15,19 @@ import {
   type RunStatus,
 } from "@/lib/chat/types";
 
+import {
+  agentAvatar,
+  agentShortName,
+  chatPlacement,
+  type AgentAvatarKind,
+  parseRunTimings,
+  type RunTimings,
+  humanSystemText,
+  isApprovalKind,
+  resetsAtOf,
+  visibleChoiceOptions,
+} from "@/runtime/src/chat-presentation";
+
 import { humanize, modelDisplayName, roleLabel, type Tone } from "./labels";
 import { shortModelName } from "./providers-display";
 import { mentionTarget, registryEntry, type Registry } from "./registry";
@@ -146,18 +159,21 @@ export type TimelinePage = {
   /** True when older rows exist before the oldest one returned. */
   hasOlder: boolean;
   activeJob: { jobId: string; mode: JobMode; status: string; control: JobControl | null } | null;
-  live: LiveActivity[] | null;
+  live: LiveRun[] | null;
   /** The owner's read cursor (chat_seq), when the page says. */
   lastReadSeq: number | null;
 };
 
+/** A live run, plus the optional 0.11 subject ("authentication") when the server sends one. */
+export type LiveRun = LiveActivity & { subject: string | null };
+
 /** {live: LiveActivity[]} from the activity route → valid rows only, or null. */
-export function parseLiveList(value: unknown): LiveActivity[] | null {
+export function parseLiveList(value: unknown): LiveRun[] | null {
   const v = value && typeof value === "object" ? (value as Record<string, unknown>).live : null;
-  return Array.isArray(v) ? v.map(parseLive).filter((l): l is LiveActivity => l !== null) : null;
+  return Array.isArray(v) ? v.map(parseLive).filter((l): l is LiveRun => l !== null) : null;
 }
 
-function parseLive(v: unknown): LiveActivity | null {
+function parseLive(v: unknown): LiveRun | null {
   if (!v || typeof v !== "object") return null;
   const r = v as Record<string, unknown>;
   const runId = id(r.runId);
@@ -174,6 +190,7 @@ function parseLive(v: unknown): LiveActivity | null {
     activity,
     startedAt: s(r.startedAt, 40),
     lastActivityAt: s(r.lastActivityAt, 40),
+    subject: s(r.subject, 80) ?? s(r.unitTitle, 80) ?? s(r.detail, 80),
   };
 }
 
@@ -204,7 +221,7 @@ export function parsePage(value: unknown): TimelinePage | null {
           }
         : null,
     live: Array.isArray(v.live)
-      ? v.live.map(parseLive).filter((l): l is LiveActivity => l !== null)
+      ? v.live.map(parseLive).filter((l): l is LiveRun => l !== null)
       : null,
     lastReadSeq: n(v.lastReadChatSeq) ?? null,
   };
@@ -397,6 +414,14 @@ export type Identity = {
   style: IdentityStyle;
   /** "You", "ChatGPT · Controller", "ThreadLink", "Codex · Coordinator". */
   headline: string;
+  /** 0.11 short name: "You", "ChatGPT", "ThreadLink", "Claude", "Codex". */
+  name: string;
+  /** Role in words ("Builder"), agents only. */
+  role: string | null;
+  /** One letter for the small avatar (Claude "C", Codex "X"). */
+  initial: string;
+  /** The avatar's colour family (agents only). */
+  avatar: AgentAvatarKind | null;
   /** Agent provider id (for tone/aria), null otherwise. */
   providerId: string | null;
   tone: Tone;
@@ -439,6 +464,10 @@ function computeIdentity(e: TimelineEvent, registry: Registry): Identity {
     return {
       style: "owner",
       headline: "You",
+      name: "You",
+      role: null,
+      initial: "Y",
+      avatar: null,
       providerId: null,
       tone: "accent",
       model: null,
@@ -451,6 +480,10 @@ function computeIdentity(e: TimelineEvent, registry: Registry): Identity {
     return {
       style: "controller",
       headline: `${name} · Controller`,
+      name,
+      role: "Controller",
+      initial: (name[0] ?? "C").toUpperCase(),
+      avatar: null,
       providerId: null,
       tone: "neutral",
       model: null,
@@ -462,6 +495,10 @@ function computeIdentity(e: TimelineEvent, registry: Registry): Identity {
     return {
       style: "threadlink",
       headline: "ThreadLink",
+      name: "ThreadLink",
+      role: null,
+      initial: "T",
+      avatar: null,
       providerId: null,
       tone: "neutral",
       model: null,
@@ -476,9 +513,15 @@ function computeIdentity(e: TimelineEvent, registry: Registry): Identity {
     e.modelObserved && e.modelRequested && e.modelObserved !== e.modelRequested
       ? `Requested ${modelDisplayName(e.modelRequested)}, used ${modelDisplayName(e.modelObserved)}`
       : null;
+  const short = agentShortName(entry.id, entry.shortName);
+  const av = agentAvatar(entry.id, entry.shortName);
   return {
     style: "agent",
     headline: role ? `${entry.name} · ${role}` : entry.name,
+    name: short,
+    role,
+    initial: av.initial,
+    avatar: av.kind,
     providerId: entry.id,
     tone: entry.tone,
     model: observed,
@@ -724,6 +767,74 @@ export function liveRow(a: LiveActivity, registry: Registry, now: number): LiveR
   };
 }
 
+/** 0.11 live indicator: "Claude · Reviewing authentication · 42 s ago". */
+export type LiveIndicator = {
+  key: string;
+  runId: string;
+  who: string;
+  /** "Reviewing authentication" (the canvas shows it apart from the name and time). */
+  doing: string;
+  /** "42 s ago" / "just now", or null. */
+  ago: string | null;
+  avatar: AgentAvatarKind;
+  tone: Tone;
+  text: string;
+  stalled: string | null;
+  /** ms since the newest sign of life (for "never Offline beside Working"). */
+  quietMs: number | null;
+};
+
+export function liveIndicator(a: LiveRun, registry: Registry, now: number): LiveIndicator {
+  const entry = registryEntry(registry, a.provider, a.providerName || null);
+  const started = a.startedAt ? Date.parse(a.startedAt) : NaN;
+  const lastRaw = a.lastActivityAt ? Date.parse(a.lastActivityAt) : NaN;
+  const last = Number.isFinite(lastRaw) ? lastRaw : started;
+  const doing = a.activity ? ACTIVITY_WORDS[a.activity] : "Working";
+  const what = a.subject ? `${doing} ${oneLine(a.subject, 60)}` : doing;
+  const quiet = Number.isFinite(last) ? Math.max(0, now - last) : null;
+  const parts = [agentShortName(entry.id, entry.shortName), what];
+  if (quiet !== null) parts.push(quiet < 5_000 ? "just now" : `${shortDuration(quiet)} ago`);
+  return {
+    key: a.runId,
+    runId: a.runId,
+    who: agentShortName(entry.id, entry.shortName),
+    doing: what,
+    ago: quiet === null ? null : quiet < 5_000 ? "just now" : `${shortDuration(quiet)} ago`,
+    avatar: agentAvatar(entry.id, entry.shortName).kind,
+    tone: entry.tone,
+    text: parts.join(" · "),
+    stalled:
+      quiet !== null && quiet >= STALL_AFTER_MS
+        ? `No output for ${Math.floor(quiet / 60_000)} min`
+        : null,
+    quietMs: quiet,
+  };
+}
+
+/** Rows that belong in the Activity drawer (§7), newest last, with their words. */
+export function activityRows(
+  events: TimelineEvent[],
+  registry: Registry,
+): { key: string; at: string; text: string; who: string; runId: string | null }[] {
+  const out: { key: string; at: string; text: string; who: string; runId: string | null }[] = [];
+  for (const e of events) {
+    if (chatPlacement(e) !== "activity") continue;
+    const who = identityOf(e, registry);
+    const text =
+      e.authorKind === "threadlink"
+        ? humanSystemText(e)
+        : oneLine(e.body, 300) || humanize(e.eventType);
+    out.push({
+      key: e.id,
+      at: e.createdAt,
+      text: oneLine(text, 300),
+      who: who.style === "agent" ? who.name : who.headline,
+      runId: e.runId,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Job controls (§5)
 // ---------------------------------------------------------------------------
@@ -831,6 +942,12 @@ export type ChoiceCardView = {
   kind: "choice";
   choiceId: string | null;
   choiceKind: ChoiceKind | null;
+  /** The kind as sent (0.11 kinds such as usage_exhausted / start_work included). */
+  kindName: string | null;
+  /** Approval kinds need pick-then-confirm; everything else is one click. */
+  approval: boolean;
+  /** When the provider said its usage resets (ISO); never invented. */
+  resetsAt: string | null;
   title: string;
   options: ChoiceOptionView[];
   status: "pending" | "chosen" | "expired" | "cancelled";
@@ -966,12 +1083,16 @@ export function choiceCard(p: Record<string, unknown>): ChoiceCardView {
   const kind = (CHOICE_KINDS as readonly string[]).includes(p.kind as string)
     ? (p.kind as ChoiceKind)
     : null;
+  const kindName = typeof p.kind === "string" && CHOICE_KEY.test(p.kind) ? p.kind : null;
   return {
     kind: "choice",
     choiceId: id(p.choiceId) ?? id(p.id),
     choiceKind: kind,
+    kindName,
+    approval: isApprovalKind(kindName),
+    resetsAt: resetsAtOf(p),
     title: oneLine(s(p.title, 300) ?? "ThreadLink needs your decision", 240),
-    options,
+    options: visibleChoiceOptions(kindName, options),
     status,
     chosenLabel: chosenKey
       ? (options.find((o) => o.key === chosenKey)?.label ?? humanize(chosenKey))
@@ -1157,6 +1278,10 @@ export type MessageItem = {
 
 export type NoteItem = {
   kind: "note";
+  /** failover / usage notices: when the agent's usage resets (ISO), if reported. */
+  resetsAt?: string | null;
+  /** failover: the agent that ran out (short name), for "Codex resets around …". */
+  subject?: string | null;
   key: string;
   eventId: string;
   chatSeq: number;
@@ -1197,6 +1322,11 @@ export type TimelineItem = MessageItem | NoteItem | CardItem | PhaseItem | Unrea
 
 export type BuildOptions = {
   technical?: boolean;
+  /**
+   * 0.11 quiet chat (§7): only rows whose chatPlacement is "chat"; no phase
+   * separators; ThreadLink text through humanSystemText; no kind/round labels.
+   */
+  quiet?: boolean;
   /** The owner's read cursor when the chat was opened (unread divider goes after it). */
   lastReadSeq?: number | null;
   /** Finding states from the findings list (server truth), by finding id. */
@@ -1238,6 +1368,7 @@ const NOTE_TONES: Record<string, Tone> = {
   plan_agreed: "accent",
   job_started: "accent",
   provider_blocked: "warning",
+  failover: "accent",
 };
 
 function verdictToneOf(body: string): Tone {
@@ -1305,6 +1436,7 @@ export function buildTimeline(
   opts: BuildOptions = {},
 ): TimelineItem[] {
   const technical = opts.technical === true;
+  const quiet = opts.quiet === true;
 
   // Pre-pass: finding status history and which rows are status-only updates.
   const history = new Map<string, FindingState[]>();
@@ -1351,7 +1483,10 @@ export function buildTimeline(
       return { targetId: e.replyTo, who: "an earlier message", excerpt: "Not loaded yet" };
     return {
       targetId: target.id,
-      who: identityOf(target, registry).headline,
+      who: (() => {
+        const t = identityOf(target, registry);
+        return quiet && t.style === "agent" ? t.name : t.headline;
+      })(),
       excerpt: oneLine(target.body, 90),
     };
   };
@@ -1359,7 +1494,23 @@ export function buildTimeline(
   for (const e of events) {
     if (e.visibility === "technical" && !technical) continue;
 
-    const p = phaseOf(e);
+    if (quiet) {
+      const fk = e.eventType === "finding" ? findingKey(e) : null;
+      const placement = chatPlacement(
+        e,
+        fk
+          ? {
+              findingStatus: history.get(fk)?.at(-1) ?? null,
+              firstFindingRow:
+                firstFindingRow.get(fk) === undefined || firstFindingRow.get(fk) === e.id,
+            }
+          : {},
+      );
+      if (placement === "activity") continue;
+    }
+
+    // In the quiet chat phases are Activity: no separators.
+    const p = quiet ? null : phaseOf(e);
     if (p && p !== phase) {
       phase = p;
       items.push({
@@ -1505,7 +1656,11 @@ export function buildTimeline(
           key: e.id,
           eventId: e.id,
           chatSeq: e.chatSeq,
-          text: text && text !== "Decision" ? text : "Decision recorded",
+          text: quiet
+            ? humanSystemText(e)
+            : text && text !== "Decision"
+              ? text
+              : "Decision recorded",
           tone: /needs your decision/i.test(e.body) ? "warning" : "neutral",
           symbol: "·",
           callout: false,
@@ -1525,10 +1680,16 @@ export function buildTimeline(
         key: e.id,
         eventId: e.id,
         chatSeq: e.chatSeq,
-        text: oneLine(e.body, 400),
+        text: quiet ? oneLine(humanSystemText(e), 400) : oneLine(e.body, 400),
         tone,
         symbol: noteSymbol(e, tone),
-        callout: e.eventType === "provider_blocked",
+        callout: e.eventType === "provider_blocked" || e.eventType === "failover",
+        resetsAt: e.eventType === "failover" ? resetsAtOf(e.payload) : null,
+        subject:
+          e.eventType === "failover" && typeof e.payload?.from === "string"
+            ? agentShortName(e.payload.from)
+            : null,
+
         at: e.createdAt,
         technical: e.visibility === "technical",
         phase,
@@ -1552,16 +1713,17 @@ export function buildTimeline(
       identity,
       showHeader,
       body: e.body,
-      kindLabel: e.messageType
-        ? (MESSAGE_TYPE_LABELS[e.messageType] ?? humanize(e.messageType))
-        : null,
+      kindLabel:
+        e.messageType && !quiet
+          ? (MESSAGE_TYPE_LABELS[e.messageType] ?? humanize(e.messageType))
+          : null,
       audience:
         e.audience && e.authorKind !== "agent"
           ? e.audience === "team"
             ? "To the team"
             : `To ${registryEntry(registry, e.audience).name}`
           : null,
-      round: e.round !== null && e.round > 0 ? `Round ${e.round}` : null,
+      round: e.round !== null && e.round > 0 && !quiet ? `Round ${e.round}` : null,
       at: e.createdAt,
       runId: e.runId,
       jobId: e.jobId,
@@ -1679,4 +1841,135 @@ export function composerBanner(
       tone: "neutral",
     };
   return { text: `Starts new work in this chat · ${how}.`, tone: "neutral" };
+}
+
+// ---------------------------------------------------------------------------
+// 0.11: stable rows and scrolling (§8)
+// ---------------------------------------------------------------------------
+
+const SIGNATURES = new WeakMap<object, string>();
+function signature(it: TimelineItem): string {
+  let sig = SIGNATURES.get(it);
+  if (sig === undefined) {
+    sig = JSON.stringify(it);
+    SIGNATURES.set(it, sig);
+  }
+  return sig;
+}
+
+/**
+ * Reuses the previous item object for every row whose content did not change,
+ * so memoised rows skip re-rendering on each poll. Returns `prev` itself when
+ * nothing changed at all.
+ */
+export function stabilizeItems(prev: TimelineItem[], next: TimelineItem[]): TimelineItem[] {
+  if (prev.length === 0) return next;
+  const byKey = new Map<string, TimelineItem>();
+  for (const it of prev) byKey.set(it.key, it);
+  let same = prev.length === next.length;
+  const out = next.map((it, i) => {
+    const old = byKey.get(it.key);
+    if (old && signature(old) === signature(it)) {
+      if (prev[i] !== old) same = false;
+      return old;
+    }
+    same = false;
+    return it;
+  });
+  return same ? prev : out;
+}
+
+/** Stick to the bottom only within this distance (px). */
+export const NEAR_BOTTOM_PX = 120;
+
+export function isNearBottom(m: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}): boolean {
+  return m.scrollHeight - m.scrollTop - m.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+/**
+ * The scrollTop that keeps the reader's view in place after rows were added
+ * ABOVE it (older page, bigger window): shift by the height that was added.
+ */
+export function anchoredScrollTop(
+  before: { scrollHeight: number; scrollTop: number },
+  afterHeight: number,
+): number {
+  return Math.max(0, before.scrollTop + (afterHeight - before.scrollHeight));
+}
+
+/** How many rows arrived after `lastKey` (for the "N new" pill); owner rows do not count. */
+export function countNewAfter(items: TimelineItem[], lastKey: string | null): number {
+  if (!lastKey) return 0;
+  const i = items.findIndex((it) => it.key === lastKey);
+  if (i < 0) return 0;
+  let n = 0;
+  for (const it of items.slice(i + 1)) {
+    if (it.kind === "unread" || it.kind === "phase") continue;
+    if ((it.kind === "message" || it.kind === "card") && it.identity.style === "owner") continue;
+    n++;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// 0.11 run provenance extras (timings, session reason)
+// ---------------------------------------------------------------------------
+
+export type RunProvenance11 = RunProvenance & {
+  timings: RunTimings | null;
+  /** resumed | fresh_first_turn | fresh_rotated | fresh_resume_failed */
+  sessionReason: string | null;
+  /** chat | work, when the server says. */
+  lane: string | null;
+};
+
+const SESSION_REASONS: Record<string, string> = {
+  resumed: "Continued this chat's session",
+  fresh_first_turn: "New session (first turn in this chat)",
+  fresh_rotated: "New session (the old one was rotated)",
+  fresh_resume_failed: "New session (resuming failed)",
+};
+
+export function sessionReasonText(reason: string | null): string | null {
+  return reason ? (SESSION_REASONS[reason] ?? humanize(reason)) : null;
+}
+
+export function parseProvenance11(v: unknown): RunProvenance11 | null {
+  const base = parseProvenance(v);
+  if (!base) return null;
+  const r = v as Record<string, unknown>;
+  const reason = s(r.sessionReason, 40);
+  return {
+    ...base,
+    timings: parseRunTimings(r.timings),
+    sessionReason: reason && /^[a-z_]+$/.test(reason) ? reason : null,
+    lane: r.lane === "chat" || r.lane === "work" ? r.lane : null,
+  };
+}
+
+const INTERNED = new WeakMap<object, Map<string, TimelineItem>>();
+const INTERN_MAX = 5000;
+
+/**
+ * Like stabilizeItems, without holding the previous list: rows are interned
+ * per `scope` (the chat's registry object) by key and content, so a rebuilt
+ * list reuses every unchanged row object (memoised rows then skip rendering).
+ */
+export function internItems(scope: object, next: TimelineItem[]): TimelineItem[] {
+  let cache = INTERNED.get(scope);
+  if (!cache) {
+    cache = new Map();
+    INTERNED.set(scope, cache);
+  }
+  if (cache.size > INTERN_MAX) cache.clear();
+  return next.map((it) => {
+    const old = cache.get(it.key);
+    if (old && (old === it || signature(old) === signature(it))) return old;
+    cache.set(it.key, it);
+    return it;
+  });
 }

@@ -10,7 +10,15 @@ import type {
   ChatLiveRun,
   ChatParticipant,
   ChatTimelineEvent,
+  HostPresence,
 } from "../chat-client.ts";
+import {
+  agentShortName,
+  chatPlacement,
+  humanSystemText,
+  isApprovalKind,
+  visibleChoiceOptions,
+} from "../chat-presentation.ts";
 import { safeBody, safeLine } from "./text.ts";
 
 export const MODE_LABEL: Record<string, string> = { solo: "Solo", pair: "Pair", team: "Team" };
@@ -77,17 +85,23 @@ export function freshness(
 // Chats
 // ---------------------------------------------------------------------------
 
-/** "Claude Code + Codex", from provider metadata (never a per-provider switch). */
-export function participantsLine(participants: ChatParticipant[]): string {
-  const agents = participants.filter((p) => p.kind === "agent");
+/** "Claude", "Codex": the short names used everywhere in a chat (0.11 §7). */
+export function agentNames(participants: ChatParticipant[]): string[] {
   const seen = new Set<string>();
   const names: string[] = [];
-  for (const p of agents) {
-    const name = safeLine(p.name, 40);
+  for (const p of participants) {
+    if (p.kind !== "agent") continue;
+    const name = safeLine(agentShortName(p.provider, p.shortName || p.name), 40);
     if (!name || seen.has(name)) continue;
     seen.add(name);
     names.push(name);
   }
+  return names;
+}
+
+/** "Claude + Codex", from provider metadata (never a per-provider switch). */
+export function participantsLine(participants: ChatParticipant[]): string {
+  const names = agentNames(participants);
   return names.length ? names.join(" + ") : "No agents yet";
 }
 
@@ -123,19 +137,63 @@ export function formatChatList(chats: ChatListItem[]): string[] {
   return lines;
 }
 
-/** "ThreadLink — Prism Review" / "Prism · Team · Claude Code + Codex". */
-export function formatHeader(chat: ChatListItem): string[] {
+const PRESENCE_WORDS: Record<HostPresence, string> = {
+  online: "Online",
+  working: "Working",
+  reconnecting: "Reconnecting",
+  offline: "Offline",
+};
+
+/**
+ * The execution host, separately from you (§4): "This computer · Online" when
+ * the server says the project runs here, else "Nickron PC · Working". Null
+ * when the chat has no host yet.
+ */
+export function hostLine(
+  chat: Pick<ChatListItem, "runtimeLabel" | "runtimeOnline" | "thisComputer" | "hostPresence">,
+  override: HostPresence | null = null,
+): { text: string; presence: HostPresence | null; name: string } | null {
+  const label = chat.runtimeLabel ? safeLine(chat.runtimeLabel, 60) : null;
+  if (!label && chat.thisComputer !== true) return null;
+  const name = chat.thisComputer === true ? "This computer" : label!;
+  const presence =
+    override ??
+    chat.hostPresence ??
+    (chat.runtimeOnline === true ? "online" : chat.runtimeOnline === false ? "offline" : null);
+  return { name, presence, text: presence ? `${name} · ${PRESENCE_WORDS[presence]}` : name };
+}
+
+/** "You · Connected" — this terminal's own connection, from its own requests. */
+export function youLine(connected: boolean | null): string {
+  return connected === false
+    ? "You · Reconnecting"
+    : connected
+      ? "You · Connected"
+      : "You · Connecting…";
+}
+
+/**
+ * "ThreadLink — Prism Review  TEAM" / "Prism · Claude · Codex" / presence as
+ * You and the execution host, like the web header.
+ */
+export function formatHeader(
+  chat: ChatListItem,
+  presence: { connected?: boolean | null; host?: HostPresence | null } = {},
+): string[] {
   const sub = [
-    chat.projectName ? safeLine(chat.projectName, 60) : null,
-    modeLabel(chat.mode),
-    participantsLine(chat.participants),
-  ].filter(Boolean);
-  const lines = [`ThreadLink — ${safeLine(chat.name, 80)}`, sub.join(" · ")];
-  if (chat.runtimeLabel) {
+    chat.projectName ? safeLine(chat.projectName, 60) : "No project",
+    ...agentNames(chat.participants),
+  ];
+  const lines = [
+    `ThreadLink — ${safeLine(chat.name, 80)}  ${modeLabel(chat.mode).toUpperCase()}`,
+    sub.join(" · "),
+  ];
+  const host = hostLine(chat, presence.host ?? null);
+  if (host) lines.push(`${youLine(presence.connected ?? true)}   ${host.text}`);
+  if (host?.presence === "offline")
     lines.push(
-      `Runs on ${safeLine(chat.runtimeLabel, 60)}${chat.runtimeOnline === false ? " · offline" : chat.runtimeOnline ? " · online" : ""}`,
+      `You're connected. ${host.name === "This computer" ? "This computer's ThreadLink" : host.name} is offline — repository work and agent replies will resume when it reconnects.`,
     );
-  }
   return lines;
 }
 
@@ -148,10 +206,12 @@ export function identityOf(
   if (event.authorKind === "threadlink") return "ThreadLink";
   if (event.authorKind === "controller") return safeLine(event.authorLabel, 40) || "Controller";
   const meta = participants.find((p) => p.kind === "agent" && p.provider === event.authorProvider);
-  const name =
-    (meta && safeLine(meta.name, 40)) ||
-    safeLine(event.authorLabel, 40) ||
-    (event.authorProvider ? `Agent (${event.authorProvider})` : "Agent");
+  const name = meta
+    ? safeLine(agentShortName(meta.provider, meta.shortName || meta.name), 40)
+    : event.authorProvider && /^(claude-code|codex)$/.test(event.authorProvider)
+      ? agentShortName(event.authorProvider)
+      : safeLine(event.authorLabel, 40) ||
+        (event.authorProvider ? `Agent (${event.authorProvider})` : "Agent");
   const role = event.authorRole ? safeLine(event.authorRole, 30) : "";
   return role ? `${name} · ${role}` : name;
 }
@@ -171,6 +231,49 @@ function clock(iso: string): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** Where a row belongs (§7): the chat, or the Activity only `--all` shows. */
+export function placementOf(event: ChatTimelineEvent): "chat" | "activity" {
+  return chatPlacement(event);
+}
+
+const CHOICE_KEY = /^[a-z][a-z0-9_]{0,39}$/;
+/** ThreadLink-owned ids (tljob_…, tlrun_…) never reach the terminal in ThreadLink's words. */
+const THREADLINK_ID = /\btl[a-z]{2,4}_[0-9a-f]{6,}\b/g;
+
+/**
+ * "Reply with: Continue with Claude · Check Codex again · Wait for Codex · Stop"
+ * under an open choice (answered by typing, resolved on the server, §6).
+ * Approvals are decided on the web card only.
+ */
+export function choiceHint(event: ChatTimelineEvent): string | null {
+  if (event.authorKind !== "threadlink") return null;
+  const p = event.payload ?? null;
+  const c =
+    event.eventType === "choice"
+      ? p
+      : event.eventType === "timeout" || event.eventType === "interrupted"
+        ? (p?.choice as Record<string, unknown> | undefined)
+        : null;
+  if (!c || typeof c !== "object") return null;
+  if (c.status && c.status !== "pending") return null;
+  const kind = typeof c.kind === "string" ? c.kind : null;
+  if (isApprovalKind(kind)) return "  Decide this on the card in ThreadLink on the web.";
+  const options = visibleChoiceOptions(
+    kind,
+    (Array.isArray(c.options) ? c.options : [])
+      .map((o) => (o && typeof o === "object" ? (o as Record<string, unknown>) : {}))
+      .filter((o) => typeof o.key === "string" && CHOICE_KEY.test(o.key))
+      .map((o) => ({ key: o.key as string, label: safeLine(o.label, 60) }))
+      .filter((o) => o.label),
+  );
+  return options.length
+    ? `  Reply with: ${options
+        .slice(0, 6)
+        .map((o) => o.label)
+        .join(" · ")}`
+    : null;
+}
+
 /** One timeline row: "[14:02] Codex · reviewer" then the indented body. */
 export function formatEvent(
   event: ChatTimelineEvent,
@@ -179,8 +282,18 @@ export function formatEvent(
   const who = identityOf(event, participants);
   const delivery = event.authorKind === "owner" ? deliveryText(event.delivery) : null;
   const head = `[${clock(event.createdAt)}] ${who}${delivery ? `  (${delivery})` : ""}`;
-  const body = safeBody(event.body);
-  return body.trim() ? `${head}\n${body}` : head;
+  // ThreadLink's own rows in human words: never ids or reason codes.
+  const text =
+    event.authorKind === "threadlink"
+      ? humanSystemText(event)
+          .replace(THREADLINK_ID, "")
+          .replace(/ {2,}/g, " ")
+          .replace(/ +([.,;:])/g, "$1")
+      : event.body;
+  const body = safeBody(text);
+  const hint = choiceHint(event);
+  const out = body.trim() ? `${head}\n${body}` : head;
+  return hint ? `${out}\n${hint}` : out;
 }
 
 /** "… Claude Code · reviewer · reviewing · 3 min" for a run that has not spoken yet. */
@@ -190,13 +303,16 @@ export function formatLive(
   now = Date.now(),
 ): string {
   const meta = participants.find((p) => p.kind === "agent" && p.provider === run.provider);
-  const name =
-    (meta && safeLine(meta.name, 40)) ||
-    (run.providerName && safeLine(run.providerName, 40)) ||
-    `Agent (${run.provider})`;
+  const name = safeLine(
+    agentShortName(run.provider, meta?.shortName || meta?.name || run.providerName),
+    40,
+  );
   const parts = [name];
   if (run.role) parts.push(safeLine(run.role, 30));
-  parts.push(run.activity ? safeLine(run.activity, 30) : "working");
+  // 0.11 `subject`: the server's fixed step words ("Reviewing").
+  parts.push(
+    run.subject ? safeLine(run.subject, 30) : run.activity ? safeLine(run.activity, 30) : "working",
+  );
   if (run.startedAt) parts.push(ago(run.startedAt, now).replace(" ago", ""));
   return `  … ${parts.join(" · ")}`;
 }

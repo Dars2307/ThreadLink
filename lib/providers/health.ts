@@ -201,12 +201,14 @@ export function healthStateLabel(
 
 /** The execution host's presence, in words ("Online", "Offline · last seen 5 min ago", "Working"). */
 export function presenceLabel(
-  presence: "online" | "offline" | "working",
+  presence: "online" | "offline" | "working" | "reconnecting",
   lastSeenAt: string | null | undefined,
   now: number = Date.now(),
 ): string {
   if (presence === "working") return "Working";
   if (presence === "online") return "Online";
+  // 0.11: 75 s .. 3 min without a sign of life.
+  if (presence === "reconnecting") return "Reconnecting";
   const ago = agoText(lastSeenAt, now);
   return ago ? `Offline · last seen ${ago} ago` : "Offline";
 }

@@ -1,3 +1,4 @@
+import { ChevronDown, Ellipsis } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -160,12 +161,12 @@ export function ChatMenu({
   return (
     <details className="relative">
       <summary
-        className={cx(buttonStyles.ghost, "cursor-pointer list-none px-2 py-1")}
+        className="text-muted hover:bg-active hover:text-foreground flex size-[30px] cursor-pointer list-none items-center justify-center rounded-md"
         aria-label={`Actions for ${row.name}`}
       >
-        ⋯
+        <Ellipsis aria-hidden className="size-4" />
       </summary>
-      <div className="border-border bg-surface shadow-card absolute right-0 z-10 mt-1 flex w-72 flex-col gap-3 rounded-xl border p-3">
+      <div className="border-border bg-card shadow-float absolute right-0 z-30 mt-1 flex w-72 flex-col gap-3 rounded-xl border p-3">
         <ActionForm action={renameChatAction} className="flex flex-col gap-1">
           <input type="hidden" name="chatId" value={chatId} />
           <label className="flex flex-col gap-1 text-xs">
@@ -443,11 +444,12 @@ export function ModeControl({
     <details className={compact ? "relative" : "border-border bg-surface rounded-2xl border"}>
       {compact ? (
         <summary
-          className="text-accent bg-accent-soft cursor-pointer list-none rounded-md px-2 py-0.5 text-xs font-semibold tracking-wide"
+          className="border-border bg-card text-muted hover:text-foreground flex h-5 cursor-pointer list-none items-center gap-[3px] rounded-[5px] border px-1.5 text-[10px] font-semibold tracking-[0.05em]"
           aria-label={`Mode: ${control.summary}. Change mode`}
           title={control.summary}
         >
-          {control.badge} ▾
+          {control.badge}
+          <ChevronDown aria-hidden className="size-[11px]" />
         </summary>
       ) : (
         <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
@@ -462,7 +464,7 @@ export function ModeControl({
         action={setChatModeAction}
         className={
           compact
-            ? "border-border bg-surface shadow-card absolute left-0 z-30 mt-1 flex w-[min(24rem,90vw)] flex-col gap-4 rounded-2xl border p-4"
+            ? "border-border bg-card shadow-float absolute left-0 z-30 mt-1 flex w-[min(24rem,90vw)] flex-col gap-4 rounded-2xl border p-4"
             : "flex flex-col gap-4 px-4 pb-4"
         }
       >

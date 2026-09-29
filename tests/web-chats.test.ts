@@ -611,9 +611,8 @@ describe("old addresses", () => {
     expect(chatHref(CHAT(1), { tab: "chat" })).toBe(`/dashboard/chats/${CHAT(1)}`);
   });
 
-  it("has the chat-first navigation", () => {
+  it("has the chat-first navigation (0.11: quiet, Home is the logo)", () => {
     expect(NAV.map((n) => n.label)).toEqual([
-      "Home",
       "Chats",
       "Projects",
       "Agents",

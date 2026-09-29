@@ -130,7 +130,7 @@ describe("chat event mapping", () => {
   it("the migration's vocabularies equal the shared types", () => {
     const sql = readFileSync("supabase/migrations/20260926000100_collaboration_chat.sql", "utf8");
     // The event-type check is re-stated as a superset by the chat-first migration.
-    const latest = readFileSync("supabase/migrations/20260927000200_threadlink_0_10.sql", "utf8");
+    const latest = readFileSync("supabase/migrations/20260929000100_threadlink_0_11.sql", "utf8");
     const check =
       /constraint chat_events_event_type_check check \(event_type in \(([^)]*)\)\)/.exec(
         latest,

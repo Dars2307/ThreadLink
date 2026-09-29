@@ -288,8 +288,10 @@ export function buildThreadLinkMcpServer(ctx: McpContext): McpServer {
       description:
         "Give the agents in a chat work, as this conversation (the user sees it in the chat, " +
         "labelled as coming from here). Routed by the chat's mode, or a leading @claude / @codex " +
-        "/ @team. Refused while work is already running in that chat. Returns a jobId " +
-        "immediately; check get_chat_status, then get_job_result.",
+        "/ @team. lane 'chat' (or a question / discussion, with lane 'auto') gets a quick " +
+        "read-only answer and is allowed while work runs; repository work is refused while work " +
+        "is already running in that chat. Returns a jobId immediately; check get_chat_status, " +
+        "then get_job_result.",
       inputSchema: toolInputs.send_message,
       annotations: { openWorldHint: false, destructiveHint: false },
     },

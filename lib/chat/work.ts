@@ -28,11 +28,13 @@ import {
   ARTIFACT_KINDS,
   CHOICE_KINDS,
   FINDING_STATES,
+  HOST_PRESENCES,
   JOB_CONTROLS,
   JOB_MODES,
   PROVIDER_HEALTH,
   RUN_ACTIVITIES,
   RUN_STATUSES,
+  SESSION_REASONS,
   type ArtifactView,
   type ChatHostStatus,
   type ChatSearchResult,
@@ -44,6 +46,7 @@ import {
   type JobControl,
   type LiveActivity,
   type RunProvenance,
+  type RunTimings,
 } from "./types";
 
 /**
@@ -272,7 +275,7 @@ const RUN_COLUMNS =
   "id, owner_user_id, chat_id, job_id, runtime_id, provider, participant_key, role, requested_model, " +
   "observed_model, model_verified, effort, access, access_verified, native_session_kind, " +
   "native_session_continuity, worktree_label, status, activity, last_activity_at, started_at, finished_at, " +
-  "failure, verification";
+  "failure, verification, session_reason, timings";
 const runRow = z.object({
   id: runIdSchema,
   owner_user_id: z.string(),
@@ -298,8 +301,28 @@ const runRow = z.object({
   finished_at: z.string().nullable(),
   failure: z.string().nullable(),
   verification: z.record(z.string(), z.unknown()).nullable(),
+  // 0.11 (optional so a pre-0.11 database still reads)
+  session_reason: z.enum(SESSION_REASONS).nullable().optional(),
+  timings: z.record(z.string(), z.number()).nullable().optional(),
 });
 type RunRow = z.infer<typeof runRow>;
+
+/** 0.11: the timings a run reported, known keys only. */
+function runTimings(t: Record<string, number> | null | undefined): RunTimings | null {
+  if (!t) return null;
+  const out: RunTimings = {};
+  for (const k of [
+    "queueMs",
+    "spawnMs",
+    "contextMs",
+    "firstEventMs",
+    "providerMs",
+    "persistMs",
+  ] as const) {
+    if (typeof t[k] === "number" && Number.isFinite(t[k])) out[k] = t[k];
+  }
+  return out;
+}
 
 /** Provider display names from the registry (fixed fallback: the id itself). */
 async function providerNames(db: SupabaseClient): Promise<Map<string, string>> {
@@ -438,7 +461,9 @@ export async function getRunProvenanceFor(
       available: r.verification?.nativeSession === true,
       kind: r.native_session_kind,
       continuity: r.native_session_continuity,
+      reason: r.session_reason ?? null,
     },
+    timings: runTimings(r.timings),
     executionHost: host,
     worktreeLabel: r.worktree_label,
     status: r.status,
@@ -538,7 +563,9 @@ export async function listRunsFor(
         available: r.verification?.nativeSession === true,
         kind: r.native_session_kind,
         continuity: r.native_session_continuity,
+        reason: r.session_reason ?? null,
       },
+      timings: runTimings(r.timings),
       executionHost: r.runtime_id ? (labelOf.get(r.runtime_id) ?? null) : null,
       worktreeLabel: r.worktree_label,
       status: r.status,
@@ -589,7 +616,36 @@ export async function listLiveActivityFor(
       activity: r.activity,
       startedAt: r.started_at,
       lastActivityAt: r.last_activity_at,
+      subject: runSubject(r.activity, r.role),
     }));
+}
+
+/**
+ * 0.11: what a run is doing, in fixed words ("Reviewing"), never agent text.
+ * Mirrors threadlink_private.run_step_text / run_subject.
+ */
+export function runSubject(activity: string | null, role: string | null): string | null {
+  const byActivity: Record<string, string> = {
+    reading: "reading the project",
+    planning: "planning",
+    building: "building",
+    reviewing: "reviewing",
+    testing: "testing",
+    responding: "responding",
+    integrating: "integrating",
+  };
+  const byRole: Record<string, string> = {
+    coordinator: "coordinating",
+    planner: "planning",
+    builder: "building",
+    reviewer: "reviewing",
+    security_reviewer: "reviewing security",
+    test_reviewer: "reviewing tests",
+    integrator: "integrating",
+    investigator: "investigating",
+  };
+  const t = (activity && byActivity[activity]) || (role && byRole[role]) || null;
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : null;
 }
 
 /** "Copy" in Details only: the audited reveal of a run's native session id. */
@@ -1182,13 +1238,17 @@ export async function markChatReadSeqAs(
 
 const hostRow = z.object({
   now: z.string(),
+  server_now: z.string().optional(),
   runtime: z
     .object({
       label: z.string(),
-      presence: z.enum(["online", "offline", "working"]),
+      // 0.11 presence v2 (section 4).
+      presence: z.enum(HOST_PRESENCES),
       last_seen_at: z.string().nullable(),
       protocol: z.number().int(),
       needs_update: z.boolean(),
+      update_available: z.boolean().optional(),
+      fast_chat: z.boolean().optional(),
     })
     .passthrough()
     .nullable(),
@@ -1200,6 +1260,7 @@ const hostRow = z.object({
       health: z.enum(PROVIDER_HEALTH),
       state: z.union([z.enum(PROVIDER_HEALTH), z.literal("stale")]),
       checked_at: z.string().nullable(),
+      resets_at: z.string().nullable().optional(),
     }),
   ),
 });
@@ -1215,6 +1276,7 @@ export async function getHostStatusAs(
   const now = Date.parse(h.data.now);
   return {
     now: h.data.now,
+    serverNow: h.data.server_now ?? h.data.now,
     runtime: h.data.runtime
       ? {
           label: h.data.runtime.label,
@@ -1222,6 +1284,10 @@ export async function getHostStatusAs(
           lastSeenAt: h.data.runtime.last_seen_at,
           protocol: h.data.runtime.protocol,
           needsUpdate: h.data.runtime.needs_update,
+          ...(h.data.runtime.update_available !== undefined
+            ? { updateAvailable: h.data.runtime.update_available }
+            : {}),
+          ...(h.data.runtime.fast_chat !== undefined ? { fastChat: h.data.runtime.fast_chat } : {}),
         }
       : null,
     agents: h.data.agents.map((a) => ({
@@ -1231,6 +1297,7 @@ export async function getHostStatusAs(
       health: a.health,
       state: a.state as HealthState,
       checkedAt: a.checked_at,
+      resetsAt: a.resets_at ?? null,
       label: healthStateLabel(
         a.state as HealthState,
         a.checked_at,

@@ -7,6 +7,11 @@
  *   fresh idempotency key; a retry of the same message reuses its key.
  * - `/quit` only leaves this terminal view. Nothing is cancelled: work keeps
  *   running in ThreadLink. `/status` shows where the chat stands.
+ * - 0.11: only rows that belong in the conversation are printed (the shared
+ *   placement rules, §7); `--all` also prints the routine Activity rows.
+ *   `/chat …` and `/work …` are sent as typed (the server strips the prefix
+ *   and picks the lane); an answer to an open choice is resolved on the
+ *   server and reported as "Answered: …".
  * - Every piece of server text is made terminal-safe before printing.
  *
  * All I/O is injected, so the whole thing runs against a fake client in tests.
@@ -21,8 +26,18 @@ import {
   type ChatListItem,
   type ChatLiveRun,
   type ChatTimelineEvent,
+  type HostPresence,
 } from "../chat-client.ts";
-import { chatState, formatEvent, formatHeader, formatLive, participantsLine } from "./format.ts";
+import {
+  chatState,
+  formatEvent,
+  formatHeader,
+  formatLive,
+  hostLine,
+  participantsLine,
+  placementOf,
+  youLine,
+} from "./format.ts";
 import { safeLine } from "./text.ts";
 
 export const POLL_MIN_MS = 2_000;
@@ -61,18 +76,24 @@ export class ChatSession {
   #readAt = Number.NEGATIVE_INFINITY;
   #pending: Pending | null = null;
   #closed = false;
+  /** Print Activity rows too (`threadlink chat --all`). */
+  #all: boolean;
+  /** This terminal's own connection: its last request to ThreadLink succeeded. */
+  #connected: boolean | null = null;
+  #hostPresence: HostPresence | null = null;
 
   constructor(
     chat: ChatListItem,
     api: ChatApi,
     out: SessionOutput,
-    options: { now?: () => number; newKey?: () => string } = {},
+    options: { now?: () => number; newKey?: () => string; all?: boolean } = {},
   ) {
     this.chat = chat;
     this.#api = api;
     this.#out = out;
     this.#now = options.now ?? Date.now;
     this.#newKey = options.newKey ?? (() => randomUUID());
+    this.#all = options.all === true;
   }
 
   get cursor(): number {
@@ -83,7 +104,9 @@ export class ChatSession {
   }
 
   #visible(events: ChatTimelineEvent[]): ChatTimelineEvent[] {
-    return events.filter((e) => e.visibility === "visible");
+    return events.filter(
+      (e) => e.visibility === "visible" && (this.#all || placementOf(e) === "chat"),
+    );
   }
 
   #take(events: ChatTimelineEvent[]): ChatTimelineEvent[] {
@@ -110,8 +133,13 @@ export class ChatSession {
 
   /** Header plus the latest page. */
   async start(): Promise<void> {
-    this.#out.print([...formatHeader(this.chat), ""]);
     const page = await this.#api.events(this.chat.chatId);
+    this.#connected = true;
+    this.#hostPresence = page.hostPresence ?? null;
+    this.#out.print([
+      ...formatHeader(this.chat, { connected: true, host: this.#hostPresence }),
+      "",
+    ]);
     const fresh = this.#take(page.events);
     this.#cursor = page.cursor;
     this.#oldest = page.events[0]?.seq ?? null;
@@ -128,6 +156,9 @@ export class ChatSession {
     if (this.#closed) return "idle";
     try {
       const page = await this.#api.events(this.chat.chatId, { after: this.#cursor });
+      if (this.#connected === false) this.#out.print([youLine(true)]);
+      this.#connected = true;
+      this.#noteHost(page.hostPresence ?? null);
       const fresh = this.#take(page.events);
       this.#cursor = Math.max(this.#cursor, page.cursor);
       if (this.#oldest === null) this.#oldest = page.events[0]?.seq ?? null;
@@ -136,8 +167,26 @@ export class ChatSession {
       if (fresh.length) await this.#markRead(false);
       return fresh.length ? "new" : "idle";
     } catch {
+      if (this.#connected !== false) this.#out.print([youLine(false)]);
+      this.#connected = false;
       return "error";
     }
+  }
+
+  /** Says so when the execution host's presence changes (never for this terminal). */
+  #noteHost(presence: HostPresence | null) {
+    if (!presence || presence === this.#hostPresence) return;
+    const was = this.#hostPresence;
+    this.#hostPresence = presence;
+    if (was === null) return;
+    const host = hostLine(this.chat, presence);
+    if (!host) return;
+    const lines = [host.text];
+    if (presence === "offline")
+      lines.push(
+        "You're connected. Repository work and agent replies will resume when it reconnects.",
+      );
+    this.#out.print(lines);
   }
 
   async #markRead(force: boolean) {
@@ -156,8 +205,14 @@ export class ChatSession {
   async #send(pending: Pending): Promise<boolean> {
     try {
       const result = await this.#api.post(this.chat.chatId, pending.body, pending.key);
+      this.#connected = true;
       if (result.ok) {
         this.#pending = null;
+        // The message answered the open question (§6): the server resolved it.
+        if (result.routed === "choice_resolved")
+          this.#out.print([
+            `ThreadLink: Answered${result.chosenLabel ? ` — ${safeLine(result.chosenLabel, 80)}` : ""}.`,
+          ]);
         return true;
       }
       // Refused (e.g. an agent is not ready). If the server stored it anyway,
@@ -187,7 +242,10 @@ export class ChatSession {
   async handleLine(raw: string): Promise<"continue" | "quit"> {
     const line = raw.trim();
     if (!line) return "continue";
-    if (line.startsWith("/")) {
+    // `/chat …` (Fast Chat) and `/work …` (Engineering Work) are messages: the
+    // server strips the prefix and runs it in that lane (0.11 §2.4).
+    const lanePrefix = /^\/(chat|work)(\s|$)/i.test(line);
+    if (line.startsWith("/") && !lanePrefix) {
       const cmd = line.split(/\s+/)[0]!.toLowerCase();
       if (cmd === "/quit" || cmd === "/exit" || cmd === "/q") {
         this.close();
@@ -204,6 +262,8 @@ export class ChatSession {
       if (cmd === "/help") {
         this.#out.print([
           "Type a message and press Enter. Start with @codex or @claude to address one agent.",
+          "/chat <message>  just talk (no repository work)   /work <message>  run it as work",
+          "Answer an open question by typing it (e.g. continue with Claude, wait, stop).",
           "/status  where this chat stands     /older  earlier messages",
           "/retry   resend a message that failed  /quit   leave (work keeps running)",
         ]);
@@ -232,10 +292,8 @@ export class ChatSession {
       `${safeLine(chat.name, 80)} · ${chatState(chat)} · ${participantsLine(chat.participants)}`,
     ];
     if (chat.activeJob) lines.push(`Current work: ${safeLine(chat.activeJob.status, 40)}`);
-    if (chat.runtimeLabel)
-      lines.push(
-        `Runs on ${safeLine(chat.runtimeLabel, 60)}${chat.runtimeOnline === false ? " (offline — work continues when it reconnects)" : ""}`,
-      );
+    const host = hostLine(chat, this.#hostPresence);
+    lines.push(`${youLine(this.#connected ?? true)}   ${host ? host.text : "No project yet"}`);
     for (const r of this.#live) lines.push(formatLive(r, chat.participants, this.#now()));
     this.#out.print(lines);
   }

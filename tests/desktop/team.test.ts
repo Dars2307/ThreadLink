@@ -284,12 +284,22 @@ afterEach(() => {
 });
 
 describe("navigation", () => {
-  it("has the six sections", async () => {
+  it("has the same sections as the web, plus This computer", async () => {
     mount(appState());
     await settle();
-    expect([...document.querySelectorAll("#nav button")].map((b) => b.textContent?.trim())).toEqual(
-      ["Home", "Chats", "Agents", "This computer", "Notifications", "Settings"],
-    );
+    expect(
+      [...document.querySelectorAll("#nav .nav-item")].map((b) =>
+        b.querySelector(".sb-text")?.textContent?.trim(),
+      ),
+    ).toEqual([
+      "Home",
+      "Chats",
+      "Agents",
+      "Notifications",
+      "This computer",
+      "Projects",
+      "Settings",
+    ]);
   });
 
   it("keeps every existing section working", async () => {
@@ -298,6 +308,7 @@ describe("navigation", () => {
     for (const [label, title] of [
       ["Agents", "Agents"],
       ["Chats", "Chats"],
+      ["Projects", "Projects"],
       ["This computer", "This computer"],
       ["Notifications", "Notifications"],
       ["Settings", "Settings"],
@@ -310,14 +321,13 @@ describe("navigation", () => {
   });
 });
 
-describe("the Chats page", () => {
+describe("work running on This computer", () => {
   it("explains itself when nothing has run", async () => {
     mount(appState());
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     const text = viewText();
-    expect(text).toContain("Chat with one AI, two AIs, or a team");
-    expect(text).toContain("Ask your controller (for example ChatGPT)");
+    expect(text).toContain("Nothing running here right now");
     expect(text).not.toContain("Ask ChatGPT");
     expect(document.querySelector(".team-job")).toBeNull();
   });
@@ -325,7 +335,7 @@ describe("the Chats page", () => {
   it("shows the room, the goal and what each agent is doing", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect(document.querySelector(".chat-name")?.textContent).toBe("Prism");
     const text = viewText();
     expect(text).toContain("Add a weekly report page");
@@ -341,7 +351,7 @@ describe("the Chats page", () => {
       }),
     );
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect([...document.querySelectorAll(".chat-name")].map((h) => h.textContent)).toEqual([
       "Newer",
       "Older",
@@ -351,7 +361,7 @@ describe("the Chats page", () => {
   it("marks each stage and unit done, in progress, waiting or failed", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     const s = steps();
     expect(s.map((x) => x.text.split(" — ")[0])).toEqual([
       "Understanding request",
@@ -400,7 +410,7 @@ describe("the Chats page", () => {
       }),
     );
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect(document.querySelector(".team-verdict")?.textContent).toBe(words);
     expect(viewText()).not.toContain(verdict);
   });
@@ -408,7 +418,7 @@ describe("the Chats page", () => {
   it("never shows a raw provider id", async () => {
     mount(appState({ team: [job()] }));
     await settle();
-    await navTo("Chats");
+    await navTo("This computer");
     expect(visibleText()).not.toMatch(/claude-code|\bcodex\b/);
   });
 });
@@ -429,11 +439,11 @@ describe("Home", () => {
     expect(tiles).toEqual([
       "Claude CodeAgents online",
       "OnlineExecution host",
-      "1Chats running",
+      "1Running on this computer",
       "1Needs attention",
     ]);
     expect(document.getElementById("links")).toBeTruthy();
-    expect(document.getElementById("home-activity")).toBeTruthy();
+    expect(document.getElementById("home-presence")?.textContent).toContain("This computer ·");
   });
 });
 

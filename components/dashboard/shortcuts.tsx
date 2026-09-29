@@ -48,8 +48,9 @@ export function KeyboardShortcuts({ chatOrder }: { chatOrder: string[] }) {
       };
       switch (action) {
         case "search": {
+          // 0.11: the sidebar's search is a link now; only a visible text box takes focus.
           const box = SEARCH_IDS.map((id) => document.getElementById(id)).find(
-            (el) => el && el.offsetParent !== null,
+            (el) => el instanceof HTMLInputElement && el.offsetParent !== null,
           );
           e.preventDefault();
           if (box) box.focus();

@@ -8,6 +8,7 @@ import {
   failResult,
   forbiddenArg,
   isPlainObject,
+  parseResetTime,
   parseStructured,
   processFailure,
   runProcess,
@@ -94,6 +95,25 @@ export function buildClaudeArgs(request: AgentRunRequest): string[] {
 }
 
 export function buildClaudePrompt(request: AgentRunRequest): string {
+  if (request.purpose === "chat") {
+    // Fast Chat (0.11 §3.4): a conversational turn, read-only, in the project
+    // folder. No instruction to read rule files first: that costs every turn
+    // seconds, and the agent can still open them when the question needs it.
+    const chat = [
+      "[ThreadLink Fast Chat] You are answering in a ThreadLink chat (Claude Code, headless).",
+      "Access: READ-ONLY. Do not modify any file.",
+      "",
+      request.prompt,
+    ];
+    if (request.outputSchema) {
+      chat.push(
+        "",
+        "Your FINAL message must be exactly one JSON object that conforms to this JSON Schema:",
+        JSON.stringify(request.outputSchema),
+      );
+    }
+    return chat.join("\n");
+  }
   const lines = [
     `[ThreadLink Team Mode] You are the ${request.role} in a ThreadLink team run (Claude Code, headless).`,
     request.access === "read-only"
@@ -187,15 +207,20 @@ export class ClaudeTeamRunner implements AgentRunner {
       hooks: request.onProcess,
     });
     const processError = processFailure(request, outcome, "Claude Code", timeoutMs);
-    if (processError) return processError;
+    if (processError) return { ...processError, timings: outcome.timing };
 
     const parsed = parseClaudeOutput(outcome.stdout) as ClaudeJson | null;
     if (!parsed) {
       const diagnostics = `${outcome.stderr}\n${outcome.stdout}`;
+      const failure = classifyFailureText(diagnostics) ?? "provider_error";
       return failResult(
         request,
         `Claude Code exited with code ${outcome.code ?? "?"} without a JSON result: ${tail(diagnostics) || "no output"}`,
-        classifyFailureText(diagnostics) ?? "provider_error",
+        failure,
+        {
+          timings: outcome.timing,
+          resetsAt: failure === "quota_exhausted" ? parseResetTime(diagnostics) : null,
+        },
       );
     }
 
@@ -219,14 +244,17 @@ export class ClaudeTeamRunner implements AgentRunner {
         inputTokens: typeof inputTokens === "number" ? inputTokens : undefined,
         outputTokens: typeof outputTokens === "number" ? outputTokens : undefined,
       },
+      timings: outcome.timing,
     };
 
     if (parsed.is_error === true || outcome.code !== 0) {
       const diagnostics = `${text}\n${outcome.stderr}`;
+      const failure = classifyFailureText(diagnostics) ?? "provider_error";
       return {
         ...base,
         error: `Claude Code reported an error (exit ${outcome.code ?? "?"}): ${tail(diagnostics) || "no detail"}`,
-        failure: classifyFailureText(diagnostics) ?? "provider_error",
+        failure,
+        resetsAt: failure === "quota_exhausted" ? parseResetTime(diagnostics) : null,
       };
     }
     if (!primary) {

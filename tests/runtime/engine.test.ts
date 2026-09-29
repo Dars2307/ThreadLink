@@ -208,14 +208,14 @@ describe("ThreadLink Runtime engine", () => {
     expect(e.snapshot().workspaces[0]!.conversations.map((c) => c.busy)).toEqual([false, true]);
   });
 
-  it("sends RUNTIME_PROTOCOL 10 when it registers and in every heartbeat (0.10 §8)", async () => {
+  it("sends RUNTIME_PROTOCOL 11 when it registers and in every heartbeat (0.10 §8, 0.11)", async () => {
     const { api } = fakeApi();
     const e = engine(api, fakeAdapter().adapter);
     await e.register();
     await e.heartbeat();
-    expect(api.registerRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ protocol: 10 }));
+    expect(api.registerRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ protocol: 11 }));
     expect(api.runtimeHeartbeat).toHaveBeenLastCalledWith(
-      expect.objectContaining({ protocol: 10 }),
+      expect.objectContaining({ protocol: 11 }),
     );
   });
 

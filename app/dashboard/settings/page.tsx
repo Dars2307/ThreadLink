@@ -4,10 +4,17 @@ import Link from "next/link";
 
 import { updateRuntimeAction } from "@/app/dashboard/actions";
 import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
+import { AppearanceChoice } from "@/components/dashboard/appearance-choice";
 import { SettingsNav } from "@/components/dashboard/settings-nav";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { ThemeChoice } from "@/components/dashboard/theme-choice";
 import { buttonStyles, Card, CardTitle, EmptyState } from "@/components/ui";
+import {
+  BACKDROP_COOKIE,
+  MOTION_COOKIE,
+  parseBackdrop,
+  parseMotion,
+} from "@/lib/dashboard/appearance";
 import { loadAccount } from "@/lib/dashboard/data";
 import { deriveDevices } from "@/lib/dashboard/pages";
 import { parseTheme, THEME_COOKIE } from "@/lib/theme";
@@ -39,7 +46,10 @@ const MORE = [
 
 export default async function SettingsPage() {
   const account = await loadAccount();
-  const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
+  const jar = await cookies();
+  const theme = parseTheme(jar.get(THEME_COOKIE)?.value);
+  const backdrop = parseBackdrop(jar.get(BACKDROP_COOKIE)?.value);
+  const animate = parseMotion(jar.get(MOTION_COOKIE)?.value);
   if (!account) return <LoadError what="settings" />;
   const { view, handles } = deriveDevices(account);
   const primary = view.devices[0];
@@ -109,7 +119,13 @@ export default async function SettingsPage() {
         <CardTitle id="appearance" description="Saved on this browser.">
           Appearance
         </CardTitle>
-        <ThemeChoice theme={theme} />
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium">Theme</p>
+            <ThemeChoice theme={theme} />
+          </div>
+          <AppearanceChoice backdrop={backdrop} animate={animate} />
+        </div>
       </Card>
 
       <div className="grid gap-3 sm:grid-cols-2">

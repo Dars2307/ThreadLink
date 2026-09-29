@@ -8,6 +8,7 @@ import { healthCallout, healthText, healthTone, providerDisplay } from "./provid
 import { buildRegistry, type Registry } from "./registry";
 import { healthFreshness, type Freshness } from "./timeline";
 import { relativeTime } from "./view-model";
+import { resetsAtOf } from "@/runtime/src/chat-presentation";
 
 /**
  * The Agents page: every provider ThreadLink knows, with its health, the plan
@@ -35,6 +36,10 @@ export type AgentCard = {
   callout: string | null;
   plan: string | null;
   capabilities: string;
+  /** 0.11: usage_exhausted only — when the provider said it resets (ISO), or null (never invented). */
+  usageResetsAt: string | null;
+  /** 0.11: true while its included usage is exhausted. */
+  usageExhausted: boolean;
 };
 
 export type AgentsView = { agents: AgentCard[] };
@@ -153,6 +158,14 @@ export function deriveAgents(
           ? d.capabilities.join(" · ")
           : "Plans · Builds · Reviews"
         : "Not supported yet",
+      usageExhausted: d.supported && health === "usage_exhausted",
+      usageResetsAt:
+        d.supported && health === "usage_exhausted" && profile
+          ? resetsAtOf(
+              profile.detected as unknown as Record<string, unknown>,
+              profile as unknown as Record<string, unknown>,
+            )
+          : null,
     };
   });
   return { view: { agents }, handles: {} };

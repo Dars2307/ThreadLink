@@ -183,8 +183,12 @@ export function setFinalPayload(input: {
 // never guessed; an unknown control or choice status is ignored).
 // ---------------------------------------------------------------------------
 
-/** docs/design/threadlink-0.10.md §8. Sent in register and heartbeat. */
-export const RUNTIME_PROTOCOL = 10;
+/**
+ * docs/design/threadlink-0.10.md §8. Sent in register and heartbeat. 11 =
+ * ThreadLink 0.11 (Fast Chat lane, wake long-poll, failover, timings); the
+ * server keeps accepting 10.
+ */
+export const RUNTIME_PROTOCOL = 11;
 
 export const OPS_0_10 = {
   runStarted: "run_started",
@@ -243,6 +247,8 @@ export function runStartedPayload(input: {
   resumedFromRunKey: string | null;
   /** The run's phase activity at start (the server's first last_activity_at). */
   activity: string | null;
+  /** 0.11 (§3.4.6): why this run's native session is fresh or resumed. */
+  sessionReason?: SessionReason | null;
 }): Record<string, unknown> {
   return {
     runKey: wireKey(input.runKey),
@@ -258,6 +264,7 @@ export function runStartedPayload(input: {
     continuity: input.continuity,
     ...(input.resumedFromRunKey ? { resumedFromRunKey: wireKey(input.resumedFromRunKey) } : {}),
     ...(input.activity ? { activity: input.activity } : {}),
+    ...(input.sessionReason ? { sessionReason: input.sessionReason } : {}),
   };
 }
 
@@ -282,6 +289,8 @@ export function runFinishedPayload(input: {
   failure: RunFailureCategory | null;
   /** The provider process exited cleanly (verification.exitClean). */
   exitClean: boolean;
+  /** 0.11 (§3.6): per-run timings. Only the known, non-negative integer ones are sent. */
+  timings?: Partial<RunTimings> | null;
 }): Record<string, unknown> {
   const sessionId =
     input.nativeSessionId && NATIVE_SESSION_ID.test(input.nativeSessionId)
@@ -298,6 +307,126 @@ export function runFinishedPayload(input: {
     nativeSessionKind: sessionId ? input.nativeSessionKind : null,
     ...(input.failure ? { failure: input.failure } : {}),
     exitClean: input.exitClean,
+    ...timingsField(input.timings),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 0.11 (docs/design/threadlink-0.11.md §2-§5)
+// ---------------------------------------------------------------------------
+
+export const OPS_0_11 = {
+  readChatContext: "read_chat_context",
+  failoverNotice: "failover_notice",
+} as const;
+
+/** run_started.sessionReason (§3.4.6). */
+export const SESSION_REASONS = [
+  "resumed",
+  "fresh_first_turn",
+  "fresh_rotated",
+  "fresh_resume_failed",
+] as const;
+export type SessionReason = (typeof SESSION_REASONS)[number];
+
+export const RUN_TIMING_KEYS = [
+  "queueMs",
+  "spawnMs",
+  "contextMs",
+  "firstEventMs",
+  "providerMs",
+  "persistMs",
+] as const;
+export type RunTimings = Record<(typeof RUN_TIMING_KEYS)[number], number>;
+
+/** `{ timings }` with only non-negative integers (capped at a day), or nothing. */
+function timingsField(timings: Partial<RunTimings> | null | undefined): Record<string, unknown> {
+  if (!timings) return {};
+  const out: Record<string, number> = {};
+  for (const key of RUN_TIMING_KEYS) {
+    const v = timings[key];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+      out[key] = Math.min(Math.round(v), 86_400_000);
+    }
+  }
+  return Object.keys(out).length ? { timings: out } : {};
+}
+
+/** A job's lane (§2): chat (Fast Chat) or work (Engineering Work). */
+export type JobLane = "chat" | "work";
+/** The owner's failover preference, snapshotted on the job (§5). */
+export type FailoverPolicy = "auto" | "ask" | "wait";
+
+export type ChatContextMessage = {
+  id: string;
+  chatSeq: number | null;
+  authorKind: string;
+  authorProviderId: AgentProvider | null;
+  authorLabel: string | null;
+  replyTo: string | null;
+  body: string;
+  createdAt: string | null;
+};
+
+const CONTEXT_MAX_MESSAGES = 40;
+const CONTEXT_MAX_BODY = 4_000;
+
+/** read_chat_context `{limit}` (≤ 40). */
+export function readChatContextPayload(limit: number): Record<string, unknown> {
+  return { limit: Math.max(1, Math.min(CONTEXT_MAX_MESSAGES, Math.floor(limit))) };
+}
+
+/**
+ * read_chat_context: `{ chatContext: [{id, chatSeq, authorKind, authorProviderId,
+ * authorLabel, replyTo, body, createdAt}] }`, newest last. Malformed entries are
+ * dropped; bodies are bounded. Newest-last order is kept (re-sorted by chatSeq
+ * when every entry has one).
+ */
+export function parseChatContext(answer: unknown): ChatContextMessage[] {
+  // The server answers `chatContext` (lib/team/client-api.ts); `messages` is accepted too.
+  const raw = pick(answer, "chatContext", "messages");
+  if (!Array.isArray(raw)) return [];
+  const out: ChatContextMessage[] = [];
+  for (const item of raw.slice(-CONTEXT_MAX_MESSAGES)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const m = item as Record<string, unknown>;
+    const id = m.id;
+    if (typeof id !== "string" || !EVENT_ID.test(id)) continue;
+    if (typeof m.body !== "string" || !m.body.trim()) continue;
+    const kind = typeof m.authorKind === "string" ? m.authorKind.slice(0, 20) : "unknown";
+    const provider = isProvider(m.authorProviderId) ? m.authorProviderId : null;
+    const seq = m.chatSeq;
+    out.push({
+      id,
+      chatSeq: typeof seq === "number" && Number.isInteger(seq) ? seq : null,
+      authorKind: kind,
+      authorProviderId: provider,
+      authorLabel: typeof m.authorLabel === "string" ? m.authorLabel.slice(0, 80) : null,
+      replyTo: typeof m.replyTo === "string" && EVENT_ID.test(m.replyTo) ? m.replyTo : null,
+      body: m.body.slice(0, CONTEXT_MAX_BODY),
+      createdAt: typeof m.createdAt === "string" ? m.createdAt.slice(0, 40) : null,
+    });
+  }
+  if (out.every((m) => m.chatSeq !== null)) out.sort((a, b) => a.chatSeq! - b.chatSeq!);
+  return out;
+}
+
+/** failover_notice `{from, to|null, reviewPending, resetsAt|null}` (§5). */
+export function failoverNoticePayload(input: {
+  from: AgentProvider;
+  to: AgentProvider | null;
+  reviewPending: boolean;
+  resetsAt: string | null;
+}): Record<string, unknown> {
+  const reset =
+    input.resetsAt && Number.isFinite(Date.parse(input.resetsAt))
+      ? new Date(Date.parse(input.resetsAt)).toISOString()
+      : null;
+  return {
+    from: input.from,
+    to: input.to,
+    reviewPending: input.reviewPending,
+    resetsAt: reset,
   };
 }
 
@@ -446,6 +575,7 @@ const DECISION_TITLE_FOR: Record<string, (typeof THREADLINK_DECISION_TITLES)[num
   "Merge conflict": "Merge conflict",
   "Finding dismissed": "Finding dismissed",
   "No model to use": "No model available",
+  "Disagreement settled": "Disagreement settled",
 };
 
 export function threadlinkDecisionTitle(topic: string): string | null {
@@ -467,6 +597,9 @@ export const CHOICE_KIND_OPTIONS = {
   timeout: ["retry", "retry_other", "increase_timeout", "stop"],
   plan_disagreement: ["extra_round", "stop"],
   interrupted: ["resume", "stop"],
+  // 0.11 (§5, §2.5)
+  usage_exhausted: ["continue_other", "check_again", "wait", "stop"],
+  start_work: ["run_work", "keep_chatting"],
 } as const;
 export type RuntimeChoiceKind = keyof typeof CHOICE_KIND_OPTIONS;
 export type ChoiceOptionKey<K extends RuntimeChoiceKind> = (typeof CHOICE_KIND_OPTIONS)[K][number];

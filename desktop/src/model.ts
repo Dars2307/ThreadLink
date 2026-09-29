@@ -1,5 +1,7 @@
 import type { EngineSnapshot } from "threadlink";
 
+import type { DesktopSettings } from "./settings.js";
+
 import { agentsSummary, workingAgents, type HealthView } from "./health.js";
 import type { ChatGroupView } from "./progress.js";
 
@@ -17,7 +19,7 @@ export type AppState = {
   /** A one-off, non-error message, e.g. that the address was upgraded. */
   notice?: string | null;
   localPaused: boolean;
-  settings: { autoStart: boolean; notifications: boolean };
+  settings: DesktopSettings;
   /** Provider health, derived by main from the snapshot (fixed words only). */
   health?: HealthView[];
   /** Running and recent work grouped by chat, with honest stages. */

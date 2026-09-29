@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 /*
- * ThreadLink design tokens. Neutral surfaces, one restrained accent, semantic
- * status colours. Text tokens meet WCAG AA on their surfaces in both themes.
+ * ThreadLink design tokens (0.11 design canvas). Neutral surfaces, one
+ * restrained accent, semantic status colours, translucent "glass" surfaces
+ * over an app backdrop. Text tokens meet WCAG AA on their surfaces in both
+ * themes, including over the brightest part of each backdrop.
  */
 :root {
   --background: #f6f6f8;
@@ -12,7 +14,9 @@
   --border-strong: #cfcfd6;
   --foreground: #16161a;
   --muted: #4f4f5a;
-  --subtle: #6b6b76;
+  /* Canvas #6b6b76, darkened so sidebar text keeps >= 4.5:1 straight over the
+     brightest (and overlapping) backdrop tints. tests/web-appearance-0-11 pins it. */
+  --subtle: #585863;
   --accent: #4f46e5;
   --accent-hover: #4338ca;
   --accent-foreground: #ffffff;
@@ -25,6 +29,59 @@
   --danger-soft: #fdeceb;
   --ring: #6366f1;
   --shadow: 0 1px 2px rgb(16 16 24 / 0.04), 0 1px 3px rgb(16 16 24 / 0.06);
+
+  /* 0.11 design canvas (docs: Main / Work / Drawer / Mobile). */
+  --bg: #ffffff;
+  --side: rgba(246, 246, 248, 0.72);
+  --side-solid: #f6f6f8;
+  --head: rgba(255, 255, 255, 0.55);
+  --head-solid: #ffffff;
+  --line-soft: rgba(22, 22, 26, 0.08);
+  --inset: rgba(255, 255, 255, 0.74);
+  --inset-solid: #ffffff;
+  --hint: rgba(22, 22, 26, 0.04);
+  --active: rgba(22, 22, 26, 0.07);
+  --bubble: rgba(22, 22, 26, 0.06);
+  --chip: rgba(22, 22, 26, 0.06);
+  --card: #ffffff;
+  --glass: rgba(255, 255, 255, 0.86);
+  --glass-solid: #ffffff;
+  --field: rgba(22, 22, 26, 0.14);
+  --send-bg: #16161a;
+  --send-fg: #ffffff;
+  --claude-bg: #f7e3da;
+  --claude-fg: #a4502f;
+  --codex-bg: #e6e6ec;
+  --codex-fg: #2b2b33;
+  --notice-bg: #fffaf1;
+  --notice-line: #ecd9b8;
+  --notice-ink: #7a4700;
+  --tab: rgba(22, 22, 26, 0.07);
+  --tabs: rgba(22, 22, 26, 0.05);
+  --panel: rgba(251, 251, 252, 0.86);
+  --panel-solid: #fbfbfc;
+  --sel: rgba(79, 70, 229, 0.06);
+  --track: #ececf2;
+  --seg1: #8e8e9b;
+  --seg2: #b6b6c2;
+  --live-claude: #d97757;
+  --live-codex: #6b6b76;
+  --float-shadow: 0 1px 2px rgb(16 16 24 / 0.05), 0 12px 32px rgb(16 16 24 / 0.08);
+  --glow: 0 4px 12px rgb(79 70 229 / 0.35);
+  --ok-ring: rgb(21 122 59 / 0.15);
+
+  /* Backdrops (the canvas' renderVals, light). */
+  --bd-base: #f7f7fa;
+  --bd-indigo: rgba(99, 102, 241, 0.24);
+  --bd-clay: rgba(217, 119, 87, 0.2);
+  --bd-teal: rgba(45, 212, 191, 0.16);
+  --bd-violet: rgba(167, 139, 250, 0.28);
+  --bd-pink: rgba(244, 114, 182, 0.16);
+  --bd-dusk: linear-gradient(165deg, #f6f3ff 0%, #fdf5ef 60%, #f2f6fa 100%);
+  --bd-grid-base: #fafafb;
+  --bd-dot: rgba(22, 22, 26, 0.1);
+  --bd-spot: rgba(99, 102, 241, 0.14);
+  --bd-plain: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,11 +89,12 @@
     --background: #0c0c10;
     --surface: #141419;
     --surface-muted: #1b1b22;
-    --border: #26262f;
+    --border: #2a2a34;
     --border-strong: #34343f;
     --foreground: #f2f2f5;
     --muted: #b6b6c2;
-    --subtle: #8e8e9b;
+    /* Canvas #8e8e9b, lifted so it keeps >= 4.5:1 over the brightest backdrop glow. */
+    --subtle: #a2a2ae;
     --accent: #8b8cff;
     --accent-hover: #a3a4ff;
     --accent-foreground: #0c0c10;
@@ -49,6 +107,58 @@
     --danger-soft: #2d1414;
     --ring: #8b8cff;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+
+    --bg: #0e0e13;
+    --side: rgba(12, 12, 17, 0.62);
+    --side-solid: #0c0c11;
+    --head: rgba(14, 14, 19, 0.5);
+    --head-solid: #0e0e13;
+    --line-soft: rgba(255, 255, 255, 0.08);
+    --inset: rgba(18, 18, 25, 0.72);
+    --inset-solid: #121219;
+    --hint: rgba(255, 255, 255, 0.05);
+    --active: rgba(255, 255, 255, 0.08);
+    --bubble: rgba(255, 255, 255, 0.08);
+    --chip: rgba(255, 255, 255, 0.08);
+    --card: #17171e;
+    --glass: rgba(24, 24, 31, 0.84);
+    --glass-solid: #18181f;
+    --field: rgba(255, 255, 255, 0.14);
+    --send-bg: #f2f2f5;
+    --send-fg: #0c0c10;
+    --claude-bg: #3b2219;
+    --claude-fg: #f2a988;
+    --codex-bg: #262630;
+    --codex-fg: #d8d8e2;
+    --notice-bg: rgba(42, 32, 16, 0.85);
+    --notice-line: #4d3b18;
+    --notice-ink: #f0b547;
+    --tab: rgba(255, 255, 255, 0.08);
+    --tabs: rgba(255, 255, 255, 0.05);
+    --panel: rgba(18, 18, 24, 0.8);
+    --panel-solid: #121218;
+    --sel: rgba(139, 140, 255, 0.08);
+    --track: #26262f;
+    --seg1: #5c5c68;
+    --seg2: #44444f;
+    --live-claude: #e8906c;
+    --live-codex: #a9a9b6;
+    --float-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.4);
+    --glow: 0 4px 14px rgb(139 140 255 / 0.35);
+    --ok-ring: rgb(90 212 138 / 0.18);
+
+    --bd-base: #0c0c11;
+    --bd-indigo: rgba(99, 102, 241, 0.36);
+    --bd-clay: rgba(217, 119, 87, 0.22);
+    --bd-teal: rgba(45, 212, 191, 0.18);
+    --bd-violet: rgba(139, 92, 246, 0.36);
+    --bd-pink: rgba(236, 72, 153, 0.16);
+    --bd-dusk: linear-gradient(165deg, #15112a 0%, #1c1219 60%, #0c1419 100%);
+    --bd-grid-base: #0d0d12;
+    --bd-dot: rgba(255, 255, 255, 0.08);
+    --bd-spot: rgba(139, 140, 255, 0.18);
+    --bd-plain: #0e0e13;
+    color-scheme: dark;
   }
 }
 
@@ -56,11 +166,12 @@
   --background: #0c0c10;
   --surface: #141419;
   --surface-muted: #1b1b22;
-  --border: #26262f;
+  --border: #2a2a34;
   --border-strong: #34343f;
   --foreground: #f2f2f5;
   --muted: #b6b6c2;
-  --subtle: #8e8e9b;
+  /* Canvas #8e8e9b, lifted so it keeps >= 4.5:1 over the brightest backdrop glow. */
+  --subtle: #a2a2ae;
   --accent: #8b8cff;
   --accent-hover: #a3a4ff;
   --accent-foreground: #0c0c10;
@@ -73,6 +184,58 @@
   --danger-soft: #2d1414;
   --ring: #8b8cff;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+
+  --bg: #0e0e13;
+  --side: rgba(12, 12, 17, 0.62);
+  --side-solid: #0c0c11;
+  --head: rgba(14, 14, 19, 0.5);
+  --head-solid: #0e0e13;
+  --line-soft: rgba(255, 255, 255, 0.08);
+  --inset: rgba(18, 18, 25, 0.72);
+  --inset-solid: #121219;
+  --hint: rgba(255, 255, 255, 0.05);
+  --active: rgba(255, 255, 255, 0.08);
+  --bubble: rgba(255, 255, 255, 0.08);
+  --chip: rgba(255, 255, 255, 0.08);
+  --card: #17171e;
+  --glass: rgba(24, 24, 31, 0.84);
+  --glass-solid: #18181f;
+  --field: rgba(255, 255, 255, 0.14);
+  --send-bg: #f2f2f5;
+  --send-fg: #0c0c10;
+  --claude-bg: #3b2219;
+  --claude-fg: #f2a988;
+  --codex-bg: #262630;
+  --codex-fg: #d8d8e2;
+  --notice-bg: rgba(42, 32, 16, 0.85);
+  --notice-line: #4d3b18;
+  --notice-ink: #f0b547;
+  --tab: rgba(255, 255, 255, 0.08);
+  --tabs: rgba(255, 255, 255, 0.05);
+  --panel: rgba(18, 18, 24, 0.8);
+  --panel-solid: #121218;
+  --sel: rgba(139, 140, 255, 0.08);
+  --track: #26262f;
+  --seg1: #5c5c68;
+  --seg2: #44444f;
+  --live-claude: #e8906c;
+  --live-codex: #a9a9b6;
+  --float-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.4);
+  --glow: 0 4px 14px rgb(139 140 255 / 0.35);
+  --ok-ring: rgb(90 212 138 / 0.18);
+
+  --bd-base: #0c0c11;
+  --bd-indigo: rgba(99, 102, 241, 0.36);
+  --bd-clay: rgba(217, 119, 87, 0.22);
+  --bd-teal: rgba(45, 212, 191, 0.18);
+  --bd-violet: rgba(139, 92, 246, 0.36);
+  --bd-pink: rgba(236, 72, 153, 0.16);
+  --bd-dusk: linear-gradient(165deg, #15112a 0%, #1c1219 60%, #0c1419 100%);
+  --bd-grid-base: #0d0d12;
+  --bd-dot: rgba(255, 255, 255, 0.08);
+  --bd-spot: rgba(139, 140, 255, 0.18);
+  --bd-plain: #0e0e13;
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -95,7 +258,39 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-ring: var(--ring);
+  --color-bg: var(--bg);
+  --color-side: var(--side);
+  --color-head: var(--head);
+  --color-line-soft: var(--line-soft);
+  --color-active: var(--active);
+  --color-bubble: var(--bubble);
+  --color-chip: var(--chip);
+  --color-card: var(--card);
+  --color-glass: var(--glass);
+  --color-field: var(--field);
+  --color-send-bg: var(--send-bg);
+  --color-send-fg: var(--send-fg);
+  --color-claude-bg: var(--claude-bg);
+  --color-claude-fg: var(--claude-fg);
+  --color-codex-bg: var(--codex-bg);
+  --color-codex-fg: var(--codex-fg);
+  --color-notice-bg: var(--notice-bg);
+  --color-notice-line: var(--notice-line);
+  --color-notice-ink: var(--notice-ink);
+  --color-tab: var(--tab);
+  --color-panel: var(--panel);
+  --color-sel: var(--sel);
+  --color-track: var(--track);
+  --color-seg1: var(--seg1);
+  --color-seg2: var(--seg2);
+  --color-live-claude: var(--live-claude);
+  --color-live-codex: var(--live-codex);
+  --color-inset: var(--inset);
+  --color-hint: var(--hint);
+  --color-tabs: var(--tabs);
   --shadow-card: var(--shadow);
+  --shadow-float: var(--float-shadow);
+  --shadow-glow: var(--glow);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -116,4 +311,429 @@ details > summary {
 }
 details > summary::-webkit-details-marker {
   display: none;
+}
+
+/* 0.11 §8: on a chat the timeline is the only scroll surface; the page never scrolls. */
+html:has(#tl-timeline),
+body:has(#tl-timeline) {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #tl-timeline {
+    scroll-behavior: auto;
+  }
+}
+
+@layer components {
+  /* ------------------------------------------------------------------------ */
+  /* Glass surfaces: translucent + blurred where supported, solid otherwise.   */
+  /* ------------------------------------------------------------------------ */
+
+  .tl-side {
+    background: var(--side-solid);
+  }
+  .tl-head {
+    background: var(--head-solid);
+  }
+  .tl-glass {
+    background: var(--glass-solid);
+  }
+  .tl-panel {
+    background: var(--panel-solid);
+  }
+  .tl-inset {
+    background: var(--inset-solid);
+  }
+
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .tl-side {
+      background: var(--side);
+      -webkit-backdrop-filter: blur(18px) saturate(1.15);
+      backdrop-filter: blur(18px) saturate(1.15);
+    }
+    .tl-head {
+      background: var(--head);
+      -webkit-backdrop-filter: blur(14px) saturate(1.15);
+      backdrop-filter: blur(14px) saturate(1.15);
+    }
+    .tl-glass {
+      background: var(--glass);
+      -webkit-backdrop-filter: blur(16px) saturate(1.15);
+      backdrop-filter: blur(16px) saturate(1.15);
+    }
+    .tl-panel {
+      background: var(--panel);
+      -webkit-backdrop-filter: blur(20px) saturate(1.15);
+      backdrop-filter: blur(20px) saturate(1.15);
+    }
+    .tl-inset {
+      background: var(--inset);
+      -webkit-backdrop-filter: blur(24px) saturate(1.15);
+      backdrop-filter: blur(24px) saturate(1.15);
+    }
+  }
+
+  /* People who ask for less transparency get the solid surfaces. */
+  @media (prefers-reduced-transparency: reduce) {
+    .tl-side,
+    .tl-head,
+    .tl-glass,
+    .tl-panel,
+    .tl-inset {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+    .tl-side {
+      background: var(--side-solid);
+    }
+    .tl-head {
+      background: var(--head-solid);
+    }
+    .tl-glass {
+      background: var(--glass-solid);
+    }
+    .tl-panel {
+      background: var(--panel-solid);
+    }
+    .tl-inset {
+      background: var(--inset-solid);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Small effects. Compositor-only (transform / opacity); none under reduced  */
+/* motion.                                                                   */
+/* ------------------------------------------------------------------------ */
+
+/* Live dots: a soft pulse. */
+@keyframes tl-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.tl-pulse {
+  animation: tl-pulse 1.6s ease-in-out infinite;
+}
+
+/* Status "ping" (Tailwind's animate-ping, softer). Put .tl-ping on a sibling
+   dot absolutely stacked under the solid dot. */
+@keyframes tl-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  80%,
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+.tl-ping {
+  animation: tl-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  will-change: transform, opacity;
+}
+
+/* Shimmer on the active live row, compositor-only: a soft window (with a
+   static mask) slides across via transform while the bright copy inside it
+   slides the opposite way, so the text itself stays put. */
+.tl-shimmer {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+.tl-shimmer-base {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-shimmer-win {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 45%, #000 55%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 45%, #000 55%, transparent);
+  animation: tl-sheen 2.6s linear infinite;
+  will-change: transform;
+}
+.tl-shimmer-copy {
+  position: absolute;
+  top: 0;
+  left: 0;
+  white-space: nowrap;
+  color: var(--foreground);
+  animation: tl-sheen-counter 2.6s linear infinite;
+  will-change: transform;
+}
+/* window: -1 W … +2.5 W (W = 40 % of the text); the copy moves by the
+   exact opposite distance in its own units (+40 % … -100 % of the text). */
+@keyframes tl-sheen {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(250%, 0, 0);
+  }
+}
+@keyframes tl-sheen-counter {
+  0% {
+    transform: translate3d(40%, 0, 0);
+  }
+  100% {
+    transform: translate3d(-100%, 0, 0);
+  }
+}
+
+/* The timing bar grows in once. */
+@keyframes tl-grow {
+  0% {
+    transform: scaleX(0);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+.tl-grow {
+  transform-origin: left center;
+  animation: tl-grow 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/* The "Jump to latest" pill floats gently. */
+@keyframes tl-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -3px, 0);
+  }
+}
+.tl-float {
+  animation: tl-float 3.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ------------------------------------------------------------------------ */
+/* App backdrop (aurora / dusk / grid / plain), design canvas.               */
+/*                                                                           */
+/* Cheap by construction: one fixed, contained layer behind the app; every   */
+/* moving part is its own compositor layer animated ONLY with transform and  */
+/* opacity (radial gradients, no filter blur, no layout, no paint after the  */
+/* first frame). Paused while the tab is hidden; static under reduced motion */
+/* or when the owner turns animation off.                                    */
+/* ------------------------------------------------------------------------ */
+
+.tl-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  contain: strict;
+  background: var(--bd-base);
+}
+
+.tl-bd {
+  position: absolute;
+  display: none;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+}
+
+/* Colour fields: circles that fade to transparent at their edge. Positions
+   and sizes follow the 1440×900 canvas, scaled to the viewport. */
+.tl-bd-a,
+.tl-bd-b,
+.tl-bd-c {
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--c), transparent);
+}
+.tl-bd-a {
+  left: 48.6%;
+  top: -62%;
+  width: clamp(560px, 83vw, 1500px);
+  height: clamp(560px, 83vw, 1500px);
+  --c: var(--bd-indigo);
+}
+.tl-bd-b {
+  left: -29%;
+  top: 35.5%;
+  width: clamp(520px, 76vw, 1380px);
+  height: clamp(520px, 76vw, 1380px);
+  --c: var(--bd-clay);
+}
+.tl-bd-c {
+  left: 69%;
+  top: 46.7%;
+  width: clamp(440px, 62.5vw, 1130px);
+  height: clamp(440px, 62.5vw, 1130px);
+  --c: var(--bd-teal);
+}
+
+.tl-backdrop[data-backdrop="aurora"] .tl-bd-a,
+.tl-backdrop[data-backdrop="aurora"] .tl-bd-b,
+.tl-backdrop[data-backdrop="aurora"] .tl-bd-c,
+.tl-backdrop[data-backdrop="dusk"] .tl-bd-a,
+.tl-backdrop[data-backdrop="dusk"] .tl-bd-b,
+.tl-backdrop[data-backdrop="dusk"] .tl-bd-c {
+  display: block;
+}
+
+.tl-backdrop[data-backdrop="dusk"] {
+  background: var(--bd-dusk);
+}
+.tl-backdrop[data-backdrop="dusk"] .tl-bd-a {
+  --c: var(--bd-violet);
+}
+.tl-backdrop[data-backdrop="dusk"] .tl-bd-b {
+  --c: var(--bd-pink);
+}
+.tl-backdrop[data-backdrop="dusk"] .tl-bd-c {
+  --c: var(--bd-indigo);
+}
+
+/* Grid: a barely-moving dot grid and a soft moving spotlight. */
+.tl-backdrop[data-backdrop="grid"] {
+  background: var(--bd-grid-base);
+}
+.tl-bd-dots {
+  inset: -22px;
+  background: radial-gradient(circle at 1px 1px, var(--bd-dot) 1px, transparent 0) 0 0 / 22px 22px;
+}
+.tl-bd-spot {
+  left: 48.6%;
+  top: -62%;
+  width: clamp(560px, 83vw, 1500px);
+  height: clamp(560px, 83vw, 1500px);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--bd-spot), transparent);
+}
+.tl-backdrop[data-backdrop="grid"] .tl-bd-dots,
+.tl-backdrop[data-backdrop="grid"] .tl-bd-spot {
+  display: block;
+}
+
+.tl-backdrop[data-backdrop="plain"] {
+  background: var(--bd-plain);
+}
+
+@keyframes tl-drift-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-15.3vw, 15.6vh, 0) scale(1.15);
+  }
+  100% {
+    transform: translate3d(-5.6vw, 28.9vh, 0) scale(0.92);
+  }
+}
+@keyframes tl-drift-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(18vw, -13.3vh, 0) scale(0.9);
+  }
+  100% {
+    transform: translate3d(8.3vw, -26.7vh, 0) scale(1.12);
+  }
+}
+@keyframes tl-drift-c {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate3d(-12.5vw, -17.8vh, 0) rotate(40deg) scale(1.2);
+  }
+  100% {
+    transform: translate3d(-22.2vw, 4.4vh, 0) rotate(80deg) scale(0.95);
+  }
+}
+/* A very slow breath on top of the drift. */
+@keyframes tl-breathe {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.78;
+  }
+}
+@keyframes tl-dots {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(22px, 22px, 0);
+  }
+}
+@keyframes tl-spot {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-40vw, 30vh, 0) scale(1.1);
+  }
+  100% {
+    transform: translate3d(-18vw, 62vh, 0) scale(0.9);
+  }
+}
+
+.tl-backdrop[data-animate="on"] .tl-bd-a {
+  animation:
+    tl-drift-a 36s ease-in-out infinite alternate,
+    tl-breathe 17s ease-in-out -4s infinite alternate;
+}
+.tl-backdrop[data-animate="on"] .tl-bd-b {
+  animation:
+    tl-drift-b 44s ease-in-out -11s infinite alternate,
+    tl-breathe 23s ease-in-out -9s infinite alternate;
+}
+.tl-backdrop[data-animate="on"] .tl-bd-c {
+  animation:
+    tl-drift-c 30s ease-in-out -7s infinite alternate,
+    tl-breathe 19s ease-in-out -2s infinite alternate;
+}
+.tl-backdrop[data-animate="on"] .tl-bd-dots {
+  animation: tl-dots 90s linear infinite;
+}
+.tl-backdrop[data-animate="on"] .tl-bd-spot {
+  animation: tl-spot 40s ease-in-out infinite alternate;
+}
+
+/* Hidden tab: stop spending frames. */
+.tl-backdrop[data-paused="true"] .tl-bd {
+  animation-play-state: paused;
+}
+.tl-backdrop[data-animate="off"] .tl-bd {
+  will-change: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-backdrop .tl-bd {
+    animation: none !important;
+    will-change: auto;
+  }
+  .tl-pulse,
+  .tl-ping,
+  .tl-shimmer-win,
+  .tl-shimmer-copy,
+  .tl-grow,
+  .tl-float {
+    animation: none !important;
+  }
+  .tl-ping,
+  .tl-shimmer-win {
+    display: none;
+  }
 }

@@ -68,7 +68,13 @@ const state = (over: Partial<AppState> = {}): AppState => ({
   pendingSignIn: null,
   error: null,
   localPaused: false,
-  settings: { autoStart: true, notifications: true },
+  settings: {
+    autoStart: true,
+    notifications: true,
+    theme: "system",
+    backdrop: "dusk",
+    animate: true,
+  },
   ...over,
 });
 
@@ -227,7 +233,15 @@ describe("notifications", () => {
     expect(
       notificationFor(
         { type: "task", outcome: "completed", title: "x", conversation: "y" },
-        state({ settings: { autoStart: true, notifications: false } }),
+        state({
+          settings: {
+            autoStart: true,
+            notifications: false,
+            theme: "system",
+            backdrop: "dusk",
+            animate: true,
+          },
+        }),
       ),
     ).toBeNull();
   });
@@ -303,10 +317,10 @@ describe("desktop settings", () => {
     dir = mkdtempSync(join(tmpdir(), "tl-settings-"));
     expect(loadSettings(dir)).toEqual(DEFAULT_SETTINGS);
     expect(saveSettings(dir, { notifications: false })).toEqual({
-      autoStart: true,
+      ...DEFAULT_SETTINGS,
       notifications: false,
     });
-    expect(loadSettings(dir)).toEqual({ autoStart: true, notifications: false });
+    expect(loadSettings(dir)).toEqual({ ...DEFAULT_SETTINGS, notifications: false });
   });
 });
 

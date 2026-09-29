@@ -32,17 +32,178 @@ const planSaving = new Set();
 /** Which agent's settings Agents shows. Claude Code first: it has the most. */
 let agentTab = "claude-code";
 
+// ------------------------------------------------------------------ icons
+
+/**
+ * Lucide icons (https://lucide.dev, ISC licence — see LUCIDE-LICENSE.txt),
+ * inlined as data and built with DOM APIs: never innerHTML. A string is a
+ * path's `d`; an array is [tag, attributes].
+ */
+const ICONS = {
+  house: [
+    "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8",
+    "M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  ],
+  "messages-square": [
+    "M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z",
+    "M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1",
+  ],
+  bot: [
+    "M12 8V4H8",
+    ["rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }],
+    "M2 14h2",
+    "M20 14h2",
+    "M15 13v2",
+    "M9 13v2",
+  ],
+  bell: [
+    "M10.268 21a2 2 0 0 0 3.464 0",
+    "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326",
+  ],
+  monitor: [
+    ["rect", { width: 20, height: 14, x: 2, y: 3, rx: 2 }],
+    ["line", { x1: 8, x2: 16, y1: 21, y2: 21 }],
+    ["line", { x1: 12, x2: 12, y1: 17, y2: 21 }],
+  ],
+  "folder-kanban": [
+    "M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z",
+    "M8 10v4",
+    "M12 10v2",
+    "M16 10v6",
+  ],
+  folder: [
+    "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+  ],
+  "settings-2": [
+    "M20 7h-9",
+    "M14 17H5",
+    ["circle", { cx: 17, cy: 17, r: 3 }],
+    ["circle", { cx: 7, cy: 7, r: 3 }],
+  ],
+  search: [["circle", { cx: 11, cy: 11, r: 8 }], "m21 21-4.3-4.3"],
+  "square-pen": [
+    "M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7",
+    "M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z",
+  ],
+  "chevrons-up-down": ["m7 15 5 5 5-5", "m7 9 5-5 5 5"],
+  "chevron-right": ["m9 18 6-6-6-6"],
+  "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], "M9 3v18"],
+  "panel-right": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], "M15 3v18"],
+  pause: [
+    ["rect", { x: 14, y: 4, width: 4, height: 16, rx: 1 }],
+    ["rect", { x: 6, y: 4, width: 4, height: 16, rx: 1 }],
+  ],
+  play: ["M6 3 20 12 6 21 6 3z"],
+  "rotate-ccw": ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
+  "file-text": [
+    "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z",
+    "M14 2v4a2 2 0 0 0 2 2h4",
+    "M10 9H8",
+    "M16 13H8",
+    "M16 17H8",
+  ],
+  activity: [
+    "M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2",
+  ],
+  "shield-check": [
+    "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+    "m9 12 2 2 4-4",
+  ],
+  reply: [["polyline", { points: "9 17 4 12 9 7" }], "M20 18v-2a4 4 0 0 0-4-4H4"],
+  "triangle-alert": [
+    "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3",
+    "M12 9v4",
+    "M12 17h.01",
+  ],
+  check: ["M20 6 9 17l-5-5"],
+  wrench: [
+    "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
+  ],
+  x: ["M18 6 6 18", "m6 6 12 12"],
+  "arrow-down": ["M12 5v14", "m19 12-7 7-7-7"],
+  logo: ["M9 7H7a5 5 0 0 0 0 10h2", "M15 7h2a5 5 0 0 1 0 10h-2", "M8 12h8"],
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** One Lucide icon as an inline SVG element (decorative: aria-hidden). */
+function icon(name, size = 16, strokeWidth = 2) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of [
+    ["width", size],
+    ["height", size],
+    ["viewBox", "0 0 24 24"],
+    ["fill", "none"],
+    ["stroke", "currentColor"],
+    ["stroke-width", strokeWidth],
+    ["stroke-linecap", "round"],
+    ["stroke-linejoin", "round"],
+    ["aria-hidden", "true"],
+    ["focusable", "false"],
+  ])
+    svg.setAttribute(k, String(v));
+  for (const part of ICONS[name] ?? []) {
+    const [tag, attrs] = typeof part === "string" ? ["path", { d: part }] : part;
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+    svg.append(node);
+  }
+  return svg;
+}
+
+// ------------------------------------------------------------- appearance
+
+const THEMES = ["system", "light", "dark"];
+const BACKDROPS = ["aurora", "dusk", "grid", "none"];
+const darkQuery =
+  typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+
+/**
+ * Theme (the OS unless overridden), backdrop and motion, from this device's
+ * settings. Cheap: three attributes on <html>, no re-render.
+ */
+function applyAppearance() {
+  const root = document.documentElement;
+  const s = state?.settings ?? {};
+  const theme = THEMES.includes(s.theme) ? s.theme : "system";
+  const dark = theme === "dark" || (theme === "system" && darkQuery?.matches === true);
+  root.classList.toggle("dark", dark);
+  root.dataset.backdrop = BACKDROPS.includes(s.backdrop) ? s.backdrop : "dusk";
+  root.classList.toggle("bg-still", s.animate === false);
+  root.classList.toggle("bg-paused", document.visibilityState === "hidden");
+}
+
+darkQuery?.addEventListener?.("change", () => applyAppearance());
+// Hidden or minimised: every animation pauses (the compositor goes idle).
+document.addEventListener("visibilitychange", () =>
+  document.documentElement.classList.toggle("bg-paused", document.visibilityState === "hidden"),
+);
+
+/** Changes an appearance setting now, then saves it through main (validated there). */
+function setAppearance(patch) {
+  state = { ...state, settings: { ...(state?.settings ?? {}), ...patch } };
+  applyAppearance();
+  void api.setSettings?.(patch);
+}
+
 const el = (id) => document.getElementById(id);
 const tpl = (name) => document.getElementById(`tpl-${name}`).content.cloneNode(true);
 
+/** The same places as ThreadLink on the web (0.11 §9), plus This computer. */
 const SECTIONS = [
-  { id: "home", label: "Home", title: "Home" },
-  { id: "chats", label: "Chats", title: "Chats" },
-  { id: "agents", label: "Agents", title: "Agents" },
-  { id: "runtime", label: "This computer", title: "This computer" },
-  { id: "notifications", label: "Notifications", title: "Notifications" },
-  { id: "settings", label: "Settings", title: "Settings" },
+  { id: "home", label: "Home", title: "Home", icon: "house" },
+  { id: "chats", label: "Chats", title: "Chats", icon: "messages-square" },
+  { id: "agents", label: "Agents", title: "Agents", icon: "bot" },
+  { id: "notifications", label: "Notifications", title: "Notifications", icon: "bell" },
+  { id: "runtime", label: "This computer", title: "This computer", icon: "monitor" },
+  { id: "projects", label: "Projects", title: "Projects", icon: "folder-kanban" },
+  { id: "settings", label: "Settings", title: "Settings", icon: "settings-2" },
 ];
+
+/** Sidebar state: collapsed (the inset's toggle), chats sub-list open, search text. */
+const sidebar = { collapsed: false, chatsOpen: true, filter: "" };
 
 /**
  * The three ways a request can run, in words that are true. None of them opens
@@ -133,17 +294,19 @@ function conversationStatus(c) {
 
 function render() {
   if (!state) return;
+  applyAppearance();
   const status = statusOf(state);
   el("status-title").textContent = status.title;
-  el("status-dot").className = `dot ${status.tone}`;
+  el("status-dot").className = `ping ${PING_TONE[status.tone] ?? "off"}`;
   el("rail-status").textContent = status.title;
   el("rail-dot").className = `dot ${status.tone}`;
   el("footer-detail").textContent = state.error ?? state.notice ?? status.detail ?? "";
 
   // An open chat is never rebuilt by a state snapshot: its timeline grows by
-  // appending (see the chat section). Only the chrome above is refreshed.
-  if (section === "chat" && chatView.mounted && state.signedIn && !state.pendingSignIn) {
+  // appending (see the chat section). Only the chrome around it is refreshed.
+  if (section === "chats" && chatView.mounted && state.signedIn && !state.pendingSignIn) {
     renderNav();
+    if (chatView.drawer === "progress") renderDrawer();
     return;
   }
   stopChat();
@@ -152,6 +315,7 @@ function render() {
   const mine = ++pass;
   const solo = (render) => {
     el("shell").className = "shell solo";
+    el("shell").classList.remove("sidebar-collapsed");
     el("page-title").textContent = "ThreadLink";
     el("page-sub").textContent = "";
     render();
@@ -161,16 +325,17 @@ function render() {
   if (why) return solo(() => renderReconnect(why));
   if (!state.signedIn) return solo(renderSignIn);
 
-  el("shell").className = "shell";
+  // An open chat is one screen with one scrolling timeline: no page header, no footer.
+  el("shell").className = section === "chats" && chatView.id ? "shell chat-route" : "shell";
+  el("shell").classList.toggle("sidebar-collapsed", sidebar.collapsed);
   renderNav();
   const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
-  el("page-title").textContent =
-    section === "attach" ? "Attach a conversation" : section === "chat" ? "Chat" : current.title;
+  el("page-title").textContent = section === "attach" ? "Attach a conversation" : current.title;
   el("page-sub").textContent = subtitleFor();
-  if (section === "chat") return renderChat();
   if (section === "attach") return void renderAttach(mine);
   if (section === "agents") return renderAgents();
   if (section === "chats") return renderChats();
+  if (section === "projects") return renderProjects();
   if (section === "runtime") return renderRuntime();
   if (section === "notifications") return renderNotifications();
   if (section === "settings") return renderSettings();
@@ -181,39 +346,279 @@ function subtitleFor() {
   const snap = state.snapshot;
   if (section === "home") return snap?.runtime?.label ?? snap?.identity?.label ?? "";
   if (section === "agents") return state.agentsLine ?? "";
-  if (section === "chats") {
-    const running = workOf(state).reduce((n, g) => n + g.running, 0);
-    return running ? `${running} running on this computer` : "Your chats and the work they run";
-  }
+  if (section === "projects") return "Each project runs on one computer";
   if (section === "runtime") return snap?.identity?.platform ?? "";
   return "";
 }
 
-function renderNav() {
+/** Status tone → ping dot class. */
+const PING_TONE = { ready: "", busy: "run", warn: "wait", off: "off" };
+
+/** A sidebar item button (shadcn inset sidebar). */
+function sbItem(id, label, iconName) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "sb-item nav-item";
+  b.dataset.section = id;
+  b.append(icon(iconName));
+  const text = document.createElement("span");
+  text.className = "sb-text";
+  text.textContent = label;
+  b.append(text);
+  const here = id === section || (section === "attach" && id === "agents");
+  b.setAttribute("aria-current", here ? "true" : "false");
+  return b;
+}
+
+/** The parts of the sidebar built once (the search keeps focus across updates). */
+function ensureSidebarTop() {
   const nav = el("nav");
+  if (el("sb-search")) return nav;
   nav.replaceChildren();
-  const waiting = state.snapshot?.pendingLinks?.length ?? 0;
-  for (const s of SECTIONS) {
-    const button = document.createElement("button");
-    button.type = "button";
-    const label = document.createElement("span");
-    label.textContent = s.label;
-    button.append(label);
-    if (s.id === "home" && waiting) {
-      const count = document.createElement("span");
-      count.className = "count";
-      count.textContent = String(waiting);
-      button.append(count);
+  const switcher = document.createElement("button");
+  switcher.type = "button";
+  switcher.className = "sb-switcher";
+  switcher.title = "This computer";
+  const logo = document.createElement("span");
+  logo.className = "sb-logo";
+  logo.append(icon("logo", 17, 2.2));
+  const names = document.createElement("span");
+  names.className = "sb-names";
+  const b = document.createElement("b");
+  b.textContent = "ThreadLink";
+  const where = document.createElement("small");
+  where.id = "sb-where";
+  names.append(b, where);
+  const chev = icon("chevrons-up-down");
+  chev.classList.add("sb-chevron");
+  switcher.append(logo, names, chev);
+  switcher.addEventListener("click", () => go("runtime"));
+
+  const top = document.createElement("div");
+  top.className = "sb-top";
+  const search = document.createElement("label");
+  search.className = "sb-search";
+  search.append(icon("search", 15));
+  const input = document.createElement("input");
+  input.id = "sb-search";
+  input.type = "search";
+  input.placeholder = "Search chats";
+  input.setAttribute("aria-label", "Search chats");
+  input.maxLength = 100;
+  input.addEventListener("input", () => {
+    sidebar.filter = input.value.trim().toLowerCase();
+    if (sidebar.filter) sidebar.chatsOpen = true;
+    renderNav();
+  });
+  const kbd = document.createElement("kbd");
+  kbd.textContent = "Ctrl K";
+  search.append(input, kbd);
+  const newChat = document.createElement("button");
+  newChat.type = "button";
+  newChat.id = "sb-new-chat";
+  newChat.className = "sb-item";
+  newChat.append(icon("square-pen"));
+  const nt = document.createElement("span");
+  nt.className = "sb-text";
+  nt.textContent = "New chat";
+  newChat.append(nt);
+  newChat.addEventListener("click", () => {
+    chatView.id = null;
+    go("chats");
+    toggleNewChat(true);
+  });
+  top.append(search, newChat);
+
+  const groups = document.createElement("div");
+  groups.id = "sb-groups";
+  groups.className = "stack tight";
+  const spacer = document.createElement("div");
+  spacer.className = "sb-spacer";
+  const foot = document.createElement("div");
+  foot.id = "sb-foot";
+  foot.className = "sb-foot";
+  nav.append(switcher, top, groups, spacer, foot);
+  return nav;
+}
+
+/** The chats sub-list under Chats: active row, status dot with ring, unread pill. */
+function sidebarChats() {
+  const box = document.createElement("div");
+  box.className = "sb-subs";
+  const rows = chatList.rows.filter(
+    (r) => !sidebar.filter || r.name.toLowerCase().includes(sidebar.filter),
+  );
+  for (const r of rows.slice(0, 12)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `sb-sub${r.unread ? " unread" : ""}`;
+    b.setAttribute(
+      "aria-current",
+      r.chatId === chatView.id && section === "chats" ? "true" : "false",
+    );
+    const t = document.createElement("span");
+    t.className = "sb-text";
+    t.textContent = r.name;
+    b.append(t);
+    if (r.unread) {
+      const pill = document.createElement("span");
+      pill.className = "sb-pill";
+      pill.setAttribute("aria-label", "Unread");
+      pill.textContent = String(Math.min(Math.max(r.unreadCount ?? 1, 1), 99));
+      b.append(pill);
+    } else if (r.state !== "Ready") {
+      const dot = document.createElement("span");
+      dot.className = `sb-dot ${r.state === "Working" ? "run" : "wait"}`;
+      dot.title = r.state;
+      b.append(dot);
     }
-    const here =
-      s.id === section ||
-      (section === "attach" && s.id === "agents") ||
-      (section === "chat" && s.id === "chats");
-    button.setAttribute("aria-current", here ? "true" : "false");
-    button.addEventListener("click", () => go(s.id));
-    nav.append(button);
+    b.addEventListener("click", () => openChat(r.chatId));
+    box.append(b);
+  }
+  if (!rows.length) {
+    const none = document.createElement("div");
+    none.className = "sb-meta";
+    none.textContent = sidebar.filter ? "No chats match" : "No chats yet";
+    box.append(none);
+  } else if (rows.length > 12) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "sb-sub";
+    more.textContent = `All ${rows.length} chats`;
+    more.addEventListener("click", () => {
+      chatView.id = null;
+      go("chats");
+    });
+    box.append(more);
+  }
+  return box;
+}
+
+function renderNav() {
+  ensureSidebarTop();
+  const host =
+    state.host?.label ?? state.snapshot?.runtime?.label ?? state.snapshot?.identity?.label;
+  el("sb-where").textContent = host ? `${host} · this computer` : "This computer";
+  const waiting = state.snapshot?.pendingLinks?.length ?? 0;
+
+  const groups = el("sb-groups");
+  groups.replaceChildren();
+  const workspace = document.createElement("div");
+  workspace.className = "sb-group";
+  const label = document.createElement("div");
+  label.className = "sb-label";
+  label.textContent = "Workspace";
+  workspace.append(label);
+  for (const s of SECTIONS.filter((x) => !["projects", "settings"].includes(x.id))) {
+    const b = sbItem(s.id, s.label, s.icon);
+    const count =
+      s.id === "home" ? waiting : s.id === "notifications" ? chatList.needsYou.length : 0;
+    if (s.id === "chats") {
+      if (chatList.unread) {
+        const pill = document.createElement("span");
+        pill.className = "sb-pill count";
+        pill.textContent = String(Math.min(chatList.unread, 99));
+        b.append(pill);
+      }
+      const chev = icon("chevron-right", 15);
+      chev.classList.add("sb-chevron");
+      if (sidebar.chatsOpen) chev.classList.add("open");
+      b.append(chev);
+      b.setAttribute("aria-expanded", sidebar.chatsOpen ? "true" : "false");
+      b.addEventListener("click", () => {
+        if (section === "chats" && !chatView.id) sidebar.chatsOpen = !sidebar.chatsOpen;
+        else sidebar.chatsOpen = true;
+        chatView.id = null;
+        go("chats");
+      });
+      workspace.append(b);
+      if (sidebar.chatsOpen) workspace.append(sidebarChats());
+      continue;
+    }
+    if (count) {
+      const c = document.createElement("span");
+      c.className = s.id === "home" ? "sb-pill count" : "sb-meta count";
+      c.textContent = String(Math.min(count, 99));
+      b.append(c);
+    }
+    if (s.id === "runtime") {
+      const dot = document.createElement("span");
+      const tone = statusOf(state).tone;
+      dot.className = `ping ${PING_TONE[tone] ?? "off"}`;
+      dot.title = statusOf(state).title;
+      b.append(dot);
+    }
+    b.addEventListener("click", () => go(s.id));
+    workspace.append(b);
+  }
+
+  const projects = document.createElement("div");
+  projects.className = "sb-group";
+  const pl = sbItem("projects", "Projects", "folder-kanban");
+  pl.addEventListener("click", () => go("projects"));
+  projects.append(pl);
+  for (const p of chatList.projects.slice(0, 5)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-item";
+    b.append(icon("folder"));
+    const t = document.createElement("span");
+    t.className = "sb-text";
+    t.textContent = p.name;
+    b.append(t);
+    b.addEventListener("click", () => go("projects"));
+    projects.append(b);
+  }
+  groups.append(workspace, projects);
+
+  const foot = el("sb-foot");
+  foot.replaceChildren();
+  const settings = sbItem("settings", "Settings", "settings-2");
+  settings.addEventListener("click", () => go("settings"));
+  const user = document.createElement("button");
+  user.type = "button";
+  user.className = "sb-user";
+  const account = state.baseUrl ? hostOf(state.baseUrl) : "ThreadLink";
+  const avatar = document.createElement("span");
+  avatar.className = "sb-logo";
+  avatar.textContent = (account[0] ?? "T").toUpperCase();
+  const names = document.createElement("span");
+  names.className = "sb-names";
+  const b = document.createElement("b");
+  b.textContent = "Signed in";
+  const small = document.createElement("small");
+  small.textContent = account;
+  names.append(b, small);
+  const chev = icon("chevrons-up-down");
+  chev.classList.add("sb-chevron");
+  user.append(avatar, names, chev);
+  user.addEventListener("click", () => go("settings"));
+  foot.append(settings, user);
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "ThreadLink";
   }
 }
+
+function toggleSidebar() {
+  sidebar.collapsed = !sidebar.collapsed;
+  el("shell").classList.toggle("sidebar-collapsed", sidebar.collapsed);
+}
+
+document.addEventListener("keydown", (e) => {
+  // Ctrl/Cmd+K: search chats in the sidebar.
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") {
+    const input = el("sb-search");
+    if (!input) return;
+    e.preventDefault();
+    if (sidebar.collapsed) toggleSidebar();
+    input.focus();
+  }
+});
 
 function go(next) {
   // Agents always re-reads the plan from ThreadLink when it is opened.
@@ -222,7 +627,7 @@ function go(next) {
     for (const k of Object.keys(planNote)) delete planNote[k];
     for (const k of Object.keys(planDraft)) delete planDraft[k];
   }
-  if (next !== "chat") stopChat();
+  stopChat();
   section = next;
   changing = null;
   render();
@@ -267,22 +672,53 @@ function renderHome() {
   view.append(tpl("home"));
   renderLinkRequests();
   renderSummary(el("home-summary"));
-  renderHealth(el("home-health"));
+  renderPresence(el("home-presence"));
   renderChatRows(el("home-chat-list"), { limit: HOME_CHATS });
   el("home-chats").addEventListener("click", () => go("chats"));
+  el("home-new-chat").addEventListener("click", () => {
+    go("chats");
+    toggleNewChat(true);
+  });
+}
 
-  const recent = el("home-activity");
-  recent.replaceChildren(
-    activityList(activityOf(state), {
-      withConversation: true,
-      limit: HOME_FEED_LIMIT,
-      emptyText: "No activity yet. When a task runs, what it did shows up here.",
-    }),
-  );
-  el("home-activity-dashboard").addEventListener("click", () => api.openDashboard());
-
-  el("mcp-url").textContent = `${state.baseUrl}/mcp`;
-  bindCopy(el("copy-mcp"), () => `${state.baseUrl}/mcp`);
+/**
+ * Presence as three separate things (§4): You (this app's own connection),
+ * and this computer as an execution host. Never one for the other.
+ */
+function renderPresence(node) {
+  if (!node) return;
+  node.replaceChildren();
+  const snap = state.snapshot;
+  const working = workOf(state).some((g) => g.running > 0);
+  const server = chatList.computer;
+  const local =
+    snap?.status === "online"
+      ? working
+        ? "Working"
+        : "Online"
+      : snap?.status === "paused"
+        ? "Paused"
+        : snap?.status === "offline"
+          ? "Reconnecting"
+          : "Starting";
+  const hostWord = server?.presence ? PRESENCE_WORD[server.presence] : local;
+  for (const [text, tone] of [
+    [youText(), you.ok === false ? "warn" : you.ok ? "ready" : "off"],
+    [
+      `This computer · ${hostWord}`,
+      hostWord === "Working" ? "busy" : hostWord === "Online" ? "ready" : "warn",
+    ],
+  ]) {
+    const line = document.createElement("span");
+    line.className = "presence";
+    const dot = document.createElement("span");
+    dot.className = `dot ${tone}`;
+    dot.setAttribute("aria-hidden", "true");
+    const t = document.createElement("span");
+    t.textContent = text;
+    line.append(dot, t);
+    node.append(line);
+  }
 }
 
 /** Who can work right now: Team Mode's view if it has one, else the classic providers. */
@@ -331,7 +767,12 @@ function renderSummary(node) {
       tone: host?.updateRequired ? "warn" : "ready",
       go: "runtime",
     },
-    { label: "Chats running", value: String(running), tone: running ? "run" : "", go: "chats" },
+    {
+      label: "Running on this computer",
+      value: String(running),
+      tone: running ? "run" : "",
+      go: "runtime",
+    },
     {
       label: "Needs attention",
       value: needs ? String(needs) : "Nothing",
@@ -829,12 +1270,15 @@ function renderRuntime() {
   const snap = state.snapshot;
   const paused = state.localPaused || snap?.runtime?.paused;
   const host = state.host ?? {};
+  const name = host.label ?? snap?.runtime?.label ?? snap?.identity?.label ?? "This computer";
+  el("pc-name").textContent = name;
   kv(el("runtime-kv"), [
-    ["Name", host.label ?? snap?.runtime?.label ?? snap?.identity?.label ?? "—"],
+    ["Name", name],
+    ["Service", youText().replace("You · ", "")],
     ["Computer", host.platform ?? snap?.identity?.platform ?? "—"],
     ["State", paused ? "Paused" : host.online ? "Online" : statusOf(state).title],
-    ["Agents", state.agentsLine ?? "—"],
     ["Last check-in", snap?.lastHeartbeatAt ? ago(snap.lastHeartbeatAt) : "connecting"],
+    ["Start at login", state.settings?.autoStart ? "On" : "Off"],
     ["ThreadLink Runtime", host.version ? `Version ${host.version}` : "—"],
     [
       "Protocol",
@@ -849,24 +1293,65 @@ function renderRuntime() {
     if (state.baseUrl) api.openExternal(`${state.baseUrl}/download`);
     else api.openDashboard();
   });
-  el("open-logs").addEventListener("click", () => api.openLogs?.());
+  const logs = el("open-logs");
+  logs.prepend(icon("file-text", 14));
+  logs.addEventListener("click", () => api.openLogs?.());
   const pause = el("pause");
-  pause.textContent = paused ? "Resume" : "Pause";
+  pause.prepend(icon(paused ? "play" : "pause", 14));
+  pause.querySelector(".btn-label").textContent = paused ? "Resume" : "Pause";
   pause.addEventListener("click", () => api.setPaused(!paused));
-  el("restart").addEventListener("click", () => api.restart());
+  const restart = el("restart");
+  restart.prepend(icon("rotate-ccw", 14));
+  restart.addEventListener("click", () => api.restart());
 
+  renderPresence(el("runtime-presence"));
+  ensureChatList();
+  renderStats(el("runtime-stats"), { paused, host });
+
+  // Work this computer is running for your chats, with honest stages.
+  const work = el("runtime-work");
+  work.replaceChildren();
+  const groups = workOf(state);
+  if (!groups.length)
+    work.append(
+      empty("Nothing running here right now. Work from your chats shows up here while it runs."),
+    );
+  for (const group of groups) work.append(chatGroup(group));
+
+  el("requests-dashboard").addEventListener("click", () => api.openDashboard());
+  // What ran for linked controller conversations (safe fields only).
+  el("runtime-requests").replaceChildren(
+    activityList(activityOf(state), {
+      withConversation: true,
+      limit: HOME_FEED_LIMIT,
+      emptyText: "No requests yet. When a linked conversation sends one, it shows up here.",
+    }),
+  );
+
+  // Folder names only: paths stay under Advanced.
   const workspaces = el("workspaces");
   workspaces.replaceChildren();
   if (!(snap?.workspaces ?? []).length) workspaces.append(empty("No project folders yet."));
   for (const w of snap?.workspaces ?? []) {
-    workspaces.append(
-      row(
-        w.name,
-        w.exists ? "Folder found" : "Folder missing — choose it again",
-        null,
-        `${w.conversations.length} attached`,
-      ),
+    const item = document.createElement("div");
+    item.className = "item folder-row";
+    const glyph = icon("folder");
+    glyph.classList.add("row-icon");
+    const body = document.createElement("div");
+    body.className = "item-body";
+    const t = document.createElement("div");
+    t.className = "title";
+    t.textContent = w.name;
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = `${w.conversations.length} attached`;
+    body.append(t, m);
+    item.append(
+      glyph,
+      body,
+      pill(w.exists ? "Linked" : "Folder missing — choose it again", w.exists ? "ok" : "warn"),
     );
+    workspaces.append(item);
   }
 
   copyRows(el("runtime-advanced"), [
@@ -883,6 +1368,103 @@ function renderRuntime() {
   ]);
 }
 
+/** "Up to date" / "Linked" pills. */
+function pill(text, tone) {
+  const p = document.createElement("span");
+  p.className = `pill ${tone}`;
+  p.textContent = text;
+  return p;
+}
+
+/** The three stat cards: Status (ping + beat line), ThreadLink app, Agents here. */
+function renderStats(node, { paused, host }) {
+  if (!node) return;
+  node.replaceChildren();
+  const card = (label, iconName) => {
+    const c = document.createElement("div");
+    c.className = "stat";
+    const head = document.createElement("div");
+    head.className = "stat-label";
+    const l = document.createElement("span");
+    l.textContent = label;
+    head.append(l, icon(iconName));
+    c.append(head);
+    return c;
+  };
+  const running = workOf(state).reduce((n, g) => n + g.running, 0);
+  const tone = statusOf(state).tone;
+  const word = paused
+    ? "Paused"
+    : running
+      ? "Working"
+      : state.snapshot?.status === "online"
+        ? "Online"
+        : state.snapshot?.status === "offline"
+          ? "Reconnecting"
+          : "Starting";
+  const status = card("Status", "activity");
+  const value = document.createElement("div");
+  value.className = "stat-value";
+  const dot = document.createElement("span");
+  dot.className = `ping ${running ? "run" : (PING_TONE[tone] ?? "off")}`;
+  const w = document.createElement("span");
+  w.textContent = word;
+  value.append(dot, w);
+  const note = document.createElement("div");
+  note.className = "stat-note";
+  note.textContent = `${running ? `${running} running` : "Nothing running"} · ${
+    state.snapshot?.lastHeartbeatAt ? `seen ${ago(state.snapshot.lastHeartbeatAt)}` : "connecting"
+  }`;
+  status.append(value, note);
+  if (running) {
+    const beat = document.createElement("div");
+    beat.className = "beat";
+    beat.setAttribute("aria-hidden", "true");
+    status.append(beat);
+  }
+
+  const app = card("ThreadLink app", "shield-check");
+  const v = document.createElement("div");
+  v.className = "stat-value";
+  v.textContent = host.version ?? "—";
+  const n2 = document.createElement("div");
+  n2.className = "stat-note";
+  n2.append(
+    pill(host.updateRequired ? "Update needed" : "Up to date", host.updateRequired ? "warn" : "ok"),
+    document.createTextNode(
+      host.protocol === null || host.protocol === undefined ? "" : ` protocol ${host.protocol}`,
+    ),
+  );
+  app.append(v, n2);
+
+  const agents = card("Agents here", "bot");
+  const views = healthOf(state);
+  const ready = views.filter((h) => h.fresh === "ready" || (!h.fresh && h.health === "ready"));
+  const row = document.createElement("div");
+  row.className = "stat-value";
+  for (const h of views) {
+    const a = document.createElement("span");
+    a.className = `agent-chip${ready.includes(h) ? "" : " dim"}`;
+    a.dataset.provider = h.provider;
+    a.textContent = h.provider === "codex" ? "X" : "C";
+    a.title = h.line;
+    row.append(a);
+  }
+  const count = document.createElement("span");
+  count.textContent = `${ready.length} of ${views.length} ready`;
+  row.append(count);
+  agents.append(row);
+  const exhausted = views.find((h) => h.health === "usage_exhausted");
+  const problem = exhausted ?? views.find((h) => h.tone === "fail");
+  const n3 = document.createElement("div");
+  n3.className = `stat-note${problem ? " warn" : ""}`;
+  n3.textContent = problem
+    ? `${problem.line}${exhausted?.resetsAt ? ` · resets ${resetText(exhausted.resetsAt)}` : ""}`
+    : "All agents ready";
+  agents.append(n3);
+  node.append(status, app, agents);
+}
+
 // ----------------------------------------------------- notifications, settings
 
 function renderNotifications() {
@@ -891,22 +1473,215 @@ function renderNotifications() {
   el("set-notifications").addEventListener("change", (e) =>
     api.setSettings({ notifications: e.target.checked }),
   );
+  ensureChatList();
+  const needs = el("needs-you");
+  needs.replaceChildren();
+  const links = state.snapshot?.pendingLinks?.length ?? 0;
+  if (links) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "item chat-row";
+    b.textContent = `${links} link request${links === 1 ? "" : "s"} waiting for you on Home`;
+    b.addEventListener("click", () => go("home"));
+    needs.append(b);
+  }
+  for (const r of chatList.needsYou) needs.append(chatRowNode(r));
+  if (!needs.children.length) needs.append(empty("Nothing needs you right now."));
+  const unread = el("unread-chats");
+  unread.replaceChildren();
+  const rows = chatList.rows.filter((r) => r.unread && r.state !== "Needs you");
+  for (const r of rows.slice(0, 20)) unread.append(chatRowNode(r));
+  if (!rows.length) unread.append(empty("You are all caught up."));
+}
+
+// ---------------------------------------------------------------- projects
+
+function renderProjects() {
+  view.append(tpl("projects"));
+  ensureChatList();
+  const list = el("project-list");
+  list.replaceChildren();
+  if (!chatList.projects.length) {
+    list.append(
+      empty(
+        chatList.loadedAt
+          ? "No projects yet. Create one in ThreadLink on the web, then run it on this computer."
+          : "Loading your projects…",
+      ),
+    );
+    return;
+  }
+  for (const p of chatList.projects) {
+    const card = document.createElement("section");
+    card.className = "card stack project";
+    const head = document.createElement("div");
+    head.className = "card-head";
+    const h = document.createElement("h2");
+    h.textContent = p.name;
+    head.append(h);
+    if (p.runsOn) head.append(badge(`Runs on ${p.runsOn}`, p.thisComputer ? "ready" : "mode"));
+    card.append(head);
+    const chats = document.createElement("div");
+    chats.className = "stack tight";
+    for (const r of p.chats) chats.append(chatRowNode(r));
+    if (!p.chats.length) chats.append(empty("No chats in this project yet."));
+    card.append(chats);
+    list.append(card);
+  }
+}
+
+/** A segmented radio group (built with DOM APIs, one change per click). */
+function segmented(node, name, options, value, onChange) {
+  node.replaceChildren();
+  for (const [v, label] of options) {
+    const l = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = name;
+    input.value = v;
+    input.checked = v === value;
+    input.addEventListener("change", () => onChange(v));
+    const t = document.createElement("span");
+    t.textContent = label;
+    l.append(input, t);
+    node.append(l);
+  }
+}
+
+function renderAppearance() {
+  const s = state.settings ?? {};
+  segmented(
+    el("set-theme"),
+    "theme",
+    [
+      ["system", "System"],
+      ["light", "Light"],
+      ["dark", "Dark"],
+    ],
+    THEMES.includes(s.theme) ? s.theme : "system",
+    (theme) => setAppearance({ theme }),
+  );
+  segmented(
+    el("set-backdrop"),
+    "backdrop",
+    [
+      ["aurora", "Aurora"],
+      ["dusk", "Dusk"],
+      ["grid", "Grid"],
+      ["none", "Plain"],
+    ],
+    BACKDROPS.includes(s.backdrop) ? s.backdrop : "dusk",
+    (backdrop) => setAppearance({ backdrop }),
+  );
+  const animate = el("set-animate");
+  animate.checked = s.animate !== false;
+  animate.addEventListener("change", () => setAppearance({ animate: animate.checked }));
 }
 
 function renderSettings() {
   view.append(tpl("settings"));
+  renderAppearance();
   el("set-autostart").checked = state.settings.autoStart;
   el("set-autostart").addEventListener("change", (e) =>
     api.setSettings({ autoStart: e.target.checked }),
   );
   el("settings-agents").addEventListener("click", () => go("agents"));
   el("plan-dashboard").addEventListener("click", () => api.openDashboard());
+  renderFailover(el("failover"));
+  el("mcp-url").textContent = `${state.baseUrl}/mcp`;
+  bindCopy(el("copy-mcp"), () => `${state.baseUrl}/mcp`);
   copyRows(el("settings-advanced"), [
     ["ThreadLink address", state.baseUrl],
     ["Connector URL", state.baseUrl ? `${state.baseUrl}/mcp` : null],
     ["This computer", state.snapshot?.identity?.kind],
   ]);
   el("signout").addEventListener("click", () => api.signOut());
+}
+
+/** The failover choice being saved, and what the last save said. */
+const failoverSave = { busy: false, note: null };
+
+/**
+ * When an agent's included usage runs out (§5). Editable here when the
+ * server offers the runtime settings route; otherwise shown, and changed on
+ * the web settings page.
+ */
+function renderFailover(node) {
+  if (!node) return;
+  ensureChatList();
+  node.replaceChildren();
+  const f = chatList.failover;
+  const editable = f?.editable === true && typeof api.setFailover === "function";
+  const options = f?.options ?? [
+    { value: "auto", label: "Continue with another included agent (default)", chosen: false },
+    { value: "ask", label: "Ask me first", chosen: false },
+    { value: "wait", label: "Wait for the same agent", chosen: false },
+  ];
+  const list = document.createElement("div");
+  list.className = "modes failover-options";
+  list.setAttribute("role", "radiogroup");
+  for (const o of options) {
+    const row = document.createElement("label");
+    row.className = `mode-option${o.chosen ? " chosen" : ""}`;
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "failover";
+    input.value = o.value;
+    input.checked = o.chosen;
+    input.disabled = !editable || failoverSave.busy;
+    input.addEventListener("change", () => void saveFailover(o.value));
+    const name = document.createElement("span");
+    name.className = "mode-name";
+    name.textContent = o.label;
+    row.append(input, name);
+    list.append(row);
+  }
+  node.append(list);
+  if (failoverSave.note) {
+    const note = document.createElement("p");
+    note.className = `small failover-note ${failoverSave.note.ok ? "ok-text" : "danger-text"}`;
+    note.setAttribute("role", "status");
+    note.textContent = failoverSave.note.text;
+    node.append(note);
+  }
+  if (editable) return;
+  const why = document.createElement("p");
+  why.className = "muted small";
+  why.textContent = "Change in ThreadLink web settings.";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "ghost small-btn";
+  open.id = "failover-web";
+  open.textContent = "Change in ThreadLink web settings";
+  open.addEventListener("click", () => {
+    if (state.baseUrl) api.openExternal(`${state.baseUrl}/dashboard/settings`);
+    else api.openDashboard();
+  });
+  node.append(why, open);
+}
+
+async function saveFailover(value) {
+  if (failoverSave.busy) return;
+  failoverSave.busy = true;
+  failoverSave.note = null;
+  let res = null;
+  try {
+    res = await api.setFailover(value);
+  } catch {
+    res = null;
+  }
+  noteRequest(res);
+  failoverSave.busy = false;
+  // Whatever happened, show what ThreadLink now holds, never the request.
+  if (res?.ok && res.failover) {
+    chatList.failover = res.failover;
+    failoverSave.note = { ok: true, text: "Saved" };
+  } else {
+    failoverSave.note = { ok: false, text: "Couldn't save — nothing changed" };
+    chatList.loadedAt = 0;
+    void loadChatList();
+  }
+  if (section === "settings") render();
 }
 
 // -------------------------------------------------------- providers & plans
@@ -1028,7 +1803,23 @@ function healthLine(h) {
     how.textContent = h.instruction;
     line.append(how);
   }
+  // Only when the provider reported it (§5): never an invented reset time.
+  if (h.health === "usage_exhausted" && h.resetsAt) {
+    const when = document.createElement("p");
+    when.className = "small muted health-resets";
+    when.textContent = `Resets ${resetText(h.resetsAt)}`;
+    line.append(when);
+  }
   return line;
+}
+
+function resetText(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const today = new Date().toDateString() === d.toDateString();
+  return today
+    ? `at ${clock(iso)}`
+    : `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} at ${clock(iso)}`;
 }
 
 /** Every provider's health, with one "Check again" for all of them. */
@@ -1306,47 +2097,6 @@ const UNIT_STEP = {
   skipped: "skipped",
 };
 
-function renderChats() {
-  view.append(tpl("chats"));
-  renderChatRows(el("chat-list"), { sections: true });
-  for (const [id, groupBy] of [
-    ["chats-by-recent", "recent"],
-    ["chats-by-project", "project"],
-  ]) {
-    const b = el(id);
-    b.setAttribute("aria-pressed", chatList.groupBy === groupBy ? "true" : "false");
-    b.addEventListener("click", () => {
-      if (chatList.groupBy === groupBy) return;
-      chatList.groupBy = groupBy;
-      chatList.loadedAt = 0;
-      void loadChatList();
-    });
-  }
-  const list = el("chat-groups");
-  list.replaceChildren();
-  const groups = workOf(state);
-  if (!groups.length) {
-    const box = document.createElement("div");
-    box.className = "card stack team-empty";
-    const h = document.createElement("h2");
-    h.textContent = "Nothing running yet";
-    const what = document.createElement("p");
-    what.className = "muted";
-    what.textContent =
-      "Chat with one AI, two AIs, or a team. Work that runs on this computer shows up here, " +
-      "grouped by the chat it belongs to.";
-    const how = document.createElement("p");
-    how.className = "muted small";
-    how.textContent =
-      "Ask your controller (for example ChatGPT), or start a chat in ThreadLink on the web. " +
-      "Its progress shows up here.";
-    box.append(h, what, how);
-    list.append(box);
-    return;
-  }
-  for (const group of groups) list.append(chatGroup(group));
-}
-
 /** One chat (or, for older work with no chat, one room) and its jobs. */
 function chatGroup(group) {
   const card = document.createElement("section");
@@ -1356,8 +2106,26 @@ function chatGroup(group) {
   const h = document.createElement("h2");
   h.className = "chat-name";
   h.textContent = String(group.name ?? "Chat");
-  head.append(h);
-  if (group.running) head.append(badge(`${group.running} running`, "run"));
+  const glyph = icon(group.running ? "wrench" : "messages-square");
+  glyph.classList.add("row-icon", group.running ? "accent" : "plain");
+  const left = document.createElement("div");
+  left.className = "row";
+  left.append(glyph, h);
+  head.append(left);
+  const right = document.createElement("div");
+  right.className = "row";
+  if (group.running) right.append(badge(`${group.running} running`, "run"));
+  const chatId =
+    typeof group.key === "string" && group.key.startsWith("chat:") ? group.key.slice(5) : null;
+  if (chatId && /^tlcht_[0-9a-f]{32}$/.test(chatId)) {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost small-btn";
+    open.textContent = "Open chat";
+    open.addEventListener("click", () => openChat(chatId));
+    right.append(open);
+  }
+  head.append(right);
   card.append(head);
   for (const job of group.jobs ?? []) card.append(teamJob(job));
   return card;
@@ -1711,12 +2479,15 @@ function detachedActivity(attachedRefs) {
   });
 }
 
-// ------------------------------------------------------------ chats (0.10)
+// ------------------------------------------------------------ chats (0.11)
 
 /**
- * The chat list and one open chat, read and written through main's chat API
- * (the same server timeline as the web). Main hands over plain-text views
- * only; everything here is set with textContent.
+ * Chats: the same product as the web chat (docs/design/threadlink-0.11.md §8,
+ * §9). A chat list beside the open chat; a compact header; ONE scrolling
+ * timeline; a sticky composer; a right drawer for Activity, Progress,
+ * Findings, Details and Provenance. Main hands over plain-text views only
+ * (placement already decided by the shared presentation rules); everything
+ * here is set with textContent.
  *
  * Performance: an open chat is built once and then only APPENDED to; state
  * snapshots never rebuild it. Polling uses the per-chat cursor with backoff,
@@ -1731,7 +2502,12 @@ const POLL_IDLE_MAX_MS = 15_000;
 const POLL_ERROR_MAX_MS = 60_000;
 const POLL_HIDDEN_MS = 30_000;
 const MAX_ROWS = 400;
+const MAX_ACTIVITY = 300;
 const READ_EVERY_MS = 10_000;
+/** Stick to the bottom only when this close to it (§8). */
+const STICK_PX = 120;
+/** Consecutive messages from one author within this window are grouped. */
+const GROUP_MS = 5 * 60_000;
 
 const CHAT_ERRORS = {
   invalid: "That message could not be sent as it is.",
@@ -1746,10 +2522,28 @@ const chatError = (r) =>
     ? r.message
     : (CHAT_ERRORS[r?.error] ?? CHAT_ERRORS.failed);
 
-/** The chat list as main last returned it (sections of plain rows). */
+/**
+ * "You": this app's own connection to ThreadLink, from its own requests —
+ * never from the execution host (§4).
+ */
+const you = { ok: null };
+function noteRequest(res) {
+  if (res?.ok) you.ok = true;
+  else if (!res || res.error === "failed") you.ok = false;
+}
+const youText = () =>
+  you.ok === false ? "You · Reconnecting" : you.ok ? "You · Connected" : "You · Connecting…";
+
+/** The chat list, projects and the rest of one overview answer. */
 const chatList = {
   sections: [],
   rows: [],
+  projects: [],
+  projectChoices: [],
+  needsYou: [],
+  failover: null,
+  computer: null,
+  unread: 0,
   groupBy: "recent",
   loadedAt: 0,
   loading: false,
@@ -1757,31 +2551,54 @@ const chatList = {
 };
 
 async function loadChatList() {
-  if (chatList.loading || typeof api.listChats !== "function") return;
+  const overview = typeof api.chatsOverview === "function";
+  if (chatList.loading || (!overview && typeof api.listChats !== "function")) return;
   chatList.loading = true;
   let res = null;
   try {
-    res = await api.listChats(chatList.groupBy);
+    res = overview
+      ? await api.chatsOverview(chatList.groupBy)
+      : await api.listChats(chatList.groupBy);
   } catch {
     res = null;
   }
+  noteRequest(res);
   chatList.loading = false;
   chatList.loadedAt = Date.now();
   if (res?.ok && Array.isArray(res.sections)) {
     chatList.sections = res.sections;
     chatList.rows = res.sections.flatMap((s) => s.rows ?? []);
+    chatList.projects = Array.isArray(res.projects) ? res.projects : [];
+    chatList.projectChoices = Array.isArray(res.projectChoices) ? res.projectChoices : [];
+    chatList.needsYou = Array.isArray(res.needsYou) ? res.needsYou : [];
+    chatList.failover = res.failover ?? null;
+    chatList.computer = res.computer ?? null;
+    chatList.unread = typeof res.unread === "number" ? res.unread : 0;
     chatList.error = null;
   } else {
     chatList.error = chatError(res);
   }
-  if (section === "chats" || section === "home") render();
+  // An open chat is never rebuilt: only its sidebar list is refreshed.
+  if (section === "chats" && chatView.mounted) {
+    renderChatSidebar();
+    renderNav();
+    return;
+  }
+  if (["chats", "home", "projects", "notifications", "settings", "runtime"].includes(section))
+    render();
+  else renderNav();
 }
 
-/** One chat row: name, project, mode badge, participants, state. */
+function ensureChatList() {
+  if (!chatList.loading && Date.now() - chatList.loadedAt > CHAT_LIST_TTL_MS) void loadChatList();
+}
+
+/** One chat row: name, unread, project · agents, mode and state. */
 function chatRowNode(r) {
   const item = document.createElement("button");
   item.type = "button";
   item.className = `item chat-row${r.unread ? " unread" : ""}`;
+  item.setAttribute("aria-current", r.chatId === chatView.id ? "true" : "false");
   const body = document.createElement("div");
   body.className = "item-body";
   const title = document.createElement("div");
@@ -1793,7 +2610,15 @@ function chatRowNode(r) {
   body.append(title, meta);
   const tags = document.createElement("div");
   tags.className = "tags";
-  tags.append(badge(r.modeBadge, "mode"), badge(r.state, r.stateTone));
+  if (r.unread) {
+    const dot = document.createElement("span");
+    dot.className = "unread-dot";
+    dot.setAttribute("aria-label", "Unread");
+    dot.textContent = r.unreadCount > 1 ? String(Math.min(r.unreadCount, 99)) : "";
+    tags.append(dot);
+  }
+  tags.append(badge(r.modeBadge, "mode"));
+  if (r.state !== "Ready") tags.append(badge(r.state, r.stateTone));
   item.append(body, tags);
   item.addEventListener("click", () => openChat(r.chatId));
   return item;
@@ -1802,19 +2627,15 @@ function chatRowNode(r) {
 function renderChatRows(node, { limit = Infinity, sections = false } = {}) {
   if (!node) return;
   node.replaceChildren();
-  if (typeof api.listChats !== "function") return;
-  if (!chatList.loading && Date.now() - chatList.loadedAt > CHAT_LIST_TTL_MS) void loadChatList();
+  if (typeof api.chatsOverview !== "function" && typeof api.listChats !== "function") return;
+  ensureChatList();
   if (chatList.error && !chatList.rows.length) {
     node.append(empty(chatList.error));
     return;
   }
   if (!chatList.rows.length) {
     node.append(
-      empty(
-        chatList.loadedAt
-          ? "No chats yet. Start one in ThreadLink on the web, or with `threadlink new` in a terminal."
-          : "Loading your chats…",
-      ),
+      empty(chatList.loadedAt ? "No chats yet. Start one with New chat." : "Loading your chats…"),
     );
     return;
   }
@@ -1834,6 +2655,121 @@ function renderChatRows(node, { limit = Infinity, sections = false } = {}) {
   }
 }
 
+// ------------------------------------------------------------ Chats page
+
+function renderChats() {
+  // An open chat fills the inset; otherwise the page lists the chats.
+  if (chatView.id) return mountChat(view);
+  view.append(tpl("chats"));
+  renderChatSidebar();
+  for (const [id, groupBy] of [
+    ["chats-by-recent", "recent"],
+    ["chats-by-project", "project"],
+  ]) {
+    const b = el(id);
+    b.setAttribute("aria-pressed", chatList.groupBy === groupBy ? "true" : "false");
+    b.addEventListener("click", () => {
+      if (chatList.groupBy === groupBy) return;
+      chatList.groupBy = groupBy;
+      chatList.loadedAt = 0;
+      el("chats-by-recent")?.setAttribute("aria-pressed", String(groupBy === "recent"));
+      el("chats-by-project")?.setAttribute("aria-pressed", String(groupBy === "project"));
+      void loadChatList();
+    });
+  }
+  el("new-chat").addEventListener("click", () => toggleNewChat(true));
+}
+
+/** The chat list: the sidebar's sub-list, and the Chats page when no chat is open. */
+function renderChatSidebar() {
+  if (el("chat-list")) renderChatRows(el("chat-list"), { sections: true });
+  if (state) renderNav();
+}
+
+/** New chat: a name, a project and a mode. Main validates all three again. */
+function toggleNewChat(open) {
+  const form = el("new-chat-form");
+  if (!form) return;
+  form.hidden = !open;
+  if (!open) return;
+  form.replaceChildren();
+  const name = document.createElement("input");
+  name.type = "text";
+  name.maxLength = 100;
+  name.placeholder = "Chat name";
+  name.id = "new-chat-name";
+  const project = document.createElement("select");
+  project.id = "new-chat-project";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "No project yet";
+  project.append(none);
+  for (const p of chatList.projectChoices) {
+    const o = document.createElement("option");
+    o.value = p.roomId;
+    o.textContent = p.name;
+    project.append(o);
+  }
+  const mode = document.createElement("select");
+  mode.id = "new-chat-mode";
+  for (const [value, label] of [
+    ["team", "Team"],
+    ["pair", "Pair"],
+    ["solo", "Solo"],
+  ]) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    mode.append(o);
+  }
+  const row = document.createElement("div");
+  row.className = "row";
+  const create = document.createElement("button");
+  create.type = "button";
+  create.className = "primary small-btn";
+  create.textContent = "Create";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost small-btn";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => toggleNewChat(false));
+  const problem = document.createElement("p");
+  problem.className = "small danger-text";
+  problem.hidden = true;
+  create.addEventListener("click", async () => {
+    const text = name.value.trim();
+    if (!text) {
+      problem.textContent = "Give the chat a name.";
+      problem.hidden = false;
+      return;
+    }
+    create.disabled = true;
+    let res = null;
+    try {
+      res = await api.createChat({
+        name: text,
+        roomId: project.value || null,
+        mode: mode.value,
+      });
+    } catch {
+      res = null;
+    }
+    noteRequest(res);
+    create.disabled = false;
+    if (!res?.ok) {
+      problem.textContent = chatError(res);
+      problem.hidden = false;
+      return;
+    }
+    chatList.loadedAt = 0;
+    void loadChatList();
+    openChat(res.chat.chatId);
+  });
+  row.append(create, cancel);
+  form.append(name, project, mode, row, problem);
+  name.focus?.();
+}
+
 // -------------------------------------------------------------- one chat
 
 const chatView = {
@@ -1850,12 +2786,28 @@ const chatView = {
   sending: false,
   lastRead: 0,
   readAt: 0,
+  header: null,
+  working: false,
+  presence: null,
+  live: [],
+  /** Drawer data: routine rows, findings and provenance, all bounded. */
+  activity: [],
+  findings: new Map(),
+  provenance: [],
+  cards: new Map(),
+  deliveryNodes: new Map(),
+  byId: new Map(),
+  lastAuthor: null,
+  unseen: 0,
+  lane: "auto",
+  drawer: null,
+  mention: null,
 };
 
 function openChat(chatId) {
   stopChat();
   chatView.id = chatId;
-  section = "chat";
+  section = "chats";
   changing = null;
   render();
 }
@@ -1900,32 +2852,13 @@ function blocksInto(node, blocks) {
   }
 }
 
-/** One timeline row, styled by identity (You / controller / ThreadLink / agent). */
-function eventNode(ev) {
-  const item = document.createElement("article");
-  item.className = `msg id-${ev.identity.kind}${ev.note ? " note" : ""}`;
-  item.dataset.seq = String(ev.seq);
-  if (ev.identity.hue !== null && ev.identity.hue !== undefined)
-    item.dataset.hue = String(ev.identity.hue);
-  const head = document.createElement("div");
-  head.className = "msg-head";
-  const who = document.createElement("span");
-  who.className = "msg-who";
-  who.textContent = ev.identity.label;
-  const when = document.createElement("span");
-  when.className = "msg-when";
-  when.textContent = clock(ev.at);
-  head.append(who, when);
-  if (ev.delivery) {
-    const d = document.createElement("span");
-    d.className = "msg-delivery";
-    d.textContent = ev.delivery;
-    head.append(d);
-  }
+function bodyNode(ev) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg-content";
   const body = document.createElement("div");
   body.className = "msg-body";
   blocksInto(body, ev.body.preview);
-  item.append(head, body);
+  wrap.append(body);
   if (ev.body.collapsed && ev.body.full) {
     const more = document.createElement("button");
     more.type = "button";
@@ -1937,18 +2870,261 @@ function eventNode(ev) {
       blocksInto(body, open ? ev.body.full : ev.body.preview);
       more.textContent = open ? "Show less" : "Show more";
     });
-    item.append(more);
+    wrap.append(more);
     if (ev.body.truncated) {
       const note = document.createElement("p");
       note.className = "muted small";
       note.textContent = "Very long message: the rest is in ThreadLink on the web.";
-      item.append(note);
+      wrap.append(note);
     }
   }
-  return item;
+  return wrap;
 }
 
-const nearBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+const chatWebUrl = () =>
+  state?.baseUrl && chatView.id ? `${state.baseUrl}/dashboard/chats/${chatView.id}` : null;
+
+/** A choice card (§5, §6): buttons only for what the desktop may answer. */
+function choiceNode(card) {
+  const box = document.createElement("div");
+  box.className = "choice-card";
+  box.dataset.choice = card.choiceId;
+  const title = document.createElement("p");
+  title.className = "choice-title";
+  title.textContent = card.title;
+  box.append(title);
+  const actions = document.createElement("div");
+  actions.className = "row choice-actions";
+  const note = document.createElement("p");
+  note.className = "small muted choice-note";
+  note.hidden = true;
+  box.append(actions, note);
+  const entry = { card, box, actions, note, busy: false };
+  paintChoice(entry);
+  return entry;
+}
+
+function paintChoice(entry) {
+  const { card, actions, note } = entry;
+  actions.replaceChildren();
+  note.hidden = true;
+  if (card.status !== "pending") {
+    note.replaceChildren(
+      icon("check", 13, 2.4),
+      document.createTextNode(card.chosenLabel ? `Answered: ${card.chosenLabel}` : "Decided"),
+    );
+    note.hidden = false;
+    entry.box.classList.add("decided");
+    return;
+  }
+  if (card.approval || entry.superseded) {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost small-btn";
+    open.textContent = "Decide in ThreadLink on the web";
+    open.addEventListener("click", () => {
+      const url = chatWebUrl();
+      if (url) api.openExternal(url);
+      else api.openDashboard();
+    });
+    actions.append(open);
+    note.textContent = entry.superseded
+      ? "A newer question replaced this one."
+      : "Approvals are decided on the card in ThreadLink on the web.";
+    note.hidden = false;
+    return;
+  }
+  for (const o of card.options) {
+    if (!o.answerable) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      o === card.options.find((x) => x.answerable) ? "primary small-btn" : "ghost small-btn";
+    b.textContent = o.label;
+    b.dataset.option = o.key;
+    b.addEventListener("click", () => void answerChoice(entry, o));
+    actions.append(b);
+  }
+  if (card.options.some((o) => !o.answerable)) {
+    note.textContent = "More options are in ThreadLink on the web.";
+    note.hidden = false;
+  }
+}
+
+async function answerChoice(entry, option) {
+  if (entry.busy || typeof api.answerChoice !== "function") return;
+  entry.busy = true;
+  for (const b of entry.actions.querySelectorAll("button")) b.disabled = true;
+  const gen = chatView.gen;
+  let res = null;
+  try {
+    res = await api.answerChoice(chatView.id, entry.card.choiceId, option.key, newKey());
+  } catch {
+    res = null;
+  }
+  noteRequest(res);
+  if (gen !== chatView.gen) return;
+  entry.busy = false;
+  if (res?.ok) {
+    entry.card = { ...entry.card, status: "chosen", chosenLabel: res.chosenLabel ?? option.label };
+    paintChoice(entry);
+    chatView.delay = POLL_MIN_MS;
+    clearTimeout(chatView.timer);
+    void poll(gen);
+    return;
+  }
+  for (const b of entry.actions.querySelectorAll("button")) b.disabled = false;
+  showProblem(chatError(res));
+}
+
+/** One chat-placement row: owner right, agents left with an initial, ThreadLink quiet. */
+function eventNode(raw, prev) {
+  const kind = raw.identity?.kind;
+  const ev = {
+    ...raw,
+    side: raw.side ?? (kind === "you" ? "right" : kind === "threadlink" ? "center" : "left"),
+    identity: {
+      ...raw.identity,
+      initial: raw.identity?.initial ?? (raw.identity?.label ?? "?")[0],
+    },
+  };
+  const item = document.createElement("article");
+  item.className = `msg side-${ev.side} id-${ev.identity.kind}${ev.note ? " note" : ""}`;
+  item.dataset.seq = String(ev.seq);
+  if (ev.identity.provider) item.dataset.provider = ev.identity.provider;
+  // Remembered (bounded) for "Replying to …" quotes on later rows.
+  if (ev.id) {
+    const text = (ev.body.preview[0]?.v ?? "").replace(/\s+/g, " ").trim();
+    chatView.byId.set(ev.id, { who: ev.identity.short ?? ev.identity.label, text });
+    if (chatView.byId.size > MAX_ROWS) chatView.byId.delete(chatView.byId.keys().next().value);
+  }
+  if (ev.identity.hue !== null && ev.identity.hue !== undefined)
+    item.dataset.hue = String(ev.identity.hue);
+  item.title = clock(ev.at);
+  const author = `${ev.identity.kind}:${ev.identity.label}`;
+  const grouped =
+    prev &&
+    prev.author === author &&
+    ev.side !== "center" &&
+    Math.abs(Date.parse(ev.at) - Date.parse(prev.at)) < GROUP_MS;
+  if (grouped) item.classList.add("cont");
+
+  if (ev.side === "left") {
+    const avatar = document.createElement("span");
+    avatar.className = "avatar";
+    avatar.setAttribute("aria-hidden", "true");
+    avatar.textContent = ev.identity.initial;
+    item.append(avatar);
+  }
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  if (ev.side === "left") {
+    const who = document.createElement("div");
+    who.className = "msg-who";
+    who.textContent = ev.identity.short ?? ev.identity.label;
+    if (ev.identity.role) {
+      const role = document.createElement("span");
+      role.className = "msg-role";
+      role.textContent = ` · ${ev.identity.role}`;
+      who.append(role);
+    } else if (!ev.identity.short) who.textContent = ev.identity.label;
+    bubble.append(who);
+    const quoted = ev.replyTo ? chatView.byId.get(ev.replyTo) : null;
+    if (quoted) {
+      const q = document.createElement("div");
+      q.className = "msg-reply";
+      q.append(icon("reply", 14));
+      const t = document.createElement("span");
+      const words = quoted.text.length > 60 ? `${quoted.text.slice(0, 59)}…` : quoted.text;
+      t.textContent = `Replying to ${quoted.who}${words ? ` · “${words}”` : ""}`;
+      q.append(t);
+      bubble.append(q);
+    }
+  }
+  if (ev.side === "center" && !ev.card) {
+    // ThreadLink's own rows: a quiet card; usage, failover and errors as the warm notice.
+    const card = document.createElement("div");
+    card.className = `system-card${ev.notice ? " notice" : ""}`;
+    if (ev.notice) card.setAttribute("role", "status");
+    const label = document.createElement("div");
+    label.className = "system-label";
+    if (ev.notice) label.append(icon("triangle-alert", 15));
+    label.append(document.createTextNode("ThreadLink"));
+    card.append(label, bodyNode(ev));
+    bubble.append(card);
+  } else if (ev.card) {
+    const entry = choiceNode(ev.card);
+    // Only the newest open question is answered from here.
+    if (ev.card.status === "pending") {
+      for (const other of chatView.cards.values()) {
+        if (other.card.status === "pending" && !other.superseded) {
+          other.superseded = true;
+          paintChoice(other);
+        }
+      }
+    }
+    chatView.cards.set(ev.card.choiceId, entry);
+    // The card carries the question; the row's text is shown only when it adds something.
+    const first = (ev.body.preview[0]?.v ?? "").trim();
+    if (first && !first.startsWith(ev.card.title.replace(/[.!?]+$/, "")))
+      bubble.append(bodyNode(ev));
+    bubble.append(entry.box);
+  } else {
+    bubble.append(bodyNode(ev));
+  }
+  if (ev.side === "right") {
+    const meta = document.createElement("div");
+    meta.className = "msg-meta";
+    const when = document.createElement("span");
+    when.className = "msg-when";
+    when.textContent = clock(ev.at);
+    meta.append(when);
+    if (ev.delivery) {
+      const d = document.createElement("span");
+      d.className = "msg-delivery";
+      d.textContent = ev.delivery;
+      meta.append(d);
+      chatView.deliveryNodes.set(ev.seq, d);
+    }
+    bubble.append(meta);
+  }
+  item.append(bubble);
+  return { node: item, author, at: ev.at };
+}
+
+/** Routine rows go to the drawer; findings and provenance are remembered for it. */
+function recordForDrawer(ev) {
+  if (ev.finding) chatView.findings.set(ev.seq, ev.finding);
+  if (ev.identity.kind === "agent")
+    chatView.provenance.push({
+      at: ev.at,
+      who: ev.identity.full,
+      role: ev.identity.role,
+      model: ev.model,
+    });
+  if (chatView.provenance.length > 200)
+    chatView.provenance.splice(0, chatView.provenance.length - 200);
+  if (ev.placement !== "activity") return false;
+  chatView.activity.push({
+    seq: ev.seq,
+    at: ev.at,
+    who: ev.identity.short,
+    text: ev.body.preview.map((b) => b.v).join("\n"),
+  });
+  if (chatView.activity.length > MAX_ACTIVITY)
+    chatView.activity.splice(0, chatView.activity.length - MAX_ACTIVITY);
+  return true;
+}
+
+const nearBottom = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < STICK_PX;
+
+function updateJump() {
+  const pill = el("chat-jump");
+  if (!pill) return;
+  pill.hidden = chatView.unseen === 0;
+  el("chat-jump-text").textContent =
+    chatView.unseen > 0 ? `Jump to latest · ${chatView.unseen} new` : "Jump to latest";
+}
 
 /** Appends new rows (never re-renders), keeping at most MAX_ROWS. */
 function appendEvents(events) {
@@ -1958,15 +3134,24 @@ function appendEvents(events) {
   const stick = nearBottom(box);
   const frag = document.createDocumentFragment();
   let added = 0;
+  let drawerChanged = false;
   for (const ev of events) {
     if (chatView.rows.has(ev.seq)) continue;
-    const node = eventNode(ev);
-    chatView.rows.set(ev.seq, node);
-    frag.append(node);
-    added++;
     if (chatView.oldest === null || ev.seq < chatView.oldest) chatView.oldest = ev.seq;
+    if (recordForDrawer(ev)) {
+      chatView.rows.set(ev.seq, null);
+      drawerChanged = true;
+      continue;
+    }
+    const made = eventNode(ev, chatView.lastAuthor);
+    chatView.lastAuthor = made;
+    chatView.rows.set(ev.seq, made.node);
+    frag.append(made.node);
+    added++;
   }
+  if (drawerChanged) renderDrawer();
   if (!added) return 0;
+  list.querySelector(".empty")?.remove();
   list.append(frag);
   // Bounded: drop the oldest rows; they can be loaded again.
   if (chatView.rows.size > MAX_ROWS && stick) {
@@ -1979,49 +3164,128 @@ function appendEvents(events) {
     chatView.hasOlder = true;
     el("chat-older").hidden = false;
   }
-  if (stick) box.scrollTop = box.scrollHeight;
+  if (stick) {
+    box.scrollTop = box.scrollHeight;
+  } else {
+    chatView.unseen += added;
+    updateJump();
+  }
   return added;
 }
 
+/** Older rows above, with the reading position kept where it was. */
 function prependEvents(events) {
   const list = el("chat-events");
   const box = el("chat-timeline");
   if (!list || !box) return;
   const before = box.scrollHeight;
   const frag = document.createDocumentFragment();
+  let prev = null;
+  let drawerChanged = false;
   for (const ev of events) {
     if (chatView.rows.has(ev.seq)) continue;
-    const node = eventNode(ev);
-    chatView.rows.set(ev.seq, node);
-    frag.append(node);
     if (chatView.oldest === null || ev.seq < chatView.oldest) chatView.oldest = ev.seq;
+    if (recordForDrawer(ev)) {
+      chatView.rows.set(ev.seq, null);
+      drawerChanged = true;
+      continue;
+    }
+    const made = eventNode(ev, prev);
+    prev = made;
+    chatView.rows.set(ev.seq, made.node);
+    frag.append(made.node);
   }
+  if (drawerChanged) renderDrawer();
   list.prepend(frag);
   box.scrollTop += box.scrollHeight - before;
 }
 
-/** Live rows for runs that are working but have not said anything yet. */
+/** One compact row per working agent, at the bottom of the timeline. */
 function renderLive(live) {
+  chatView.live = live ?? [];
   const node = el("chat-live");
   if (!node) return;
   node.replaceChildren();
-  for (const r of (live ?? []).slice(0, 12)) {
+  chatView.live.slice(0, 12).forEach((r, i) => {
     const row = document.createElement("div");
-    row.className = "live-row";
+    row.className = `live-row${i === 0 ? " shimmer" : ""}`;
+    if (r.provider) row.dataset.provider = r.provider;
     const dot = document.createElement("span");
-    dot.className = "dot busy";
+    dot.className = "live-dot";
     dot.setAttribute("aria-hidden", "true");
-    const text = document.createElement("span");
-    text.textContent = `${r.label} · ${r.activity}${r.startedAt ? ` · started ${ago(r.startedAt)}` : ""}`;
-    row.append(dot, text);
+    const name = document.createElement("span");
+    name.className = "live-name";
+    name.textContent = r.label;
+    const what = document.createElement("span");
+    what.textContent = r.activity;
+    row.append(dot, name, what);
+    if (r.startedAt) {
+      const when = document.createElement("span");
+      when.className = "live-when";
+      when.textContent = `· ${ago(r.startedAt)}`;
+      row.append(when);
+    }
     node.append(row);
-  }
+  });
+}
+
+const PRESENCE_WORD = {
+  online: "Online",
+  working: "Working",
+  reconnecting: "Reconnecting",
+  offline: "Offline",
+};
+
+/** The status dot line, from what main said plus what polling has learned since. */
+function paintStatus() {
+  const h = chatView.header;
+  if (!h || !el("chat-status-text")) return;
+  const host = h.host;
+  const presence = chatView.presence ?? host?.presence ?? null;
+  let status = h.status;
+  if (h.state === "Needs you") status = { text: "Needs you", tone: "wait" };
+  else if (host && presence === "offline") status = { text: `${host.name} offline`, tone: "off" };
+  else if (chatView.working) status = { text: "Working", tone: "run" };
+  else if (host && presence === "reconnecting")
+    status = { text: `${host.name} reconnecting`, tone: "warn" };
+  else status = { text: "Ready", tone: "ready" };
+  el("chat-status-text").textContent = status.text;
+  el("chat-status-dot").className =
+    `ping ${status.tone === "run" ? "run" : status.tone === "ready" ? "" : status.tone === "off" ? "off" : "wait"}`;
+  const offline = el("chat-offline");
+  const note =
+    host && presence === "offline"
+      ? (host.offlineNote ??
+        `You're connected. ${host.name} is offline — repository work and agent replies will resume when it reconnects.`)
+      : null;
+  offline.textContent = note ?? "";
+  offline.hidden = !note;
+  el("chat-stop").hidden = !chatView.working;
 }
 
 function applyPage(page) {
   chatView.cursor = Math.max(chatView.cursor, page.cursor ?? 0);
   const added = appendEvents(page.events ?? []);
+  for (const r of page.resolved ?? []) {
+    const entry = chatView.cards.get(r.choiceId);
+    if (entry && entry.card.status === "pending") {
+      entry.card = {
+        ...entry.card,
+        status: "chosen",
+        chosenLabel: r.label ?? entry.card.chosenLabel,
+      };
+      paintChoice(entry);
+    }
+  }
+  for (const d of page.deliveries ?? []) {
+    const node = chatView.deliveryNodes.get(d.seq);
+    if (node) node.textContent = d.text;
+  }
   renderLive(page.live);
+  chatView.working = page.working === true;
+  if (page.hostPresence) chatView.presence = page.hostPresence;
+  paintStatus();
+  if (chatView.drawer === "progress") renderDrawer();
   return added;
 }
 
@@ -2032,7 +3296,16 @@ async function markRead() {
   const seq = chatView.cursor;
   try {
     const r = await api.markChatRead(chatView.id, seq);
-    if (r?.ok) chatView.lastRead = seq;
+    if (r?.ok) {
+      chatView.lastRead = seq;
+      // The same unread state as the web: this chat is read now.
+      const row = chatList.rows.find((x) => x.chatId === chatView.id);
+      if (row?.unread) {
+        row.unread = false;
+        row.unreadCount = 0;
+        renderChatSidebar();
+      }
+    }
   } catch {
     /* advisory */
   }
@@ -2053,6 +3326,7 @@ async function poll(gen) {
   } catch {
     res = null;
   }
+  noteRequest(res);
   if (gen !== chatView.gen) return;
   if (res?.ok) {
     const added = applyPage(res.page);
@@ -2063,30 +3337,324 @@ async function poll(gen) {
   } else {
     chatView.delay = Math.min(POLL_ERROR_MAX_MS, Math.max(5_000, chatView.delay * 2));
   }
+  if (chatView.drawer === "details") renderDrawer();
   schedulePoll(gen);
 }
 
+// ------------------------------------------------------------------ drawer
+
+const DRAWER_TABS = [
+  { id: "activity", label: "Activity" },
+  { id: "progress", label: "Progress" },
+  { id: "findings", label: "Findings" },
+  { id: "details", label: "Details" },
+  { id: "provenance", label: "Provenance" },
+];
+
+function openDrawer(tab) {
+  chatView.drawer = chatView.drawer === tab ? null : tab;
+  renderDrawer();
+}
+
+function drawerLine(text, meta) {
+  const row = document.createElement("div");
+  row.className = "drawer-row";
+  const t = document.createElement("div");
+  t.className = "drawer-text";
+  t.textContent = text;
+  row.append(t);
+  if (meta) {
+    const m = document.createElement("div");
+    m.className = "muted small";
+    m.textContent = meta;
+    row.append(m);
+  }
+  return row;
+}
+
+function renderDrawer() {
+  const drawer = el("chat-drawer");
+  if (!drawer) return;
+  drawer.hidden = !chatView.drawer;
+  if (!chatView.drawer) return;
+  const tabs = el("drawer-tabs");
+  tabs.replaceChildren();
+  for (const t of DRAWER_TABS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "drawer-tab";
+    b.textContent = t.label;
+    b.setAttribute("aria-selected", t.id === chatView.drawer ? "true" : "false");
+    b.addEventListener("click", () => {
+      chatView.drawer = t.id;
+      renderDrawer();
+    });
+    tabs.append(b);
+  }
+  const body = el("drawer-body");
+  body.replaceChildren();
+  const tab = chatView.drawer;
+  el("drawer-title").textContent = DRAWER_TABS.find((t) => t.id === tab)?.label ?? "Details";
+  if (tab === "activity") {
+    if (!chatView.activity.length)
+      body.append(empty("Nothing yet. Routine updates from ThreadLink show up here."));
+    for (const a of chatView.activity.slice(-100).reverse())
+      body.append(drawerLine(a.text, `${a.who} · ${clock(a.at)}`));
+  } else if (tab === "progress") {
+    const h = chatView.header;
+    body.append(drawerLine(chatView.working ? "Working" : "Nothing running", h ? h.state : null));
+    for (const r of chatView.live)
+      body.append(drawerLine(`${r.label} · ${r.activity}`, r.startedAt ? ago(r.startedAt) : null));
+    // The honest stages, when that work runs on this computer.
+    const group = workOf(state).find((g) => g.key === `chat:${chatView.id}`);
+    for (const job of group?.jobs ?? []) body.append(teamJob(job));
+  } else if (tab === "findings") {
+    const all = [...chatView.findings.values()];
+    if (!all.length) body.append(empty("No findings in this chat."));
+    for (const f of all.reverse())
+      body.append(drawerLine(f.title, `${f.severity} · ${f.open ? "Open" : f.status}`));
+  } else if (tab === "details") {
+    const h = chatView.header;
+    const section = (title, pairs) => {
+      const label = document.createElement("div");
+      label.className = "drawer-label";
+      label.textContent = title;
+      body.append(label);
+      for (const [k, v] of pairs) {
+        const row = document.createElement("div");
+        row.className = "drawer-pair";
+        const a = document.createElement("span");
+        a.textContent = k;
+        const b = document.createElement("span");
+        b.className = "v";
+        b.textContent = v;
+        row.append(a, b);
+        body.append(row);
+      }
+    };
+    section("Connection", [
+      ["You", youText().replace("You · ", "")],
+      ["ThreadLink service", you.ok === false ? "Reconnecting" : "Connected"],
+      ["Execution host", h?.host ? h.host.text : "No project yet — no computer runs it"],
+    ]);
+    if (h) {
+      section("Agents", [["Agents", h.participants.map((p) => p.full).join(", ") || "None yet"]]);
+      section("Chat", [
+        ["Mode", h.modeBadge],
+        ["Project", h.sub.split(" · ")[0] ?? ""],
+      ]);
+    }
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost small-btn";
+    open.textContent = "Open in ThreadLink on the web";
+    open.addEventListener("click", () => {
+      const url = chatWebUrl();
+      if (url) api.openExternal(url);
+    });
+    body.append(open);
+  } else if (tab === "provenance") {
+    if (!chatView.provenance.length) body.append(empty("No agent messages yet."));
+    for (const p of chatView.provenance.slice(-100).reverse())
+      body.append(
+        drawerLine(
+          `${p.who}${p.role ? ` · ${p.role}` : ""}`,
+          `${p.model ? `Model ${p.model} · ` : ""}${clock(p.at)}`,
+        ),
+      );
+  }
+}
+
+// ---------------------------------------------------------------- composer
+
+const LANES = [
+  { id: "auto", label: "Auto" },
+  { id: "chat", label: "Chat only" },
+  { id: "work", label: "Run work" },
+];
+
+function paintLane() {
+  const box = el("chat-lane");
+  if (!box) return;
+  box.replaceChildren();
+  for (const l of LANES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lane-option";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", l.id === chatView.lane ? "true" : "false");
+    b.textContent = l.label;
+    b.addEventListener("click", () => {
+      chatView.lane = l.id;
+      box.hidden = true;
+      paintLane();
+    });
+    box.append(b);
+  }
+  const label = el("chat-lane-label");
+  if (label) label.textContent = LANES.find((l) => l.id === chatView.lane)?.label ?? "Auto";
+  el("chat-lane-chip")?.setAttribute("aria-expanded", box.hidden ? "false" : "true");
+}
+
+/** Autosize: grows with the text up to a limit, measured only on input. */
+function autosize(input) {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight || 0, 200)}px`;
+}
+
+/** @mention candidates from the chat's agents, plus @team. */
+function mentionState(input) {
+  const upto = input.value.slice(0, input.selectionStart ?? input.value.length);
+  const m = /(^|\s)@([a-z0-9-]{0,20})$/i.exec(upto);
+  if (!m) return null;
+  const q = m[2].toLowerCase();
+  const people = [
+    ...(chatView.header?.participants ?? []).map((p) => ({ handle: p.handle, label: p.short })),
+    { handle: "team", label: "Everyone" },
+  ];
+  const items = people.filter((p) => p.handle.startsWith(q));
+  return items.length ? { start: upto.length - q.length - 1, items, index: 0 } : null;
+}
+
+function paintMentions() {
+  const list = el("mention-list");
+  if (!list) return;
+  const m = chatView.mention;
+  list.hidden = !m;
+  list.replaceChildren();
+  if (!m) return;
+  m.items.forEach((item, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mention";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", i === m.index ? "true" : "false");
+    b.textContent = `@${item.handle} · ${item.label}`;
+    b.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      pickMention(i);
+    });
+    list.append(b);
+  });
+}
+
+function pickMention(i) {
+  const input = el("chat-input");
+  const m = chatView.mention;
+  if (!input || !m) return;
+  const item = m.items[i] ?? m.items[0];
+  const caret = input.selectionStart ?? input.value.length;
+  input.value = `${input.value.slice(0, m.start)}@${item.handle} ${input.value.slice(caret)}`;
+  const pos = m.start + item.handle.length + 2;
+  input.setSelectionRange?.(pos, pos);
+  chatView.mention = null;
+  paintMentions();
+  autosize(input);
+}
+
 /** Builds the chat view once; afterwards it only grows. */
-function renderChat() {
-  view.append(tpl("chat"));
-  chatView.mounted = true;
-  chatView.rows = new Map();
-  chatView.cursor = 0;
-  chatView.oldest = null;
-  chatView.hasOlder = false;
-  chatView.delay = POLL_MIN_MS;
-  chatView.lastRead = 0;
-  chatView.readAt = 0;
+function mountChat(pane) {
+  pane.append(tpl("chat"));
+  Object.assign(chatView, {
+    mounted: true,
+    rows: new Map(),
+    cursor: 0,
+    oldest: null,
+    hasOlder: false,
+    delay: POLL_MIN_MS,
+    lastRead: 0,
+    readAt: 0,
+    header: null,
+    working: false,
+    presence: null,
+    live: [],
+    activity: [],
+    findings: new Map(),
+    provenance: [],
+    cards: new Map(),
+    deliveryNodes: new Map(),
+    byId: new Map(),
+    lastAuthor: null,
+    unseen: 0,
+    lane: "auto",
+    drawer: null,
+    mention: null,
+  });
   const gen = ++chatView.gen;
   const id = chatView.id;
 
-  el("chat-back").addEventListener("click", () => go("chats"));
   el("chat-older").addEventListener("click", () => void loadOlder(gen));
+  el("chat-more").addEventListener("click", () => openDrawer("details"));
+  el("chat-status").addEventListener("click", () => openDrawer("progress"));
+  el("drawer-close").addEventListener("click", () => {
+    chatView.drawer = null;
+    renderDrawer();
+  });
+  const box = el("chat-timeline");
+  box.addEventListener(
+    "scroll",
+    () => {
+      if (chatView.unseen && nearBottom(box)) {
+        chatView.unseen = 0;
+        updateJump();
+      }
+    },
+    { passive: true },
+  );
+  el("chat-jump").addEventListener("click", () => {
+    box.scrollTop = box.scrollHeight;
+    chatView.unseen = 0;
+    updateJump();
+  });
+  el("chat-stop").addEventListener("click", () => void sendMessage(gen, "stop"));
+  el("chat-sidebar-toggle")?.addEventListener("click", () => toggleSidebar());
+  el("chat-lane-chip").addEventListener("click", () => {
+    const menu = el("chat-lane");
+    menu.hidden = !menu.hidden;
+    paintLane();
+  });
+  paintLane();
   const input = el("chat-input");
-  const send = el("chat-send");
-  send.addEventListener("click", () => void sendMessage(gen));
+  el("chat-mention").addEventListener("click", () => {
+    const caret = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, caret);
+    const lead = before && !/\s$/.test(before) ? " @" : "@";
+    input.value = `${before}${lead}${input.value.slice(caret)}`;
+    const pos = caret + lead.length;
+    input.focus();
+    input.setSelectionRange?.(pos, pos);
+    input.dispatchEvent(new Event("input"));
+  });
+  el("chat-send").addEventListener("click", () => void sendMessage(gen));
+  input.addEventListener("input", () => {
+    autosize(input);
+    chatView.mention = mentionState(input);
+    paintMentions();
+  });
   // Cheap: the handler only looks at the key; sending happens off the event.
   input.addEventListener("keydown", (e) => {
+    const m = chatView.mention;
+    if (m && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      m.index = (m.index + (e.key === "ArrowDown" ? 1 : m.items.length - 1)) % m.items.length;
+      paintMentions();
+      return;
+    }
+    if (m && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+      e.preventDefault();
+      pickMention(m.index);
+      return;
+    }
+    if (m && e.key === "Escape") {
+      chatView.mention = null;
+      paintMentions();
+      return;
+    }
+    if (e.key === "Escape" && chatView.drawer) {
+      chatView.drawer = null;
+      renderDrawer();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void sendMessage(gen);
@@ -2101,6 +3669,7 @@ function renderChat() {
     } catch {
       res = null;
     }
+    noteRequest(res);
     if (gen !== chatView.gen) return;
     if (!res?.ok) {
       el("chat-title").textContent = "Chat";
@@ -2108,23 +3677,20 @@ function renderChat() {
       schedulePoll(gen);
       return;
     }
-    el("chat-title").textContent = res.chat.name;
-    el("page-sub").textContent = res.chat.name;
-    el("chat-sub").textContent = res.chat.sub;
-    const stateBadge = el("chat-state");
-    stateBadge.textContent = res.chat.state;
-    stateBadge.className = `badge ${res.chat.state === "Working" ? "run" : res.chat.state === "Needs you" ? "wait" : "ready"}`;
-    if (res.chat.host) {
-      el("chat-host").textContent = res.chat.host;
-      el("chat-host").hidden = false;
-    }
+    const h = res.chat;
+    chatView.header = h;
+    el("chat-title").textContent = h.name;
+    el("chat-mode").textContent = h.modeBadge;
+    el("chat-sub").textContent = h.sub;
+    input.placeholder = h.participants.length
+      ? `Message ${h.participants.map((p) => p.short).join(" and ")} — @ to address one`
+      : "Message this chat";
     chatView.hasOlder = res.page.hasOlder === true;
     el("chat-older").hidden = !chatView.hasOlder;
     applyPage(res.page);
-    if (!chatView.rows.size) {
+    if (!el("chat-events").children.length) {
       el("chat-events").append(empty("No messages yet. Say what you want done."));
     }
-    const box = el("chat-timeline");
     box.scrollTop = box.scrollHeight;
     void markRead();
     schedulePoll(gen);
@@ -2141,6 +3707,7 @@ async function loadOlder(gen) {
   } catch {
     res = null;
   }
+  noteRequest(res);
   if (gen !== chatView.gen) return;
   button.disabled = false;
   if (!res?.ok) return showProblem(chatError(res));
@@ -2156,34 +3723,63 @@ function showProblem(text) {
   p.hidden = !text;
 }
 
-async function sendMessage(gen) {
+/**
+ * Sends the composer's text (or a fixed word such as "stop"). One key per
+ * message; a retry of the same text reuses it, so a send that reached
+ * ThreadLink but lost its answer is never posted twice.
+ */
+async function sendMessage(gen, fixed) {
   const input = el("chat-input");
   const button = el("chat-send");
   if (!input || chatView.sending || typeof api.sendChat !== "function") return;
-  const body = input.value.trim();
+  const body = fixed ?? input.value.trim();
   if (!body) return;
   if (body.length > 4000) return showProblem("That message is too long (4000 characters at most).");
-  // One key per message; a retry of the same text reuses it, so a send that
-  // reached ThreadLink but lost its answer is never posted twice.
-  const key = chatView.pending?.body === body ? chatView.pending.key : newKey();
-  chatView.pending = { body, key };
+  const lane = fixed ? "auto" : chatView.lane;
+  const key =
+    chatView.pending?.body === body && chatView.pending?.lane === lane
+      ? chatView.pending.key
+      : newKey();
+  chatView.pending = { body, key, lane };
   chatView.sending = true;
   button.disabled = true;
-  button.textContent = "Sending…";
+  button.setAttribute("aria-busy", "true");
   showProblem(null);
   let res = null;
   try {
-    res = await api.sendChat(chatView.id, body, key);
+    res =
+      lane === "auto"
+        ? await api.sendChat(chatView.id, body, key)
+        : await api.sendChat(chatView.id, body, key, lane);
   } catch {
     res = null;
   }
+  noteRequest(res);
   if (gen !== chatView.gen) return;
   chatView.sending = false;
   button.disabled = false;
-  button.textContent = "Send";
+  button.removeAttribute("aria-busy");
   if (res?.ok) {
     chatView.pending = null;
-    if (input.value.trim() === body) input.value = "";
+    if (!fixed && input.value.trim() === body) {
+      input.value = "";
+      autosize(input);
+    }
+    if (!fixed) {
+      chatView.lane = "auto";
+      paintLane();
+    }
+    if (res.routed === "choice_resolved") {
+      // The message answered the open question (§6): say so on its card.
+      const open = [...chatView.cards.values()].reverse().find((c) => c.card.status === "pending");
+      if (open) {
+        open.card = { ...open.card, status: "chosen", chosenLabel: res.chosenLabel ?? null };
+        paintChoice(open);
+      }
+    }
+    // What you sent is on screen at once: follow it to the bottom.
+    const box = el("chat-timeline");
+    if (box) box.scrollTop = box.scrollHeight;
     chatView.delay = POLL_MIN_MS;
     clearTimeout(chatView.timer);
     void poll(gen);
@@ -2196,7 +3792,7 @@ async function sendMessage(gen) {
 
 document.addEventListener("visibilitychange", () => {
   // Back on screen: catch up at once instead of waiting out a hidden delay.
-  if (document.visibilityState === "visible" && chatView.mounted && section === "chat") {
+  if (document.visibilityState === "visible" && chatView.mounted && section === "chats") {
     chatView.delay = POLL_MIN_MS;
     schedulePoll(chatView.gen);
   }
@@ -2339,6 +3935,7 @@ function nameOf(path) {
 }
 
 el("open-dashboard").addEventListener("click", () => api.openDashboard());
+el("sidebar-toggle").addEventListener("click", () => toggleSidebar());
 /** Snapshots can arrive in bursts; one render per burst is enough. */
 let renderQueued = false;
 api.onState((next) => {

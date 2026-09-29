@@ -289,7 +289,10 @@ describe("chat: composer", () => {
     expect(safeServerMessage("<b>x</b>")).toBe(SEND_FAILED);
     expect(safeServerMessage(undefined)).toBe(SEND_FAILED);
     expect(isPostResult({ ok: true, routed: "new_job", jobId: null })).toBe(true);
-    expect(isPostResult({ ok: true, routed: "whatever" })).toBe(false);
+    // 0.11: new routed values (choice_resolved, …) are accepted; malformed ones are not.
+    expect(isPostResult({ ok: true, routed: "choice_resolved" })).toBe(true);
+    expect(isPostResult({ ok: true, routed: "<b>x</b>" })).toBe(false);
+    expect(isPostResult({ ok: true })).toBe(false);
     expect(isPostResult({ ok: false })).toBe(false);
   });
 });
@@ -358,14 +361,15 @@ describe("chat: rendering is plain text only", () => {
     expect(html).not.toContain("<strong>bold</strong>");
   });
 
-  it("offers mention hints and says how new work runs, without a per-message builder", () => {
-    // 0.10: mentions come from the registry's aliases; stopping lives in Controls.
-    expect(html).toContain("@claude");
-    expect(html).toContain("@codex");
-    expect(html).toContain("@team");
-    expect(html).toContain("Starts new work in this chat · Team · Claude Code + Codex.");
-    expect(html).not.toContain("How to run it");
-    expect(html).not.toMatch(/<select/);
+  it("is quiet: @ autocomplete (no chips), a subtle Auto ▾ lane control, no route banner", () => {
+    // 0.11: mentions autocomplete after "@"; the only per-message control is the lane.
+    expect(html).toContain("(@ to mention)");
+    expect(html).toContain("Message Claude and Codex");
+    expect(html).not.toContain("Starts new work in this chat");
+    expect(html).toContain(">Auto<");
+    expect(html).toContain("Chat only");
+    expect(html).toContain("Run work");
+    expect(html).toContain("Mode: Team · Claude Code + Codex.");
     expect(html).toMatch(/aria-live="polite"/);
   });
 
@@ -382,11 +386,11 @@ describe("chat: rendering is plain text only", () => {
         healthHint: null,
       }),
     );
-    expect(running).toContain("Sent as a note to the running work");
-    expect(running).toContain("Send note");
-    // A note never stops anything; controls are separate and explained.
-    expect(running).toContain("Controls");
-    expect(running).toContain("Stop after review");
+    // 0.11: the composer shows Stop while work runs (it asks before stopping);
+    // the full controls live in the drawer's Progress tab.
+    expect(running).toContain("Stop");
+    expect(running).toContain("Send");
+    expect(running).not.toContain("Sent as a note to the running work");
   });
 
   it("explains how to start without assuming ChatGPT", () => {
@@ -403,9 +407,10 @@ describe("chat: rendering is plain text only", () => {
       }),
     );
     expect(empty).toContain("No messages yet");
-    expect(empty).toContain("@claude");
-    // One agent: no @team hints.
+    expect(empty).toContain("Message Claude…");
+    // One agent: no team mention.
     expect(empty).not.toContain("@team");
+
     expect(empty).toContain("ask your controller (for example ChatGPT)");
     expect(empty).not.toContain("Ask ChatGPT");
     expect(empty).toContain("Choose a project for this chat");

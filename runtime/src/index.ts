@@ -56,6 +56,12 @@ export { STEP_TIMEOUT_BOUNDS_MIN, STEP_TIMEOUT_DEFAULTS_MIN } from "./team/timeo
 export type { ProcessEntry, RecoveryClass, RecoveryReport } from "./team/registry.ts";
 export { HEALTH_DETAIL, PROVIDER_HEALTH } from "./team/health.ts";
 export type { HealthRecord, ProviderHealth } from "./team/health.ts";
+// 0.11 (docs/design/threadlink-0.11.md §3, §5).
+export { taskLane } from "./engine.ts";
+export { SESSION_REASONS, RUN_TIMING_KEYS } from "./team/wire.ts";
+export type { FailoverPolicy, JobLane, RunTimings, SessionReason } from "./team/wire.ts";
+export { FAST_CHAT_DEFAULT_FOLLOWUPS, FAST_CHAT_MAX_FOLLOWUPS } from "./team/fast-chat.ts";
+export { parseResetTime } from "./team/runner.ts";
 export { detectIdentity, remoteEnvironment, runtimePlatform } from "./platform.ts";
 export type * from "./platform.ts";
 export { defaultConfigDir, loadConfig, migrateBaseUrl, saveConfig } from "./state.ts";
@@ -71,8 +77,11 @@ export { maskSessionId } from "./claude-sessions.ts";
 // 0.10 desktop/terminal chat client (owned by the desktop+terminal engineer).
 export { CHAT_API, ChatApiError, ChatClient, chatClientFor } from "./chat-client.ts";
 export type * from "./chat-client.ts";
+// 0.11 §7: the shared presentation rules, so the desktop app (which embeds
+// this package) places rows exactly like the web and the terminal.
+export { agentShortName, chatPlacement, humanSystemText } from "./chat-presentation.ts";
 
-export const RUNTIME_VERSION = "0.10.2";
+export const RUNTIME_VERSION = "0.11.0";
 
 export type RuntimeContext = {
   configDir: string;

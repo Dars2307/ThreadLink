@@ -55,7 +55,7 @@ import { capabilitiesOf, type ProviderCapabilities } from "./capabilities.ts";
 import type { ProviderHealth } from "./health.ts";
 import type { JobJournal, ProcessRegistry } from "./registry.ts";
 import { finalReportMarkdown, type ReportFinding } from "./report.ts";
-import type { ProcessHooks } from "./runner.ts";
+import type { ProcessHooks, ProcessTimings } from "./runner.ts";
 import { increasedTimeoutMs, stepTimeoutMs } from "./timeouts.ts";
 import {
   assignRoles,
@@ -65,6 +65,7 @@ import {
   type RoleCandidate,
 } from "./roles.ts";
 import { deriveStages, type TeamStage } from "./stages.ts";
+import { handleExhausted, type FailoverAction } from "./failover.ts";
 
 import { redactText, summarize } from "../summary.ts";
 import type { TeamJobDefinition } from "./job.ts";
@@ -78,6 +79,7 @@ import {
   inspectionPrompt,
   isSubstantive,
   normalisePrompt,
+  OWNER_DISAGREEMENTS,
   planPrompt,
   planReviewPrompt,
   planSchema,
@@ -113,6 +115,7 @@ import {
   messagePayload,
   notesConsumedPayload,
   OPS_0_10,
+  type OPS_0_11,
   parseChoiceId,
   parseChoices,
   parseControl,
@@ -135,6 +138,7 @@ import {
   type OwnerNote,
   type RunEndStatus,
   type RunFailureCategory,
+  type RunTimings,
   type WireRef,
 } from "./wire.ts";
 import type { WorktreeManager, WorktreeRecord } from "./worktrees.ts";
@@ -156,6 +160,8 @@ export type AgentRunRequest = {
   access: RunAccess;
   outputSchema?: object;
   resumeThreadId?: string;
+  /** 0.11: "chat" for a Fast Chat turn (runner.ts). */
+  purpose?: "team" | "chat";
   timeoutMs?: number;
   signal?: AbortSignal;
   /** Real activity signals (activity.ts). Runners without an event stream never call it. */
@@ -186,6 +192,10 @@ export type AgentRunResult = {
     | "timeout"
     | "cancelled"
     | "provider_error";
+  /** 0.11 (§5): the reset time a quota failure's own output stated (ISO), else null. */
+  resetsAt?: string | null;
+  /** 0.11 (§3.6): measured around the provider process. */
+  timings?: ProcessTimings;
 };
 
 export type AgentRunner = {
@@ -272,7 +282,9 @@ export type TeamOp =
   /** Collects the owner's undelivered notes; the server marks them delivered. */
   | typeof READ_OWNER_NOTES_OP
   // 0.10 (wire.ts OPS_0_10)
-  | (typeof OPS_0_10)[keyof typeof OPS_0_10];
+  | (typeof OPS_0_10)[keyof typeof OPS_0_10]
+  // 0.11 (wire.ts OPS_0_11)
+  | (typeof OPS_0_11)[keyof typeof OPS_0_11];
 
 /**
  * Provider health, as the Runtime last observed it with a real authenticated
@@ -283,11 +295,17 @@ export type HealthPort = {
   /** Each provider's health, re-checked first if the cached result is stale. */
   ensure(providers: AgentProvider[]): Promise<Partial<Record<AgentProvider, ProviderHealth>>>;
   /** A run failed; an auth or usage failure changes the provider's health at once. */
-  noteFailure?(provider: AgentProvider, failure: NonNullable<AgentRunResult["failure"]>): void;
+  noteFailure?(
+    provider: AgentProvider,
+    failure: NonNullable<AgentRunResult["failure"]>,
+    details?: { resetsAt?: string | null },
+  ): void;
   /** Probes one provider now (after a sign-in failure) and returns what it found. */
   confirm?(provider: AgentProvider): Promise<ProviderHealth>;
   /** Failed runs per provider recently, for role assignment. */
   recentFailures?(): Partial<Record<AgentProvider, number>>;
+  /** 0.11: the reset time an exhausted provider stated, when it did (never estimated). */
+  resetsAt?(provider: AgentProvider): string | null;
 };
 
 export type OrchestratorDeps = {
@@ -308,7 +326,13 @@ export type OrchestratorDeps = {
   /** Called whenever the concise state changes, for the desktop app's feed. */
   onProgress?(progress: TeamProgress): void;
   /** A provider ran out of included usage; remembered so the next job does not retry it. */
-  onExhausted?(provider: AgentProvider, model: string): void;
+  onExhausted?(provider: AgentProvider, model: string, resetsAt?: string | null): void;
+  /** 0.11: a fresh check said an exhausted provider is ready again. */
+  onRecovered?(provider: AgentProvider): void;
+  /** 0.11 (§3.6): job created → claimed, sent with every run's timings. */
+  queueMs?: number | null;
+  /** 0.11 (§5): failover notices already sent by this Runtime (one per chat per exhaustion). */
+  noticesSent?: Set<string>;
   signal?: AbortSignal;
   /** Overrides every step's timeout (tests). Otherwise: per step kind, timeouts.ts. */
   timeoutMs?: number;
@@ -499,6 +523,23 @@ export class InterruptedRefusal extends Error {
     this.provider = provider;
   }
 }
+
+/**
+ * 0.11 (§5): an independent review could not happen because its reviewer ran
+ * out of included usage and nobody else may review this work. The work goes
+ * on; the job can then finish REVIEW_PENDING, never PASS.
+ */
+class ReviewSkipped extends Error {
+  readonly provider: AgentProvider;
+  constructor(provider: AgentProvider) {
+    super("The independent review is waiting for the reviewer's usage to reset.");
+    this.name = "ReviewSkipped";
+    this.provider = provider;
+  }
+}
+
+/** §3.5: minor disagreements settle after at most this many planning exchanges. */
+export const PLAN_NEGOTIATION_EXCHANGES = 2;
 
 /** A run that must stop the whole job, with the verdict it earns. */
 class Stop extends Error {
@@ -695,6 +736,15 @@ export class TeamOrchestrator {
   #lastControlPoll = 0;
   /** Who did the final inspection, for the report. */
   #inspector: AgentProvider | null = null;
+  /** 0.11: reviewers whose independent review could not happen (usage exhausted). */
+  readonly #reviewPending = new Set<AgentProvider>();
+  /** 0.11: the reset time each exhausted provider stated, when it did. */
+  readonly #resets = new Map<AgentProvider, string | null>();
+  /**
+   * 0.11: reviewers that were out of usage when the job started and whose
+   * reviews the failover policy left pending: they are never run in this job.
+   */
+  readonly #pendingReviewers = new Set<AgentProvider>();
 
   constructor(job: TeamJobDefinition, deps: OrchestratorDeps) {
     this.#job = job;
@@ -716,7 +766,15 @@ export class TeamOrchestrator {
       // that is not ready ends the job here; nobody else takes its place.
       const health = await this.#preflight(needs.required, needs.candidates);
       this.#health = health;
-      this.#roles = this.#assignRoles(needs.candidates, health);
+      // 0.11 §5: an agent already out of usage is handled by the job's
+      // failover policy, not by stopping the job (a 0.10 job still stops).
+      const exhausted = [...new Set([...needs.required, ...needs.candidates])].filter(
+        (p) => health.get(p) === "usage_exhausted",
+      );
+      this.#roles =
+        exhausted.length && this.#job.failoverPolicy
+          ? await this.#rolesWithExhausted(needs, health, exhausted)
+          : this.#assignRoles(needs.candidates, health);
       if (this.#mode !== "team") {
         this.#builderHolder = this.#roles.builders[0]!;
         this.#reviewer = this.#mode === "pair" ? (this.#roles.reviewers[0] ?? null) : null;
@@ -751,9 +809,24 @@ export class TeamOrchestrator {
         );
       }
 
-      const outcome = this.#mode === "team" ? await this.#runTeam(set) : await this.#runSimple(set);
+      let outcome = this.#mode === "team" ? await this.#runTeam(set) : await this.#runSimple(set);
       this.#noteUndelivered();
-      await this.#finish(outcome.verdict, outcome.summary, outcome.reason);
+      let pendingFor: AgentProvider | null = null;
+      // A review the job needed did not happen: never a PASS (§5).
+      if (outcome.verdict === "PASS" && this.#reviewPending.size) {
+        pendingFor = [...this.#reviewPending][0]!;
+        const who = [...this.#reviewPending].map((p) => providerName(p)).join(" and ");
+        outcome = {
+          ...outcome,
+          verdict: "REVIEW_PENDING",
+          reason: "usage_exhausted",
+          summary: `Work complete · review pending. ${who}'s independent review could not run because its included usage ran out; it has not reviewed this work yet.`,
+        };
+        this.#evidence.uncertainty.push(
+          `${who} did not review this work: its included usage ran out during the job.`,
+        );
+      }
+      await this.#finish(outcome.verdict, outcome.summary, outcome.reason, pendingFor);
       return outcome;
     } catch (error) {
       // Not a verdict: the executor asks the owner (resume / stop).
@@ -912,9 +985,215 @@ export class TeamOrchestrator {
     }
     for (const p of required) {
       const h = health.get(p)!;
+      // 0.11: out of usage is the failover policy's to handle (#rolesWithExhausted),
+      // but only for a job from a server that sent one. Sign-in, API-key and
+      // not-installed problems still stop the job here.
+      if (h === "usage_exhausted" && this.#job.failoverPolicy) continue;
       if (h !== "ready") throw healthStop(p, h);
     }
     return health;
+  }
+
+  /**
+   * 0.11 §5: roles when an agent the job needs is already out of included
+   * usage at the start. The job's failover policy decides (auto: continue
+   * with the ready agents and say so once; ask: the owner's usage_exhausted
+   * choice; wait: wait for the reset). A review the exhausted agent would
+   * have done, and nobody else independent can do, is left pending: it is
+   * never run in this job and the job cannot PASS. Nobody reviews their own work.
+   */
+  async #rolesWithExhausted(
+    needs: { required: AgentProvider[]; candidates: AgentProvider[] },
+    health: Map<AgentProvider, ProviderHealth>,
+    exhausted: AgentProvider[],
+  ): Promise<RoleAssignment> {
+    const x = exhausted[0]!;
+    const resetsAt = this.#d.health?.resetsAt?.(x) ?? null;
+    this.#resets.set(x, resetsAt);
+    // Who else could take over: every participant's health, not only the
+    // candidates the owner's choice named (a solo job names one).
+    const unknown = this.#participants.filter((p) => !health.has(p));
+    if (unknown.length) {
+      let reported: Partial<Record<AgentProvider, ProviderHealth>> = {};
+      try {
+        reported = this.#d.health ? await this.#d.health.ensure(unknown) : {};
+      } catch {
+        reported = {};
+      }
+      for (const p of unknown) {
+        const runner = this.#d.runners[p];
+        const h = this.#d.health ? (reported[p] ?? "unknown") : runner ? "ready" : "not_installed";
+        health.set(p, h === "ready" && !runner ? "not_installed" : h);
+      }
+    }
+    const ready = this.#participants.filter(
+      (p) => health.get(p) === "ready" && this.#d.runners[p] !== undefined,
+    );
+    const overrides = this.#job.roleOverrides ?? {};
+    const reasons: string[] = [];
+    const name = providerName;
+    const out = `${name(x)}'s included usage has run out`;
+
+    let role: "builder" | "reviewer" | "participant";
+    let alternatives: AgentProvider[] = [];
+    let reviewPending: { continueWith: AgentProvider | null } | null = null;
+    let noticeReviewPending = false;
+    /** Builds the roles once the decision is known. */
+    let build: (action: "other" | "skip", to: AgentProvider | null) => RoleAssignment;
+
+    if (this.#mode === "solo") {
+      role = "builder";
+      alternatives = ready.filter((p) => p !== x);
+      build = (_a, to) => {
+        reasons.push(`${name(to!)} builds (${out})`);
+        return {
+          ok: true,
+          coordinator: to!,
+          planner: to!,
+          integrator: to!,
+          builders: [to!],
+          reviewers: [],
+          reasons,
+        };
+      };
+    } else if (this.#mode === "pair") {
+      const builderWanted = this.#job.builder ?? overrides.builder ?? null;
+      const reviewerWanted = this.#job.reviewer ?? overrides.reviewer ?? null;
+      if (
+        x === builderWanted ||
+        (builderWanted === null && reviewerWanted !== null && reviewerWanted !== x)
+      ) {
+        // The builder is out: a ready agent builds. If that agent is the only
+        // one who could review, the review waits for the exhausted builder.
+        role = "builder";
+        const newBuilder = ready.find((p) => p !== reviewerWanted) ?? ready[0] ?? null;
+        alternatives = newBuilder ? [newBuilder] : [];
+        const independent = ready.find((p) => p !== newBuilder) ?? null;
+        noticeReviewPending = independent === null;
+        build = (_a, to) => {
+          const reviewer = independent ?? x;
+          if (!independent) this.#pendingReviewers.add(x);
+          reasons.push(`${name(to!)} builds (${out})`);
+          reasons.push(
+            independent
+              ? `${name(reviewer)} reviews`
+              : `${name(x)}'s independent review is pending until its usage is back`,
+          );
+          return {
+            ok: true,
+            coordinator: to!,
+            planner: to!,
+            integrator: to!,
+            builders: [to!],
+            reviewers: [reviewer],
+            reasons,
+          };
+        };
+      } else {
+        // The reviewer (chosen, or the only other agent) is out.
+        role = "reviewer";
+        const builder =
+          builderWanted && health.get(builderWanted) === "ready"
+            ? builderWanted
+            : (ready[0] ?? null);
+        if (!builder) throw healthStop(x, "usage_exhausted");
+        alternatives = ready.filter((p) => p !== builder);
+        if (!alternatives.length) reviewPending = { continueWith: builder };
+        build = (action, to) => {
+          const reviewer = action === "other" ? to! : x;
+          if (action === "skip") this.#pendingReviewers.add(x);
+          reasons.push(`${name(builder)} builds`);
+          reasons.push(
+            action === "other"
+              ? `${name(reviewer)} reviews (${out})`
+              : `${name(x)}'s independent review is pending until its usage is back`,
+          );
+          return {
+            ok: true,
+            coordinator: builder,
+            planner: builder,
+            integrator: builder,
+            builders: [builder],
+            reviewers: [reviewer],
+            reasons,
+          };
+        };
+      }
+    } else {
+      // Team: continue with the ready participants.
+      role = "participant";
+      if (ready.length >= 2) {
+        alternatives = ready;
+        build = () => {
+          const assigned = this.#assignRoles(ready, health);
+          return {
+            ...assigned,
+            reasons: [...assigned.reasons, `${name(x)} is not taking part (${out})`],
+          };
+        };
+      } else if (ready.length === 1) {
+        const only = ready[0]!;
+        reviewPending = { continueWith: only };
+        build = () => {
+          this.#pendingReviewers.add(x);
+          reasons.push(
+            `${name(only)} coordinates, plans and builds (${out}); every review by ${name(x)} is pending until its usage is back`,
+          );
+          return {
+            ok: true,
+            coordinator: only,
+            planner: only,
+            integrator: only,
+            builders: [only],
+            reviewers: [x],
+            reasons,
+          };
+        };
+      } else {
+        throw healthStop(x, "usage_exhausted");
+      }
+    }
+    if (!alternatives.length && !reviewPending) throw healthStop(x, "usage_exhausted");
+
+    const action = await handleExhausted(
+      {
+        provider: x,
+        resetsAt,
+        policy: this.#job.failoverPolicy ?? "ask",
+        alternatives,
+        reviewPending,
+        noticeReviewPending,
+        params: { role: role === "participant" ? null : role, step: null },
+        key: `${this.#worktreeJob()}:preflight:${x}`,
+      },
+      {
+        write: (op, payload) => this.#write(op as TeamOp, payload),
+        recheck: this.#d.health?.confirm ? (p) => this.#d.health!.confirm!(p) : undefined,
+        clock: this.#d.clock ?? realClock,
+        signal: this.#abort.signal,
+        choicePollMs: this.#d.choicePollMs,
+        choiceWaitMs: this.#d.choiceWaitMs,
+        noticesSent: this.#d.noticesSent,
+        chatId: this.#job.chatId ?? null,
+        onRecovered: (p) => this.#d.onRecovered?.(p),
+      },
+    );
+    switch (action.action) {
+      case "retry":
+        // A fresh check says it is back: the job runs as it would have.
+        health.set(x, "ready");
+        this.#resets.delete(x);
+        return this.#assignRoles(needs.candidates, health);
+      case "other":
+        return build("other", action.provider);
+      case "skip":
+        return build("skip", action.continueWith);
+      default:
+        if (action.why === "owner") {
+          throw new Stop("NEEDS_USER_DECISION", `Stopped by you: ${out}.`, "stopped_by_owner", x);
+        }
+        throw healthStop(x, "usage_exhausted");
+    }
   }
 
   #assignRoles(
@@ -1013,7 +1292,9 @@ export class TeamOrchestrator {
       summary:
         reviewer === null
           ? `One unit of work, built by ${providerName(builder)}.`
-          : `One unit of work, built by ${providerName(builder)} and reviewed by ${providerName(reviewer)}.`,
+          : this.#pendingReviewers.has(reviewer)
+            ? `One unit of work, built by ${providerName(builder)}. ${providerName(reviewer)}'s review is pending until its usage is back.`
+            : `One unit of work, built by ${providerName(builder)} and reviewed by ${providerName(reviewer)}.`,
       nodes: [
         {
           key: "work",
@@ -1022,8 +1303,10 @@ export class TeamOrchestrator {
           files: [],
           dependsOn: [],
           suggestedOwner: builder,
-          rationale:
-            reviewer === null
+          rationale: this.#resets.size
+            ? // A usage failover chose these agents, not the owner: say only that.
+              `${providerName(builder)} took this on because ${[...this.#resets.keys()].map((p) => providerName(p)).join(" and ")} ran out of included usage.`
+            : reviewer === null
               ? `The owner asked ${providerName(builder)} to do this on its own.`
               : `The owner asked ${providerName(builder)} to build this and ${providerName(reviewer)} to review it.`,
           complexity: "medium",
@@ -1392,7 +1675,7 @@ export class TeamOrchestrator {
       }
 
       this.#doing.set(reviewer, "Reviewing the plan");
-      const reviewed = await this.#call(reviewer, "reviewer", {
+      const reviewed = await this.#reviewOrSkip(reviewer, "reviewer", {
         step: "plan_review",
         unit: null,
         round,
@@ -1410,6 +1693,28 @@ export class TeamOrchestrator {
         exclude: [planner],
         route: { complexity: "high", risk: { ...NO_RISK, architecture: true } },
       });
+      if (!reviewed) {
+        // Nobody may review this plan now: the planner's plan is used and the
+        // independent review is pending (the job cannot PASS).
+        const planHash = sha256(JSON.stringify(plan));
+        this.#evidence.planHash = planHash;
+        await this.#write("set_plan", {
+          plan: redactDeep(plan),
+          planHash,
+          approvedBy: [planner],
+          round,
+        });
+        this.#planApproved = true;
+        this.#planningRoundsDone = round;
+        await this.#decision(
+          "Plan recorded",
+          `${providerName(planner)}'s plan was used without an independent review: ${providerName(reviewer)}'s included usage ran out.`,
+          [planner],
+          { planHash, units: plan.nodes.map((n) => n.key) },
+          false,
+        );
+        return plan;
+      }
       const review = reviewed.structured as Review;
       reviewMessage = await this.#message(reviewed, planner, "review", round, {
         replyTo: proposalMessage?.id ? { kind: "message", id: proposalMessage.id } : null,
@@ -1461,7 +1766,17 @@ export class TeamOrchestrator {
         );
       }
       previous = { plan, review: stripMessage(review) };
-      // Budget spent with objections open: the owner decides (§4), not the models.
+      // §3.5: only an owner-level disagreement goes to the owner. A technical
+      // one is negotiated for at most two exchanges, then arbitrated: the
+      // coordinator's side (the planner's plan) wins and every objection stays
+      // on record as a finding.
+      const ownerLevel =
+        review.disagreementCategory !== undefined &&
+        OWNER_DISAGREEMENTS.has(review.disagreementCategory);
+      if (!ownerLevel && round >= Math.min(rounds, PLAN_NEGOTIATION_EXCHANGES)) {
+        return this.#arbitrate(plan, planner, reviewed.provider, round);
+      }
+      // Budget spent with owner-level objections open: the owner decides (§4).
       if (round === rounds && (await this.#planDisagreement(planner, reviewer, rounds))) {
         rounds++;
       }
@@ -1480,6 +1795,36 @@ export class TeamOrchestrator {
       `${providerName(planner)} and ${providerName(reviewer)} did not agree a plan within ${rounds} rounds. The open objections are in the team log.`,
       "agents_disagree",
     );
+  }
+
+  /**
+   * Arbitration of a technical planning disagreement (§3.5): the plan on the
+   * table is adopted, recorded as a ThreadLink decision; the reviewer's
+   * objections stay open as findings, visible to the builders and the owner.
+   */
+  async #arbitrate(
+    plan: Plan,
+    planner: AgentProvider,
+    reviewer: AgentProvider,
+    round: number,
+  ): Promise<Plan> {
+    const planHash = sha256(JSON.stringify(plan));
+    this.#evidence.planHash = planHash;
+    const coordinator = this.#roles?.coordinator ?? planner;
+    const approvedBy = [...new Set([planner, coordinator])];
+    await this.#write("set_plan", { plan: redactDeep(plan), planHash, approvedBy, round });
+    this.#planApproved = true;
+    const open = this.#findings.filter(
+      (f) => f.unit === null && f.status === "open" && isSubstantive(f.finding),
+    ).length;
+    await this.#decision(
+      "Disagreement settled",
+      `${providerName(reviewer)} and ${providerName(planner)} disagreed on technical points after ${round} planning round${round === 1 ? "" : "s"}. ${providerName(coordinator)}'s plan was adopted${open ? `; ${providerName(reviewer)}'s ${open} open objection${open === 1 ? " is" : "s are"} kept as findings` : ""}.`,
+      approvedBy,
+      { planHash, units: plan.nodes.map((n) => n.key), openObjections: open },
+      false,
+    );
+    return plan;
   }
 
   /** A plan still disputed when the budget runs out: the owner may allow one more round. */
@@ -1823,7 +2168,10 @@ export class TeamOrchestrator {
             .map((f) => ({ kind: "finding" as const, id: f.id! })),
         },
       );
-      if (commit) await this.#recordChange(node, built);
+      // The change card is recorded while the review runs: the review needs
+      // the worktree, not the card (0.11 §3.5). Its failure still stops the job.
+      const recording = commit ? this.#recordChange(node, built) : Promise.resolve();
+      recording.catch(() => undefined);
 
       // Solo has no reviewer. In Team Mode the room may turn cross-review off;
       // a pair exists to be reviewed, so it never skips it.
@@ -1831,12 +2179,28 @@ export class TeamOrchestrator {
       const reviews =
         this.#mode === "pair" || (this.#mode === "team" && this.#job.policy.crossReview);
       if (!reviews || reviewer === null) {
+        await recording;
         this.#buildRoundsDone = Math.max(this.#buildRoundsDone, round + 1);
         await this.#nodeStatus(node, "approved");
         this.#doing.delete(node.owner);
         return;
       }
-      if (this.#stopNow) return;
+      if (this.#stopNow) {
+        await recording;
+        return;
+      }
+      // Nobody reviews their own work: after a usage failover the reviewer may
+      // have built this unit itself. Then the review waits for the other agent.
+      if (node.authoredBy.has(reviewer)) {
+        await recording;
+        // The review waits for the agent that ran out of usage.
+        const exhausted = [...this.#resets.keys()].find((p) => p !== reviewer);
+        this.#reviewPending.add(exhausted ?? node.owner);
+        this.#buildRoundsDone = Math.max(this.#buildRoundsDone, round + 1);
+        await this.#nodeStatus(node, "approved");
+        this.#doing.delete(node.owner);
+        return;
+      }
 
       // Review, by the other provider, read-only, on exactly this code.
       await this.#nodeStatus(node, "in_review");
@@ -1849,7 +2213,7 @@ export class TeamOrchestrator {
         ref: f.ref,
         status: f.status,
       }));
-      const reviewed = await this.#call(reviewer, "reviewer", {
+      const reviewed = await this.#reviewOrSkip(reviewer, "reviewer", {
         step: "review",
         unit: node.plan.key,
         round,
@@ -1877,6 +2241,16 @@ export class TeamOrchestrator {
           disputedFindings: node.openFindings.length,
         },
       });
+      await recording;
+      if (!reviewed) {
+        // The reviewer ran out of usage and nobody else may review it: the
+        // unit goes on unreviewed and the job cannot PASS (§5).
+        this.#buildRoundsDone = Math.max(this.#buildRoundsDone, round + 1);
+        await this.#nodeStatus(node, "approved");
+        this.#doing.delete(node.owner);
+        this.#doing.delete(reviewer);
+        return;
+      }
       // The review only counts for the code it was shown.
       if ((await this.#d.worktrees.fingerprint(node.worktree)) !== fingerprint) {
         throw new Stop(
@@ -2141,7 +2515,7 @@ export class TeamOrchestrator {
     const inspector = this.#reviewerFor(integration.integrator);
     this.#doing.set(inspector, "Inspecting the whole change");
     const diff = await this.#d.worktrees.diff(integration.record, 400_000);
-    const inspected = await this.#call(inspector, "security_reviewer", {
+    const inspected = await this.#reviewOrSkip(inspector, "security_reviewer", {
       step: "inspection",
       unit: null,
       round: this.#reviewRound,
@@ -2163,6 +2537,12 @@ export class TeamOrchestrator {
         risk: { security: true, database: false, architecture: true, deployment: false },
       },
     });
+    if (!inspected) {
+      return this.#verdict(
+        "PASS",
+        "Integrated. The final inspection is waiting: the inspector's included usage ran out.",
+      );
+    }
     this.#inspector = inspected.provider;
     if ((await this.#d.worktrees.fingerprint(integration.record)) !== fingerprint) {
       throw new Stop(
@@ -2246,6 +2626,25 @@ export class TeamOrchestrator {
         throw new Stop("BLOCKED", `${providerName(current)} was stopped.`, "agent_failed");
       }
       this.#noteFailure(current, result);
+      if (result.failure === "quota_exhausted") {
+        const action = await this.#onExhausted(current, role, options, result, attempt);
+        if (action.action === "other") {
+          current = action.provider;
+          continue;
+        }
+        if (action.action === "retry") continue;
+        if (action.action === "skip") throw new ReviewSkipped(current);
+        if (this.#stopNow) throw this.#stopped();
+        if (action.why === "owner") {
+          throw new Stop(
+            "NEEDS_USER_DECISION",
+            `Stopped by you after ${providerName(current)} ran out of included usage.`,
+            "stopped_by_owner",
+            current,
+          );
+        }
+        throw this.#failureStop(current, result);
+      }
       // A sign-in failure can be a one-off token refresh failure. Probe the
       // SAME provider now; only if it answers ready is the call repeated once.
       if (result.failure === "not_authenticated" && !signInRetried && this.#d.health?.confirm) {
@@ -2278,6 +2677,90 @@ export class TeamOrchestrator {
         current,
       );
     }
+  }
+
+  /**
+   * A review step that may be skipped when its reviewer runs out of usage and
+   * nobody else may review (§5): null then, and the review is pending.
+   */
+  async #reviewOrSkip(
+    provider: AgentProvider,
+    role: TeamRole,
+    options: CallOptions,
+  ): Promise<CallResult | null> {
+    // Out of usage since the start of the job, and the owner's policy left its
+    // reviews pending: it is not run at all.
+    if (this.#pendingReviewers.has(provider)) {
+      this.#reviewPending.add(provider);
+      return null;
+    }
+    try {
+      return await this.#call(provider, role, options);
+    } catch (error) {
+      if (!(error instanceof ReviewSkipped)) throw error;
+      this.#reviewPending.add(error.provider);
+      return null;
+    }
+  }
+
+  /**
+   * A provider ran out of included usage during a step (§5). The job's
+   * failover policy decides: another ready agent takes the step (auto), the
+   * owner is asked (ask), or the step waits for the provider (wait). A review
+   * nobody else may do is skipped and left pending. The exhausted provider is
+   * only run again after a fresh check says it is ready.
+   */
+  async #onExhausted(
+    provider: AgentProvider,
+    role: TeamRole,
+    options: CallOptions,
+    result: AgentRunResult,
+    attempt: number,
+  ): Promise<FailoverAction> {
+    const resetsAt = result.resetsAt ?? null;
+    this.#resets.set(provider, resetsAt);
+    this.#health.set(provider, "usage_exhausted");
+    const ready = (p: AgentProvider) =>
+      p !== provider &&
+      this.#d.runners[p] !== undefined &&
+      (this.#health.get(p) ?? "ready") === "ready";
+    const excluded = new Set(options.exclude ?? []);
+    const strict = this.#participants.filter((p) => ready(p) && !excluded.has(p));
+    const loose = this.#participants.filter(ready);
+    const review = REVIEW_STEPS.has(options.step);
+    const key = `${this.#worktreeJob()}:${options.step}:${options.unit ?? "job"}:r${options.round}:${provider}:${role}:q${attempt}`;
+    return handleExhausted(
+      {
+        provider,
+        resetsAt,
+        policy: this.#job.failoverPolicy ?? "ask",
+        // A review goes to another independent reviewer only; building and
+        // planning may pass to any ready agent (whose own work then cannot be
+        // reviewed by itself -- see the independence guard in #buildNode).
+        alternatives: review ? strict : strict.length ? strict : loose,
+        reviewPending: review && !strict.length ? { continueWith: loose[0] ?? null } : null,
+        params: {
+          step: options.step,
+          role,
+          unit: this.#choiceUnit(options.unit),
+        },
+        key,
+      },
+      {
+        write: (op, payload) => this.#write(op as TeamOp, payload),
+        recheck: this.#d.health?.confirm ? (p) => this.#d.health!.confirm!(p) : undefined,
+        clock: this.#d.clock ?? realClock,
+        signal: this.#abort.signal,
+        choicePollMs: this.#d.choicePollMs,
+        choiceWaitMs: this.#d.choiceWaitMs,
+        noticesSent: this.#d.noticesSent,
+        chatId: this.#job.chatId ?? null,
+        onRecovered: (p) => {
+          this.#health.set(p, "ready");
+          this.#d.onRecovered?.(p);
+        },
+      },
+    );
   }
 
   /** One agent run: run_started, the run, run_finished, usage. */
@@ -2319,6 +2802,7 @@ export class TeamOrchestrator {
 
     // Anything the owner has said to this agent since its last turn goes into
     // this one, delimited and redacted (prompts.ts, withOwnerNotes).
+    const contextStart = performance.now();
     await this.#collectNotes();
     const notes = this.#takeNotes(provider);
     const prompt = withOwnerNotes(options.prompt(provider), notes, (text) =>
@@ -2334,6 +2818,7 @@ export class TeamOrchestrator {
         ? previous
         : undefined;
 
+    const contextMs = Math.round(performance.now() - contextStart);
     const runKey = this.#runKey(options, participantKey);
     const write = options.access === "workspace-write" || WRITE_STEPS.has(options.step);
     this.#d.journal?.stepStarted({
@@ -2344,6 +2829,7 @@ export class TeamOrchestrator {
       startedAt: new Date().toISOString(),
     });
     let started: Record<string, unknown>;
+    const persistStart = performance.now();
     try {
       started = await this.#write(
         OPS_0_10.runStarted,
@@ -2376,6 +2862,7 @@ export class TeamOrchestrator {
       throw error;
     }
     const runId = parseRunId(started);
+    const persistMs = Math.round(performance.now() - persistStart);
     if (notes.length && runId) await this.#consumeNotes(runId, notes);
 
     // Live activity from real signals only: the run's phase now, and the
@@ -2501,6 +2988,14 @@ export class TeamOrchestrator {
           : runEnd(result);
 
     if (runId) {
+      const t = result.timings;
+      const timings: Partial<RunTimings> = {
+        ...(this.#d.queueMs != null ? { queueMs: this.#d.queueMs } : {}),
+        contextMs,
+        persistMs,
+        ...(t ? { spawnMs: t.spawnMs, providerMs: t.providerMs } : {}),
+        ...(t?.firstEventMs != null ? { firstEventMs: t.firstEventMs } : {}),
+      };
       await this.#write(
         OPS_0_10.runFinished,
         runFinishedPayload({
@@ -2513,6 +3008,7 @@ export class TeamOrchestrator {
           nativeSessionKind: caps?.nativeSession.kind ?? null,
           failure: end?.failure ?? null,
           exitClean: result.ok,
+          timings,
         }),
       );
     }
@@ -2597,13 +3093,15 @@ export class TeamOrchestrator {
   #noteFailure(provider: AgentProvider, result: AgentRunResult): void {
     try {
       if (result.failure !== "cancelled") {
-        this.#d.health?.noteFailure?.(provider, result.failure ?? "provider_error");
+        this.#d.health?.noteFailure?.(provider, result.failure ?? "provider_error", {
+          resetsAt: result.resetsAt ?? null,
+        });
       }
     } catch {
       /* health reporting must never change how the job ends */
     }
     if (result.failure === "quota_exhausted")
-      this.#d.onExhausted?.(provider, result.requestedModel);
+      this.#d.onExhausted?.(provider, result.requestedModel, result.resetsAt ?? null);
   }
 
   /**
@@ -2683,7 +3181,12 @@ export class TeamOrchestrator {
         unit: this.#choiceUnit(options.unit),
         failure,
       },
-      ["retry", ...(other ? (["use_other"] as const) : []), "stop"],
+      [
+        // §5: a provider that is out of usage is never simply retried.
+        ...(this.#health.get(provider) === "usage_exhausted" ? [] : (["retry"] as const)),
+        ...(other ? (["use_other"] as const) : []),
+        "stop",
+      ],
       key,
       (result as Partial<CallResult>).runId ?? null,
     );
@@ -2696,7 +3199,9 @@ export class TeamOrchestrator {
         provider,
       );
     }
-    if (choice === "retry") return { action: "retry" };
+    if (choice === "retry" && this.#health.get(provider) !== "usage_exhausted") {
+      return { action: "retry" };
+    }
     if (choice === "use_other" && other) return { action: "other", provider: other };
     return { action: "stop" };
   }

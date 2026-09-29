@@ -6,6 +6,7 @@ import { removeConversationAction } from "@/app/dashboard/team-actions";
 import { RevokeLinkButton } from "@/components/connections/revoke-link-button";
 import { ActionForm, SubmitButton } from "@/components/dashboard/action-form";
 import { ConfirmAction } from "@/components/dashboard/confirm-action";
+import { ResetTime } from "@/components/dashboard/local-time";
 import { LoadError, PageHeader, Shell } from "@/components/dashboard/shell";
 import { Badge, buttonStyles, Card, CardTitle, EmptyState } from "@/components/ui";
 import { deriveAgents, type AgentCard } from "@/lib/dashboard/agents";
@@ -98,6 +99,11 @@ export default async function AgentsPage() {
                       className="border-warning/40 bg-warning-soft text-warning rounded-xl border px-3 py-2 text-sm"
                     >
                       {a.callout}
+                    </p>
+                  ) : null}
+                  {a.usageExhausted ? (
+                    <p className="text-muted text-sm">
+                      Included usage is used up. <ResetTime at={a.usageResetsAt} />
                     </p>
                   ) : null}
                   <ProviderFacts a={a} />

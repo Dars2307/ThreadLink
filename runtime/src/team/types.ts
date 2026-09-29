@@ -50,11 +50,23 @@ export const JOB_STATUSES = [
   // 0.10: non-terminal waits (a step was interrupted; paused by the owner or a choice).
   "interrupted",
   "paused",
+  // 0.11: terminal; the work finished but the required independent review did not happen.
+  "review_pending",
 ] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
 /** The only final answers a team job can give. There is no score. */
-export const JOB_VERDICTS = ["PASS", "NEEDS_FIX", "BLOCKED", "NEEDS_USER_DECISION"] as const;
+/**
+ * 0.11 adds REVIEW_PENDING: the work finished but the independent review it
+ * required could not happen (the reviewer ran out of included usage). Never PASS.
+ */
+export const JOB_VERDICTS = [
+  "PASS",
+  "NEEDS_FIX",
+  "BLOCKED",
+  "NEEDS_USER_DECISION",
+  "REVIEW_PENDING",
+] as const;
 export type JobVerdict = (typeof JOB_VERDICTS)[number];
 
 export const NODE_STATUSES = [

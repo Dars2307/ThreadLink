@@ -276,6 +276,14 @@ export const toolInputs = {
       .regex(/^[A-Za-z0-9._:-]{1,128}$/)
       .optional()
       .describe("Reuse the same key when retrying the same request to avoid duplicates."),
+    lane: z
+      .enum(["auto", "chat", "work"])
+      .optional()
+      .describe(
+        "How to run it. 'chat': a quick conversational answer from the agents (they read, " +
+          "nothing is changed). 'work': repository work (plan, build, review, test). 'auto' " +
+          "(default): ThreadLink decides from the message.",
+      ),
   },
   get_chat_status: { sessionId: sessionIdInput, chatId: chatHandle },
   get_job_result: {
@@ -774,21 +782,25 @@ export async function createChatTool(ctx: McpContext, input: Input<"create_chat"
 }
 
 export async function sendMessageTool(ctx: McpContext, input: Input<"send_message">) {
-  const { job, created } = await postControllerChatMessage(ctx.db, ctx.credentialHash, {
+  const { job, created, lane } = await postControllerChatMessage(ctx.db, ctx.credentialHash, {
     sessionId: input.sessionId,
     chatId: input.chatId,
     body: input.message,
     idempotencyKey: input.idempotencyKey,
+    lane: input.lane,
   });
   return {
     jobId: job.jobId,
     created,
     status: job.status,
     mode: job.mode,
+    lane,
     project: job.roomName,
     next:
-      "The agents work on the user's computer, asynchronously. Check get_chat_status now and " +
-      "then, and get_job_result when it has finished. The user can follow along in the chat.",
+      lane === "chat"
+        ? "The agents answer in the chat shortly (read-only). Read the reply with get_chat."
+        : "The agents work on the user's computer, asynchronously. Check get_chat_status now and " +
+          "then, and get_job_result when it has finished. The user can follow along in the chat.",
   };
 }
 

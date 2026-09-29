@@ -8,6 +8,7 @@ import {
   type LinkView,
   type ProviderProfile,
   type RuntimeView,
+  type TaskEnvelope,
   type ThreadLinkApi,
 } from "./api.ts";
 import { DEFAULT_BACKOFF, nextDelay, type BackoffOptions } from "./backoff.ts";
@@ -58,16 +59,20 @@ import {
 } from "./team/providers.ts";
 import { CHATGPT_PLANS, CLAUDE_PLANS } from "./team/types.ts";
 import { UsageGovernor } from "./team/usage.ts";
-import { processNextTask } from "./worker.ts";
+import { claimTask, runClaimedTask, type Outcome, type WorkerDeps } from "./worker.ts";
+import { ChatSessionStore } from "./team/chat-sessions.ts";
 
 /**
  * The ThreadLink Runtime engine, shared by the CLI (`threadlink run`) and the
  * desktop app. One engine per machine/config directory (enforced by a lock).
  *
  * Loop: register -> sync workspaces/conversations -> repeat {
- *   heartbeat (capabilities, busy conversations; receives pause/restart/settings)
- *   for each attached conversation: deliver at most one task
- * } with idle back-off, offline back-off and 401 -> signed out.
+ *   heartbeat when due (and on its own timer, so nothing can hold it up)
+ *   for each attached conversation: claim what may start now, run it in the
+ *   background (0.11 §3.3: work lane ≤ 1 per workspace, chat lane ≤ 3 overall,
+ *   FIFO per chat)
+ *   idle: one wake long-poll in flight (§3.2), else the idle back-off
+ * } with offline back-off and 401 -> signed out.
  *
  * Nothing here trusts local state for authorization: every call is checked by
  * ThreadLink against the Runtime's credential; local files only remember which
@@ -310,7 +315,7 @@ type Api = Pick<
   | "reportProviderDetection"
 > &
   // Optional so embedded engines and older test doubles need not provide them.
-  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan">>;
+  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan" | "wake">>;
 
 export type EngineOptions = {
   api: Api;
@@ -344,6 +349,47 @@ export type EngineOptions = {
    * each team job claim and on "Check again". Omitted = no probing.
    */
   probeProvider?: ProbeFn | null;
+  /** 0.11 §3.2: how long each wake long-poll may wait (seconds, ≤ 25). 0 = no long-poll. */
+  wakeWaitSeconds?: number;
+  /** 0.11 §3.3: Fast Chat jobs running at once, across every chat (default 3). */
+  chatConcurrency?: number;
+};
+
+/** 0.11 §3.3: the two execution lanes, as the engine schedules them. */
+export type TaskLane = "chat" | "work";
+
+/**
+ * Which lane a delivered task belongs to, read from the job document the
+ * server built (`lane`, `chatId`) before the task is claimed. Anything that
+ * is not a Team task, or cannot be read, is work: it gets the strictest limit.
+ */
+export function taskLane(task: Pick<TaskEnvelope, "taskType" | "content">): {
+  lane: TaskLane;
+  chatId: string | null;
+} {
+  if (task.taskType !== TEAM_TASK_TYPE || !task.content) return { lane: "work", chatId: null };
+  try {
+    const doc = JSON.parse(task.content) as Record<string, unknown>;
+    const spec = (doc.spec && typeof doc.spec === "object" ? doc.spec : {}) as Record<
+      string,
+      unknown
+    >;
+    const lane = doc.lane ?? spec.lane;
+    const chatId =
+      typeof doc.chatId === "string" && /^tlcht_[0-9a-f]{32}$/.test(doc.chatId) ? doc.chatId : null;
+    return { lane: lane === "chat" ? "chat" : "work", chatId };
+  } catch {
+    return { lane: "work", chatId: null };
+  }
+}
+
+type RunningTask = {
+  taskId: string;
+  lane: TaskLane;
+  /** Resolved, case-folded workspace path (work lane limit). */
+  workspace: string;
+  chatId: string | null;
+  done: Promise<Outcome | "error">;
 };
 
 const defaultSleep = (ms: number, signal: AbortSignal) =>
@@ -493,6 +539,20 @@ export class RuntimeEngine {
   #tasksCompleted = 0;
   #wake: (() => void) | null = null;
   #localPause = false;
+  /** 0.11 §3.3: tasks this engine claimed and is running in the background. */
+  readonly #running = new Map<string, RunningTask>();
+  /** A background task hit a credential/revocation error: the loop stops on it. */
+  #fatal: unknown = null;
+  /** One heartbeat at a time, shared by the loop and the heartbeat timer. */
+  #heartbeatInFlight: Promise<RuntimeView> | null = null;
+  /** 0.11 §3.2: false after the server said it has no wake endpoint (until wakeRetryAt). */
+  #wakeSupported = true;
+  #wakeRetryAt = 0;
+  #wakeInFlight: Promise<{ pending: number }> | null = null;
+  /** 0.11 §5: failover notices already sent (one per chat per exhaustion). */
+  readonly #noticesSent = new Set<string>();
+  /** 0.11 §3.4.6: Fast Chat native sessions, per chat, provider and workspace. */
+  readonly #chatSessions: ChatSessionStore;
 
   constructor(options: EngineOptions) {
     this.#o = {
@@ -506,8 +566,11 @@ export class RuntimeEngine {
       taskHeartbeatMs: 60_000,
       repo: (path) => repoInfo(path),
       baseUrlLabel: "This address",
+      wakeWaitSeconds: 25,
+      chatConcurrency: 3,
       ...options,
     };
+    this.#o.wakeWaitSeconds = Math.max(0, Math.min(25, this.#o.wakeWaitSeconds));
     const discover = this.#o.discoverTeam;
     const probe = this.#o.probeProvider;
     this.#health =
@@ -520,6 +583,7 @@ export class RuntimeEngine {
         : null;
     this.#processes = new ProcessRegistry(this.#o.configDir);
     this.#journals = new JournalStore(this.#o.configDir);
+    this.#chatSessions = new ChatSessionStore(this.#o.configDir);
   }
 
   // -------------------------------------------------------------------------
@@ -828,6 +892,8 @@ export class RuntimeEngine {
         usage: { remaining: "unknown" },
         detectedAt: new Date().toISOString(),
         ...(h ? { health: h.health, healthCheckedAt: h.checkedAt, healthDetail: h.detail } : {}),
+        // 0.11 §5: only a reset time the provider itself stated; never an estimate.
+        ...(h?.health === "usage_exhausted" && h.resetsAt ? { resetsAt: h.resetsAt } : {}),
       })
       .catch((error: unknown) => this.#o.log?.(`could not report ${p.provider}: ${String(error)}`));
   }
@@ -1202,7 +1268,21 @@ export class RuntimeEngine {
   // -------------------------------------------------------------------------
   // Heartbeat and delivery
   // -------------------------------------------------------------------------
-  async heartbeat(): Promise<RuntimeView> {
+  /**
+   * 0.11 §3.1: one heartbeat at a time. The loop sends one when it is due and
+   * a timer of its own sends one whenever the loop has not, so a long job, a
+   * slow delivery or a wake long-poll can never make the Runtime look offline.
+   */
+  heartbeat(): Promise<RuntimeView> {
+    if (this.#heartbeatInFlight) return this.#heartbeatInFlight;
+    const beat = this.#sendHeartbeat().finally(() => {
+      this.#heartbeatInFlight = null;
+    });
+    this.#heartbeatInFlight = beat;
+    return beat;
+  }
+
+  async #sendHeartbeat(): Promise<RuntimeView> {
     const running = new Set<string>();
     let busyKnown = true;
     try {
@@ -1279,6 +1359,11 @@ export class RuntimeEngine {
       processes: this.#processes,
       staleProcesses: this.#staleProcesses,
       activeJobs: this.#activeJobs,
+      // 0.11: Fast Chat reuses the last discovery (no CLI spawns per turn),
+      // keeps native sessions per chat and sends each failover notice once.
+      cachedDiscovery: () => (this.#found.length ? this.#found : null),
+      chatSessions: this.#chatSessions,
+      noticesSent: this.#noticesSent,
       onProgress: (progress) => {
         this.#team.delete(progress.jobId);
         this.#team.set(progress.jobId, progress);
@@ -1346,79 +1431,233 @@ export class RuntimeEngine {
     this.#changed();
   }
 
-  /** Delivers at most one task per attached conversation. Returns tasks processed. */
-  async deliverOnce(): Promise<number> {
-    let processed = 0;
+  /** The worker callbacks for one attached conversation: mirror lines built only from safe fields. */
+  #workerDeps(ws: WorkspaceState, c: AttachedConversation): WorkerDeps {
+    const title = c.title ?? workspaceDisplayName(ws.workspace);
+    const mirror = (
+      event: ActivityEntry["event"],
+      task: { taskId: string; title: string },
+      extra: Pick<ActivityEntry, "detail" | "summary" | "blocked"> = {},
+    ): void => {
+      this.#mirror({
+        taskId: task.taskId,
+        event,
+        title: task.title,
+        conversation: title,
+        localBindingRef: c.localBindingRef,
+        workspace: workspaceDisplayName(ws.workspace),
+        mode: c.mode,
+        at: new Date().toISOString(),
+        ...extra,
+      });
+    };
+    return {
+      api: this.#o.api,
+      executor: this.#executor(ws, c),
+      onWorkerSession: (id) => void this.#rememberWorker(ws, c, id),
+      sessionId: c.sessionId!,
+      claimRef: this.#claimRef,
+      heartbeatMs: this.#o.taskHeartbeatMs,
+      log: this.#o.log,
+      onStarted: (e) => mirror("task_started", e),
+      onBlocked: (e) =>
+        mirror("task_blocked", e, {
+          blocked: e.reason,
+          detail: BLOCKED_DETAIL[e.reason],
+        }),
+      onOutcome: (e) => {
+        if (e.outcome === "completed") this.#tasksCompleted++;
+        this.#emit({
+          type: "task",
+          outcome: e.outcome,
+          title: e.title,
+          conversation: title,
+          reason: e.reason,
+        });
+        mirror(
+          e.outcome === "completed"
+            ? "task_completed"
+            : e.outcome === "failed"
+              ? "task_failed"
+              : "task_lost",
+          e,
+          {
+            detail:
+              e.outcome === "lost"
+                ? "ThreadLink lost track of this task before it finished."
+                : e.reason
+                  ? FAILURE_DETAIL[e.reason]
+                  : undefined,
+            summary: e.summary ?? undefined,
+          },
+        );
+      },
+    };
+  }
+
+  /** Tasks this engine is running now, by lane (for the desktop app and tests). */
+  runningTasks(): { taskId: string; lane: TaskLane; chatId: string | null }[] {
+    return [...this.#running.values()].map((r) => ({
+      taskId: r.taskId,
+      lane: r.lane,
+      chatId: r.chatId,
+    }));
+  }
+
+  /**
+   * Claims every queued task that may start now and runs each in the
+   * background (0.11 §3.3). Limits: the work lane runs at most one job per
+   * workspace; the chat lane at most `chatConcurrency` jobs overall, one at a
+   * time per chat, oldest first. A chat task behind a queued work task that
+   * must wait is still picked. Returns what was started and how many queued
+   * tasks had to wait for a limit.
+   */
+  async #dispatch(): Promise<{ started: RunningTask[]; blocked: number }> {
+    const started: RunningTask[] = [];
+    let blocked = 0;
     for (const ws of this.#workspaces) {
       if (!existsSync(ws.workspace)) continue;
+      const wsKey = resolve(ws.workspace).toLowerCase();
       for (const c of ws.conversations) {
         if (!c.sessionId) continue;
-        const title = c.title ?? workspaceDisplayName(ws.workspace);
-        /** One mirrored line, built only from fields that are safe to show. */
-        const mirror = (
-          event: ActivityEntry["event"],
-          task: { taskId: string; title: string },
-          extra: Pick<ActivityEntry, "detail" | "summary" | "blocked"> = {},
-        ): void => {
-          this.#mirror({
+        if (this.#fatal) return { started, blocked };
+        const inbox = await this.#o.api.inbox(c.sessionId, 20);
+        /** Chats whose oldest queued task was already considered (FIFO per chat). */
+        const seenChats = new Set<string>();
+        for (const next of inbox) {
+          if (next.status !== "queued" || this.#running.has(next.taskId)) continue;
+          const { lane, chatId } = taskLane(next);
+          const running = [...this.#running.values()];
+          if (lane === "work") {
+            if (running.some((r) => r.lane === "work" && r.workspace === wsKey)) {
+              blocked++;
+              continue;
+            }
+          } else {
+            const chatKey = chatId ?? `task:${next.taskId}`;
+            const first = !seenChats.has(chatKey);
+            seenChats.add(chatKey);
+            if (
+              !first ||
+              running.filter((r) => r.lane === "chat").length >= this.#o.chatConcurrency ||
+              (chatId !== null && running.some((r) => r.lane === "chat" && r.chatId === chatId))
+            ) {
+              blocked++;
+              continue;
+            }
+          }
+          const deps = this.#workerDeps(ws, c);
+          const task = await claimTask(deps, next);
+          if (task === "skipped") continue;
+          const entry: RunningTask = {
             taskId: task.taskId,
-            event,
-            title: task.title,
-            conversation: title,
-            localBindingRef: c.localBindingRef,
-            workspace: workspaceDisplayName(ws.workspace),
-            mode: c.mode,
-            at: new Date().toISOString(),
-            ...extra,
-          });
-        };
-        const outcome = await processNextTask({
-          api: this.#o.api,
-          executor: this.#executor(ws, c),
-          onWorkerSession: (id) => void this.#rememberWorker(ws, c, id),
-          sessionId: c.sessionId,
-          claimRef: this.#claimRef,
-          heartbeatMs: this.#o.taskHeartbeatMs,
-          log: this.#o.log,
-          onStarted: (e) => mirror("task_started", e),
-          onBlocked: (e) =>
-            mirror("task_blocked", e, {
-              blocked: e.reason,
-              detail: BLOCKED_DETAIL[e.reason],
-            }),
-          onOutcome: (e) => {
-            if (e.outcome === "completed") this.#tasksCompleted++;
-            this.#emit({
-              type: "task",
-              outcome: e.outcome,
-              title: e.title,
-              conversation: title,
-              reason: e.reason,
+            lane,
+            workspace: wsKey,
+            chatId,
+            done: Promise.resolve("error" as const),
+          };
+          this.#running.set(task.taskId, entry);
+          entry.done = runClaimedTask(deps, task)
+            .catch((error: unknown): "error" => {
+              if (
+                error instanceof ApiError &&
+                (error.status === 401 || error.status === 403 || error.kind === "not-threadlink")
+              ) {
+                this.#fatal ??= error;
+              } else {
+                this.#o.log?.(
+                  `task ${task.taskId} stopped: ${error instanceof ApiError ? `${error.status} ${error.kind}` : "unexpected error"}`,
+                );
+              }
+              return "error";
+            })
+            .finally(() => {
+              this.#running.delete(task.taskId);
+              this.#changed();
+              // A slot is free: look for the next task now.
+              this.wake();
             });
-            mirror(
-              e.outcome === "completed"
-                ? "task_completed"
-                : e.outcome === "failed"
-                  ? "task_failed"
-                  : "task_lost",
-              e,
-              {
-                detail:
-                  e.outcome === "lost"
-                    ? "ThreadLink lost track of this task before it finished."
-                    : e.reason
-                      ? FAILURE_DETAIL[e.reason]
-                      : undefined,
-                summary: e.summary ?? undefined,
-              },
-            );
-          },
-        });
-        if (outcome !== "none" && outcome !== "skipped") processed++;
+          started.push(entry);
+        }
       }
     }
-    if (processed) this.#changed();
-    return processed;
+    if (started.length) this.#changed();
+    return { started, blocked };
+  }
+
+  /**
+   * Starts what may start now and waits for those tasks to finish (the
+   * pre-0.11 contract, kept for callers and tests that deliver by hand).
+   * Returns tasks started.
+   */
+  async deliverOnce(): Promise<number> {
+    let total = 0;
+    // A task held back by a lane limit gets its turn once the slot frees:
+    // bounded passes, each waiting for what it started.
+    for (let pass = 0; pass < 10; pass++) {
+      const { started, blocked } = await this.#dispatch();
+      await Promise.all(started.map((t) => t.done));
+      total += started.length;
+      if (this.#fatal) {
+        const fatal = this.#fatal;
+        this.#fatal = null;
+        throw fatal;
+      }
+      if (!started.length || !blocked) break;
+    }
+    return total;
+  }
+
+  /**
+   * 0.11 §3.2: waits for work with the server's wake long-poll. One request
+   * in flight at a time (an interrupted wait is picked up again, not
+   * duplicated). "unsupported" when the server has no wake endpoint or it
+   * failed: the caller then uses the idle back-off.
+   */
+  async #waitForWork(
+    signal: AbortSignal,
+  ): Promise<"pending" | "timeout" | "unsupported" | "woken"> {
+    const wake = this.#o.api.wake;
+    if (!wake || this.#o.wakeWaitSeconds <= 0) return "unsupported";
+    if (!this.#wakeSupported && Date.now() < this.#wakeRetryAt) return "unsupported";
+    this.#wakeSupported = true;
+    if (!this.#wakeInFlight) {
+      this.#wakeInFlight = wake.call(this.#o.api, this.#o.wakeWaitSeconds).finally(() => {
+        this.#wakeInFlight = null;
+      });
+    }
+    const inFlight = this.#wakeInFlight;
+    let woken: () => void = () => {};
+    const local = new Promise<"woken">((r) => {
+      woken = () => r("woken");
+      this.#wake = woken;
+    });
+    const onAbort = () => woken();
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const result = await Promise.race([
+        inFlight.then(
+          (r) => (r.pending > 0 ? ("pending" as const) : ("timeout" as const)),
+          (error: unknown) => {
+            // 404 / HTML: an older server. Other errors: try again later.
+            const older =
+              error instanceof ApiError &&
+              (error.status === 404 || error.status === 405 || error.kind === "not-threadlink");
+            this.#wakeSupported = false;
+            this.#wakeRetryAt = Date.now() + (older ? 10 * 60_000 : 30_000);
+            if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+              this.#fatal ??= error;
+            }
+            return "unsupported" as const;
+          },
+        ),
+        local,
+      ]);
+      return result;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      if (this.#wake === woken) this.#wake = null;
+    }
   }
 
   /** Runs until the signal aborts, the credential is rejected, or the runtime is revoked. */
@@ -1433,6 +1672,23 @@ export class RuntimeEngine {
     let failures = 0;
     let idle = 0;
     let ready = false;
+    /** The last wake said work was queued: if none is claimable, back off. */
+    let expectWork = false;
+    // 0.11 §3.1: the heartbeat's own timer. It only sends when the loop has
+    // not (one heartbeat in flight at most); its failures are the loop's to
+    // report, so they are only logged here.
+    const beatEvery = this.#o.heartbeatMs > 0 ? this.#o.heartbeatMs : 1_000;
+    const beatTimer = setInterval(() => {
+      if (!ready || signal.aborted) return;
+      if (Date.now() - this.#lastHeartbeat < this.#o.heartbeatMs) return;
+      this.heartbeat().catch((error: unknown) => {
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          this.#fatal ??= error;
+          this.wake();
+        }
+      });
+    }, beatEvery);
+    beatTimer.unref?.();
     try {
       this.#setStatus("starting");
       this.recoverTeamJobs();
@@ -1447,17 +1703,45 @@ export class RuntimeEngine {
             await this.refreshPendingLinks();
             ready = true;
           }
+          if (this.#fatal) {
+            const fatal = this.#fatal;
+            this.#fatal = null;
+            throw fatal;
+          }
           if (Date.now() - this.#lastHeartbeat >= this.#o.heartbeatMs) await this.heartbeat();
           if (Date.now() - this.#lastLinkPoll >= this.#o.linkPollMs)
             await this.refreshPendingLinks();
           failures = 0;
           const paused = this.#localPause || this.#runtime?.paused;
           this.#setStatus(paused ? "paused" : "online");
-          const processed = paused ? 0 : await this.deliverOnce();
-          idle = processed ? 0 : idle + 1;
+          const { started, blocked } = paused
+            ? { started: [], blocked: 0 }
+            : await this.#dispatch();
+          idle = started.length ? 0 : idle + 1;
           // Idle: keep provider health fresh (at most every 30 minutes).
-          if (!processed) void this.#healthTick();
-          delay = processed ? 250 : nextDelay(Math.min(idle, 4), this.#o.backoff, this.#o.random);
+          if (!started.length) void this.#healthTick();
+          const expected = expectWork;
+          expectWork = false;
+          if (started.length) {
+            delay = 250;
+          } else if (!paused && !blocked && !expected) {
+            // Nothing waiting here: wait for work with the long-poll (§3.2).
+            const waited = await this.#waitForWork(signal);
+            if (this.#fatal) continue;
+            expectWork = waited === "pending";
+            delay =
+              waited === "unsupported"
+                ? nextDelay(Math.min(idle, 4), this.#o.backoff, this.#o.random)
+                : 0;
+          } else if (expected && !paused && !blocked) {
+            // The server said work was queued but none of it could be claimed
+            // here: never spin on the long-poll; back off briefly instead.
+            delay = nextDelay(Math.min(idle, 2), this.#o.backoff, this.#o.random);
+          } else {
+            // Paused, or queued work is waiting for a free slot: a finishing
+            // task wakes the loop; otherwise the ordinary back-off.
+            delay = nextDelay(Math.min(idle, 4), this.#o.backoff, this.#o.random);
+          }
         } catch (error) {
           if (error instanceof ApiError && error.status === 401) {
             this.#setStatus(
@@ -1497,18 +1781,24 @@ export class RuntimeEngine {
           }
           delay = nextDelay(failures, this.#o.backoff, this.#o.random);
         }
-        await Promise.race([
-          this.#o.sleep(delay, signal),
-          new Promise<void>((r) => {
-            this.#wake = r;
-          }),
-        ]);
-        this.#wake = null;
+        if (delay > 0 && !signal.aborted) {
+          await Promise.race([
+            this.#o.sleep(delay, signal),
+            new Promise<void>((r) => {
+              this.#wake = r;
+            }),
+          ]);
+          this.#wake = null;
+        }
       }
       this.#setStatus("stopped");
       return "stopped";
     } finally {
       signal.removeEventListener("abort", stop);
+      // Jobs already running finish (as before 0.11, when the loop itself ran
+      // them); their leases and heartbeats continue until then.
+      await Promise.allSettled([...this.#running.values()].map((r) => r.done));
+      clearInterval(beatTimer);
       release();
     }
   }

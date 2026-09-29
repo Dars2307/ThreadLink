@@ -72,6 +72,11 @@ export type HealthRecord = {
   /** ISO time of the observation this health rests on. Null when never checked. */
   checkedAt: string | null;
   detail: string;
+  /**
+   * 0.11 (§5): for usage_exhausted, when the provider's own output said the
+   * limit resets (ISO). Null when it did not say: never estimated.
+   */
+  resetsAt?: string | null;
 };
 
 /** "ok" when the authenticated call answered; otherwise why it did not. */
@@ -328,6 +333,8 @@ type State = {
   checkedAtMs: number | null;
   /** When a probe was last started, for the backoff. */
   probedAtMs: number | null;
+  /** usage_exhausted only: the reset time the provider stated, if it did. */
+  resetsAt?: string | null;
 };
 
 const BACKOFF_HEALTH = new Set<ProviderHealth>(["needs_sign_in", "usage_exhausted"]);
@@ -365,6 +372,7 @@ export class ProviderHealthMonitor {
       health,
       checkedAt: s?.checkedAtMs != null ? new Date(s.checkedAtMs).toISOString() : null,
       detail: HEALTH_DETAIL[health],
+      resetsAt: health === "usage_exhausted" ? (s?.resetsAt ?? null) : null,
     };
   }
 
@@ -436,7 +444,11 @@ export class ProviderHealthMonitor {
    * A real run failed. An auth or usage failure is itself the observation:
    * the provider is marked at once (and the backoff starts), no call is made.
    */
-  noteFailure(provider: AgentProvider, failure: AgentRunFailure): void {
+  noteFailure(
+    provider: AgentProvider,
+    failure: AgentRunFailure,
+    details: { resetsAt?: string | null } = {},
+  ): void {
     const now = this.#o.now();
     this.#failures.push({ provider, at: now });
     this.#failures = this.#failures.filter((f) => now - f.at <= RECENT_FAILURE_WINDOW_MS);
@@ -449,7 +461,13 @@ export class ProviderHealthMonitor {
             ? "not_installed"
             : null;
     if (!health) return;
-    this.#state.set(provider, { health, checkedAtMs: now, probedAtMs: now });
+    const resetsAt =
+      health === "usage_exhausted" &&
+      details.resetsAt &&
+      Number.isFinite(Date.parse(details.resetsAt))
+        ? new Date(Date.parse(details.resetsAt)).toISOString()
+        : null;
+    this.#state.set(provider, { health, checkedAtMs: now, probedAtMs: now, resetsAt });
     this.#o.onChange?.([provider]);
   }
 
@@ -517,10 +535,13 @@ export class ProviderHealthMonitor {
       result = "provider_error";
     }
     const done = this.#o.now();
+    const health = healthFromProbe(result);
     this.#state.set(provider, {
-      health: healthFromProbe(result),
+      health,
       checkedAtMs: done,
       probedAtMs: now,
+      // A probe that is still exhausted keeps the reset time already stated.
+      resetsAt: health === "usage_exhausted" ? (prev?.resetsAt ?? null) : null,
     });
   }
 }

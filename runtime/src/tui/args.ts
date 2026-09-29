@@ -11,7 +11,7 @@ export type ChatCommandName = (typeof CHAT_COMMANDS)[number];
 
 export type ChatCommand =
   | { command: "chats" }
-  | { command: "chat"; query: string }
+  | { command: "chat"; query: string; all: boolean }
   | { command: "new"; project: string | null; mode: ChatMode | undefined; name: string }
   | { command: "agents"; check: boolean };
 
@@ -19,15 +19,19 @@ export type ParseResult = { ok: true; value: ChatCommand } | { ok: false; error:
 
 export const CHAT_USAGE = `Chats (the same chats as ThreadLink on the web):
   threadlink chats                       list your chats (pinned first)
-  threadlink chat "<name>"               open a chat: read, follow and send messages
+  threadlink chat "<name>" [--all]       open a chat: read, follow and send messages
+                                         (--all also shows routine activity)
   threadlink new --project P --mode team [--name N]
                                          start a chat (mode: solo, pair or team)
   threadlink agents [--check]            agents on this computer and their health
   threadlink status                      this Runtime, its host and its agents
 
 In a chat: type a message and press Enter (start with @codex / @claude to
-address one agent). /status shows the chat's state, /older loads earlier
-messages, /quit leaves (work keeps running).`;
+address one agent; /chat to just talk, /work to run it as work). Answer an
+open question by typing it ("continue with Claude", "wait", "stop").
+/status shows the chat's state, /older loads earlier messages, /quit leaves
+(work keeps running). Terminal commands never register or heartbeat this
+computer as an execution host.`;
 
 export function isChatCommand(v: unknown): v is ChatCommandName {
   return typeof v === "string" && (CHAT_COMMANDS as readonly string[]).includes(v);
@@ -36,7 +40,7 @@ export function isChatCommand(v: unknown): v is ChatCommandName {
 export function parseChatCommand(
   command: string,
   positionals: string[],
-  values: { project?: string; mode?: string; name?: string; check?: boolean },
+  values: { project?: string; mode?: string; name?: string; check?: boolean; all?: boolean },
 ): ParseResult {
   if (command === "chats") {
     if (positionals.length > 1) return { ok: false, error: "Usage: threadlink chats" };
@@ -46,7 +50,7 @@ export function parseChatCommand(
     const query = positionals.slice(1).join(" ").trim();
     if (!query) return { ok: false, error: 'Usage: threadlink chat "<chat name>"' };
     if (query.length > 120) return { ok: false, error: "That chat name is too long." };
-    return { ok: true, value: { command: "chat", query } };
+    return { ok: true, value: { command: "chat", query, all: values.all === true } };
   }
   if (command === "new") {
     if (positionals.length > 1)

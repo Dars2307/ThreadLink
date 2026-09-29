@@ -19,6 +19,7 @@ import {
   type ChatQuery,
 } from "./model";
 import { healthEntriesSchema, healthMessage } from "@/lib/providers/health";
+import { composeContextRowSchema, planPost } from "./compose";
 
 import { JOB_MODES, type ChatPage, type PostChatMessageResult } from "./types";
 
@@ -177,20 +178,40 @@ export async function postChatMessageAs(
     error: { code?: string; hint?: string | null; details?: string | null } | null;
   };
   try {
-    result =
-      "chatId" in input
-        ? await db.rpc("post_chat_message", {
-            p_chat_id: input.chatId,
-            p_body: input.body,
-            p_idempotency_key: input.idempotencyKey ?? null,
-          })
-        : await db.rpc("post_chat_message", {
-            p_room_id: input.roomId,
-            p_body: input.body,
-            p_mode: input.mode ?? null,
-            p_builder: input.builder ?? null,
-            p_idempotency_key: input.idempotencyKey ?? null,
-          });
+    if ("chatId" in input) {
+      // 0.11: classify the lane and match a natural answer to an open choice
+      // (section 2.4, 6). The database re-checks the choice and the lane.
+      const ctx = (await db.rpc("chat_compose_context", { p_chat_id: input.chatId })) as {
+        data: unknown;
+        error: { code?: string; hint?: string | null } | null;
+      };
+      if (ctx.error) return failure(chatErrorReason(ctx.error));
+      const context = composeContextRowSchema.safeParse(ctx.data);
+      if (!context.success) return failure("unavailable");
+      const plan = planPost({
+        body: input.body,
+        lane: input.lane ?? null,
+        context: context.data,
+        allowChoiceAnswers: true,
+      });
+      if (plan.body.trim() === "") return failure("empty");
+      result = await db.rpc("post_chat_message", {
+        p_chat_id: input.chatId,
+        p_body: plan.body,
+        p_idempotency_key: input.idempotencyKey ?? null,
+        p_lane: plan.lane,
+        p_lane_reason: plan.laneReason,
+        p_choice_id: plan.choice?.choiceId ?? null,
+        p_choice_key: plan.choice?.key ?? null,
+      });
+    } else
+      result = await db.rpc("post_chat_message", {
+        p_room_id: input.roomId,
+        p_body: input.body,
+        p_mode: input.mode ?? null,
+        p_builder: input.builder ?? null,
+        p_idempotency_key: input.idempotencyKey ?? null,
+      });
   } catch {
     return failure("unavailable");
   }
@@ -210,5 +231,14 @@ export async function postChatMessageAs(
       stored: true,
     };
   }
-  return { ok: true, routed: row.data.routed, jobId: row.data.job_id };
+  const r = row.data;
+  return {
+    ok: true,
+    routed: r.routed as Exclude<typeof r.routed, "provider_blocked">,
+    jobId: r.job_id,
+    ...(r.lane ? { lane: r.lane, laneReason: r.lane_reason ?? null } : {}),
+    ...(r.routed === "choice_resolved" && r.choice_id
+      ? { choiceId: r.choice_id, chosenKey: r.chosen_key, chosenLabel: r.chosen_label ?? undefined }
+      : {}),
+  };
 }

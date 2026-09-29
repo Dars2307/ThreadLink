@@ -4,7 +4,7 @@
  * (built from the stored Runtime credential) and to stdout.
  */
 
-import type { ChatApi } from "../chat-client.ts";
+import type { ChatApi, HostPresence } from "../chat-client.ts";
 import { resolveProject } from "./args.ts";
 import {
   ago,
@@ -147,13 +147,26 @@ export type StatusInput = {
   updateRequired: boolean;
   agents: AgentRow[];
   working: number;
+  /** 0.11 presence of this computer as the server sees it (§4), when it says. */
+  presence?: HostPresence | null;
+  /** This terminal's own connection (its request to ThreadLink succeeded). */
+  connected?: boolean | null;
+};
+
+const PRESENCE_WORD: Record<HostPresence, string> = {
+  online: "Online",
+  working: "Working",
+  reconnecting: "Reconnecting",
+  offline: "Offline",
 };
 
 export function formatStatus(s: StatusInput, now = Date.now()): string[] {
+  const word = s.presence ? PRESENCE_WORD[s.presence] : s.online ? "Online" : "Offline";
   const lines = [
-    `Execution host: ${safeLine(s.runtimeLabel, 80)} (${safeLine(s.platform, 20)}, ${safeLine(s.kind, 20)}) · ${
-      s.online ? "Online" : "Offline"
-    }${s.lastHeartbeatAt ? ` · last check-in ${ago(s.lastHeartbeatAt, now)}` : ""}${s.paused ? " · paused in ThreadLink" : ""}`,
+    `You:            ${s.connected === false ? "Not connected to ThreadLink" : "Connected"}`,
+    `Execution host: ${safeLine(s.runtimeLabel, 80)} (${safeLine(s.platform, 20)}, ${safeLine(s.kind, 20)}) · ${word}${
+      s.lastHeartbeatAt ? ` · last check-in ${ago(s.lastHeartbeatAt, now)}` : ""
+    }${s.paused ? " · paused in ThreadLink" : ""}`,
     `Runtime:        ${safeLine(s.version, 20)}${s.protocol !== null ? ` · protocol ${s.protocol}` : ""}`,
   ];
   if (s.updateRequired)
@@ -163,4 +176,49 @@ export function formatStatus(s: StatusInput, now = Date.now()): string[] {
   lines.push(`Agents:         ${agentsSummary(s.agents, s.working, now)}`);
   for (const l of formatAgents(s.agents, now)) lines.push(`  ${l}`);
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Read-only guard (0.11 §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminal commands that only read (or, for `new`, create a chat through the
+ * chat API). None of them may register this computer as an execution Runtime
+ * or send its heartbeat: the desktop app (or `threadlink run`) is the
+ * execution host, and a terminal must never re-label or impersonate it.
+ */
+export const READ_ONLY_COMMANDS = [
+  "chats",
+  "chat",
+  "new",
+  "agents",
+  "status",
+  "sessions",
+  "links",
+  "approve",
+  "decline",
+] as const;
+
+export const READ_ONLY_REFUSAL =
+  "This command never registers or heartbeats this computer. Use `threadlink run` (or the desktop app) for that.";
+
+/** The engine methods that make this process the execution Runtime. */
+export const RUNTIME_ONLY_METHODS = ["register", "heartbeat", "run", "deliverOnce"] as const;
+
+/**
+ * Wraps an engine so registering, heartbeating or delivering throws instead
+ * of reaching ThreadLink. Every other method (loading workspaces, listing
+ * conversations, answering link requests, checking providers) still works.
+ */
+export function readOnlyEngine<T extends object>(engine: T): T {
+  return new Proxy(engine, {
+    get(target, prop, receiver) {
+      if ((RUNTIME_ONLY_METHODS as readonly (string | symbol)[]).includes(prop)) {
+        return () => Promise.reject(new Error(READ_ONLY_REFUSAL));
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }

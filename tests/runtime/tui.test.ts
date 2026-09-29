@@ -115,7 +115,7 @@ describe("argument parsing", () => {
     });
     expect(parseChatCommand("chat", ["chat", "Prism", "Review"], {})).toEqual({
       ok: true,
-      value: { command: "chat", query: "Prism Review" },
+      value: { command: "chat", query: "Prism Review", all: false },
     });
     expect(parseChatCommand("new", ["new"], { project: "Prism", mode: "TEAM" })).toEqual({
       ok: true,
@@ -230,14 +230,21 @@ describe("formatting", () => {
     expect(lines.join("\n")).not.toContain("tlcht_");
   });
 
-  it("prints the header the brief asks for", () => {
+  it("prints the same compact header as the web, with You and the host apart", () => {
     expect(formatHeader(chat())).toEqual([
-      "ThreadLink — Prism Review",
-      "Prism · Team · Claude Code + Codex",
+      "ThreadLink — Prism Review  TEAM",
+      "Prism · Claude · Codex",
     ]);
-    expect(formatHeader(chat({ runtimeLabel: "Nickron's PC", runtimeOnline: false }))[2]).toBe(
-      "Runs on Nickron's PC · offline",
+    const offline = formatHeader(chat({ runtimeLabel: "Nickron's PC", runtimeOnline: false }));
+    expect(offline[2]).toBe("You · Connected   Nickron's PC · Offline");
+    expect(offline[3]).toBe(
+      "You're connected. Nickron's PC is offline — repository work and agent replies will resume when it reconnects.",
     );
+    expect(
+      formatHeader(chat({ runtimeLabel: "Nickron's PC", thisComputer: true }), {
+        host: "working",
+      })[2],
+    ).toBe("You · Connected   This computer · Working");
   });
 
   it("names every author by identity, unknown providers neutrally", () => {
@@ -282,7 +289,7 @@ describe("formatting", () => {
         chat().participants,
         now,
       ),
-    ).toBe("  … Claude Code · reviewer · reviewing · 3 min");
+    ).toBe("  … Claude · reviewer · reviewing · 3 min");
   });
 
   it("uses one freshness rule: never Ready with stale text", () => {
@@ -434,7 +441,7 @@ describe("threadlink chat", () => {
     await s.start();
     const text = printed.join("\n");
     expect(text).toContain("ThreadLink — Prism Review");
-    expect(text).toContain("Prism · Team · Claude Code + Codex");
+    expect(text).toContain("Prism · Claude · Codex");
     expect(text).toContain("Codex · reviewer");
     expect(text).toContain("message 1");
     expect(text).not.toContain("hidden");
@@ -506,8 +513,8 @@ describe("threadlink chat", () => {
     const { s, printed } = session(api);
     await s.start();
     await s.handleLine("/status");
-    expect(printed.join("\n")).toContain("Prism Review · Working · Claude Code + Codex");
-    expect(printed.join("\n")).toContain("Runs on Nickron");
+    expect(printed.join("\n")).toContain("Prism Review · Working · Claude + Codex");
+    expect(printed.join("\n")).toContain("You · Connected   Nickron · Online");
     await s.handleLine("/older");
     expect(printed.join("\n")).toContain("message 0");
     const before = api.calls.length;
@@ -742,7 +749,7 @@ describe("chat client auth reuse", () => {
     expect(sent.at(-1)!.body).toEqual({ cursor: 14 });
     expect((await client.getChat(CHAT)).lastReadSeq).toBe(9);
     expect(await client.listProjects()).toEqual([
-      { roomId: ROOM, name: "Prism", runtimeLabel: "Nickron" },
+      { roomId: ROOM, name: "Prism", runtimeLabel: "Nickron", thisComputer: true },
     ]);
     await expect(client.post(CHAT, "x".repeat(4001), "key-12345678")).rejects.toThrow("1-4000");
   });

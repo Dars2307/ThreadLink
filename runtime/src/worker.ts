@@ -76,21 +76,49 @@ function isLeaseLoss(error: unknown): boolean {
 
 /** Processes at most one task. Returns what happened. */
 export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
-  const log = deps.log ?? (() => {});
-  const { api, sessionId, claimRef } = deps;
-
-  const inbox = await api.inbox(sessionId, 10);
+  const inbox = await deps.api.inbox(deps.sessionId, 10);
   const next: TaskEnvelope | undefined = inbox.find((t) => t.status === "queued");
   if (!next) return "none";
+  return processTask(deps, next);
+}
 
+/** Claims one specific queued task and runs it to its outcome. */
+export async function processTask(deps: WorkerDeps, next: TaskEnvelope): Promise<Outcome> {
+  const task = await claimTask(deps, next);
+  if (task === "skipped") return "skipped";
+  return runClaimedTask(deps, task);
+}
+
+/**
+ * Claims a queued task for this worker. "skipped" when another worker won it
+ * (409). 0.11: the engine claims first and then runs the task in the
+ * background (runClaimedTask), so the loop keeps polling (§3.3).
+ */
+export async function claimTask(
+  deps: Pick<WorkerDeps, "api" | "sessionId" | "claimRef" | "log">,
+  next: TaskEnvelope,
+): Promise<TaskEnvelope | "skipped"> {
   let task: TaskEnvelope;
   try {
-    task = await api.claim(next.taskId, sessionId, claimRef);
+    task = await deps.api.claim(next.taskId, deps.sessionId, deps.claimRef);
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) return "skipped"; // another worker won
     throw error;
   }
-  log(`claimed ${task.taskId} (attempt ${task.attemptCount ?? "?"})`);
+  (deps.log ?? (() => {}))(`claimed ${task.taskId} (attempt ${task.attemptCount ?? "?"})`);
+  // The claim answer may leave out fields the inbox had; the inbox's are the same task's.
+  return {
+    ...task,
+    content: task.content ?? next.content,
+    taskType: task.taskType ?? next.taskType,
+    createdAt: task.createdAt ?? next.createdAt ?? null,
+  };
+}
+
+/** Starts, heartbeats, executes and completes a task this worker has claimed. */
+export async function runClaimedTask(deps: WorkerDeps, task: TaskEnvelope): Promise<Outcome> {
+  const log = deps.log ?? (() => {});
+  const { api, sessionId, claimRef } = deps;
 
   const controller = new AbortController();
   try {
@@ -126,6 +154,10 @@ export async function processNextTask(deps: WorkerDeps): Promise<Outcome> {
         content: task.content ?? "",
         priority: task.priority,
         taskType: task.taskType,
+        createdAt: task.createdAt ?? null,
+        // The server's claim time when it sent one; otherwise now (same clock
+        // as createdAt only when the server's is used, so null is safer).
+        claimedAt: task.claimedAt ?? null,
       },
       controller.signal,
     );

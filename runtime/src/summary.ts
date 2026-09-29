@@ -41,8 +41,15 @@ const SECRET_PATTERNS: RegExp[] = [
   // names such as DB_PASSWORD or MY_API_KEY (an underscore is a word character,
   // so a plain \b would miss them). The value runs to the end of the line:
   // "Authorization: Bearer <token>" is two words, and stopping at the first
-  // would leave the token sitting there.
-  /[A-Za-z0-9_]*(?:api[-_ ]?key|secret|token|password|passwd|pwd|bearer|authorization|credential)[A-Za-z0-9_]*\s*[:=]?\s*\S.*/gi,
+  // would leave the token sitting there. A separator is required: prose that
+  // merely mentions a token ("an expired token is accepted") is not a secret,
+  // and hiding it made agents' answers about authentication unreadable.
+  /[A-Za-z0-9_]*(?:api[-_ ]?key|secret|token|password|passwd|pwd|authorization|credential)[A-Za-z0-9_]*\s*[:=]\s*\S.*/gi,
+  // "Bearer <value>" and "the password is <value>" (as the server redacts).
+  /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+  // Only a value that looks like one (a digit in it, or long): "the token is
+  // still accepted" is prose.
+  /\b(?:password|passphrase|passwd|secret|token|api[ _-]?key)\s+(?:is|was)\s+(?:["'`]?\S*\d\S*|\S{16,})/gi,
   // Email addresses identify a person.
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
 ];

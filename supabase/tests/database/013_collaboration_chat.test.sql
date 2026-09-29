@@ -257,7 +257,9 @@ select is((pg_temp.job(pg_temp.id('pj'))).mode || '|' || (pg_temp.job(pg_temp.id
   || '|' || (pg_temp.job(pg_temp.id('pj'))).origin, 'pair|codex|controller', 'the job records mode, builder and origin');
 select is(((pg_temp.task((pg_temp.job(pg_temp.id('pj'))).task_id)).content::jsonb)
   - array['kind','version','jobId','roomId','roomName','goal','spec','budgets','policy','agents','verifyCommands',
-      'chatId','participants','roleOverrides'],
+      'chatId','participants','roleOverrides',
+      -- 0.11 carrier fields (lane, failover policy) are asserted in 020.
+      'lane','failoverPolicy'],
   '{"mode":"pair","builder":"codex","reviewer":"claude-code","origin":"controller"}'::jsonb,
   'the carrier content carries mode, builder, reviewer and origin');
 select is(((pg_temp.task((pg_temp.job(pg_temp.id('pj'))).task_id)).content::jsonb) ->> 'version', '1',
@@ -320,8 +322,8 @@ select is((select visibility from pg_temp.ev(format(
 select pg_temp.w(pg_temp.id('pj'), 'c-pj', 'set_final',
   '{"verdict":"NEEDS_FIX","summary":"One blocking finding left.","evidence":{}}');
 select is((select body from pg_temp.ev(format('job_id = %L and event_type = ''job_verdict''', pg_temp.id('pj')))),
-  E'Result: NEEDS_FIX\nBuilder + Reviewer: Codex built it, Claude Code reviewed it. No project checks are set.',
-  'the verdict is built from the job''s columns only');
+  E'Result: NEEDS_FIX\nBuilder + Reviewer. No project checks are set.',
+  'the verdict names a builder or reviewer only from completed runs (none ran here)');
 select is(pg_temp.evc(format('job_id = %L and author_kind = ''threadlink'' and body ~ ''(Redis|per-IP|blocking finding left)''',
   pg_temp.id('pj'))), 0, 'no agent-written title or summary appears in a ThreadLink row');
 select is(pg_temp.evc(format('job_id = %L and author_kind = ''threadlink'' and body ~ ''PASS''', pg_temp.id('pj'))), 0,
@@ -400,7 +402,7 @@ select is(jsonb_array_length(pg_temp.w(pg_temp.id('sj'), 'c-sj', 'read_owner_not
   'a stop message is not delivered as a note');
 select pg_temp.w(pg_temp.id('sj'), 'c-sj', 'set_final', '{"verdict":"NEEDS_USER_DECISION","evidence":{}}');
 select is((select body from pg_temp.ev(format('job_id = %L and event_type = ''job_verdict''', pg_temp.id('sj')))),
-  E'Result: NEEDS_USER_DECISION\nStopped by you.\nSolo job: Codex built it, with no reviewer. No project checks are set.',
+  E'Result: NEEDS_USER_DECISION\nStopped by you.\nSolo job. No project checks are set.',
   'the verdict says the owner stopped it');
 
 reset role;

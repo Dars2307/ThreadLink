@@ -14,6 +14,7 @@ import * as teamOwner from "@/lib/team/owner";
 import type { OwnerJobSummary } from "@/lib/team/queries";
 
 import type { JobDetail } from "./pages";
+import { parseHostStatus, type HostStatus } from "./presence";
 
 /**
  * Every call the chat-first pages make to the server's owner functions, in
@@ -339,48 +340,12 @@ export async function loadChatTimeline(chatId: string): Promise<unknown> {
   return loadChatEvents(chatId);
 }
 
-export type ChatHost = {
-  label: string | null;
-  online: boolean | null;
-  lastSeenAt: string | null;
-  working: boolean;
-  protocolOutdated: boolean;
-};
-
-export type HostStatus = {
-  host: ChatHost | null;
-  /** provider id → {health, checkedAt} from the same check the server judged. */
-  agents: Record<string, { health: string; checkedAt: string | null }>;
-};
+export type { ChatHost, HostStatus } from "./presence";
 
 /** "Runs on <host>", presence and each agent's health with its check time, or null. */
 export async function loadHostStatus(chatId: string): Promise<HostStatus | null> {
   if (!CHAT_ID.test(chatId)) return null;
-  const raw = (await read10("getMyHostStatus", chatId)) as Record<string, unknown> | null;
-  if (!raw || typeof raw !== "object") return null;
-  const rt = raw.runtime as Record<string, unknown> | null | undefined;
-  const presence = rt && isStr(rt.presence) ? rt.presence : null;
-  const host: ChatHost | null =
-    rt && isStr(rt.label)
-      ? {
-          label: rt.label.slice(0, 60),
-          online:
-            presence === "online" || presence === "working"
-              ? true
-              : presence === "offline"
-                ? false
-                : null,
-          lastSeenAt: strOrNull(rt.lastSeenAt),
-          working: presence === "working",
-          protocolOutdated: rt.needsUpdate === true,
-        }
-      : null;
-  const agents: HostStatus["agents"] = {};
-  for (const a of rows(raw.agents) ?? []) {
-    if (!isStr(a.provider) || !isStr(a.health)) continue;
-    agents[a.provider] = { health: a.health, checkedAt: strOrNull(a.checkedAt) };
-  }
-  return { host, agents };
+  return parseHostStatus(await read10("getMyHostStatus", chatId));
 }
 
 export const loadChatFindings = async (chatId: string) =>

@@ -10,6 +10,9 @@ import {
   type ChatAudience,
   type ChatEvent,
   type MessageDelivery,
+  EXECUTION_LANES,
+  LANE_CHOICES,
+  LANE_REASONS,
 } from "./types";
 
 /**
@@ -229,16 +232,32 @@ export const postChatByChatSchema = z
       .string()
       .regex(/^[A-Za-z0-9._:-]{1,128}$/)
       .optional(),
+    /** 0.11: the composer's execution setting (Auto / Chat only / Run work). */
+    lane: z.enum(LANE_CHOICES).optional(),
   })
   .strict();
 
 export const postChatMessageRowSchema = z.object({
-  routed: z.enum(["note_to_active_job", "stop_requested", "new_job", "provider_blocked"]),
+  routed: z.enum([
+    "note_to_active_job",
+    "stop_requested",
+    "new_job",
+    "provider_blocked",
+    // 0.11
+    "chat_job",
+    "choice_resolved",
+  ]),
   job_id: z.string().nullable(),
   event_id: z.string().optional(),
   chat_id: z.string().optional(),
   replayed: z.boolean().optional(),
   health: z.unknown().optional(),
+  // 0.11
+  lane: z.enum(EXECUTION_LANES).optional(),
+  lane_reason: z.enum(LANE_REASONS).nullable().optional(),
+  choice_id: z.string().optional(),
+  chosen_key: z.string().optional(),
+  chosen_label: z.string().nullable().optional(),
 });
 
 // ---------------------------------------------------------------------------

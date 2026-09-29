@@ -9,6 +9,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   Notification,
   powerMonitor,
   shell,
@@ -38,7 +39,7 @@ import {
 } from "threadlink";
 
 import { applyAutoStart, autoStartEnabled } from "./autostart.js";
-import { ChatService } from "./chats.js";
+import { ChatService, type Presentation } from "./chats.js";
 import {
   agentsSummary,
   checkAgain,
@@ -58,7 +59,7 @@ import {
 } from "./model.js";
 import { loadPlans, planBackend, savePlan, type PlanProfile } from "./plans.js";
 import { PhaseMemory, workView } from "./progress.js";
-import { loadSettings, saveSettings } from "./settings.js";
+import { loadSettings, saveSettings, validSettingsPatch } from "./settings.js";
 
 /**
  * ThreadLink desktop app (Windows first, built cross-platform):
@@ -181,13 +182,18 @@ function showWindow() {
     return;
   }
   win = new BrowserWindow({
-    width: 880,
-    height: 720,
-    minWidth: 560,
+    width: 1120,
+    height: 760,
+    minWidth: 720,
     minHeight: 480,
     show: false,
     title: "ThreadLink",
-    backgroundColor: "#0c0c10",
+    // The first paint matches the theme the renderer is about to apply.
+    backgroundColor:
+      state.settings.theme === "light" ||
+      (state.settings.theme === "system" && !nativeTheme.shouldUseDarkColors)
+        ? "#f6f3ff"
+        : "#15112a",
     webPreferences: {
       preload: join(HERE, "preload.cjs"),
       contextIsolation: true,
@@ -370,7 +376,22 @@ function chatApi(): Promise<ChatApi | null> {
   chatClient ??= chatClientFor(ctx, "desktop").catch(() => null);
   return chatClient;
 }
-const chats = new ChatService(chatApi);
+/**
+ * The shared presentation module (0.11 §7), when the embedded Runtime exports
+ * it: the same placement, short names and human system text as the web and
+ * the terminal. chats.ts falls back to the same contract without it.
+ */
+function sharedPresentation(): Presentation {
+  const m = runtimeModule as unknown as Record<string, unknown>;
+  const fn = (name: string) =>
+    typeof m[name] === "function" ? (m[name] as (x: never) => unknown) : undefined;
+  return {
+    chatPlacement: fn("chatPlacement"),
+    agentShortName: fn("agentShortName"),
+    humanSystemText: fn("humanSystemText"),
+  };
+}
+const chats = new ChatService(chatApi, Date.now, sharedPresentation());
 
 /** Provider profiles from the server, merged with what this computer detected. */
 const readPlans = () =>
@@ -577,10 +598,18 @@ function handlers() {
   // Each validates its arguments against an allow-listed shape and is
   // rate-limited in ChatService; answers are views (plain text) or fixed codes.
   ipcMain.handle("chats:list", (_e, groupBy: unknown) => chats.sections(groupBy));
+  ipcMain.handle("chats:overview", (_e, groupBy: unknown) => chats.overview(groupBy));
+  ipcMain.handle("chat:create", (_e, input: unknown) => chats.create(input));
+  ipcMain.handle("settings:failover", (_e, policy: unknown) => chats.setFailover(policy));
   ipcMain.handle("chat:open", (_e, chatId: unknown) => chats.open(chatId));
   ipcMain.handle("chat:events", (_e, chatId: unknown, page: unknown) => chats.events(chatId, page));
-  ipcMain.handle("chat:send", (_e, chatId: unknown, body: unknown, key: unknown) =>
-    chats.send(chatId, body, key),
+  ipcMain.handle("chat:send", (_e, chatId: unknown, body: unknown, key: unknown, lane: unknown) =>
+    chats.send(chatId, body, key, lane),
+  );
+  ipcMain.handle(
+    "chat:answer",
+    (_e, chatId: unknown, choiceId: unknown, option: unknown, key: unknown) =>
+      chats.answer(chatId, choiceId, option, key),
   );
   ipcMain.handle("chat:read", (_e, chatId: unknown, seq: unknown) => chats.read(chatId, seq));
   ipcMain.handle("open:logs", async () => {
@@ -599,11 +628,8 @@ function handlers() {
   });
 
   ipcMain.handle("settings:set", (_e, patch: unknown) => {
-    const p = (patch ?? {}) as Partial<{ autoStart: boolean; notifications: boolean }>;
-    state.settings = saveSettings(ctx.configDir, {
-      ...(typeof p.autoStart === "boolean" ? { autoStart: p.autoStart } : {}),
-      ...(typeof p.notifications === "boolean" ? { notifications: p.notifications } : {}),
-    });
+    // Allow-listed keys and values only (settings.ts validSettingsPatch).
+    state.settings = saveSettings(ctx.configDir, validSettingsPatch(patch));
     applyAutoStart(state.settings.autoStart, { api: app, execPath: process.execPath });
     broadcast();
     return state.settings;

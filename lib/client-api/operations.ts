@@ -64,6 +64,15 @@ const SAFE_REASONS = new Set([
   "runtime_outdated",
   "other_computer",
   "choice_closed",
+  // 0.11 (docs/design/threadlink-0.11.md section 12)
+  "chat_lane",
+  "not_exhausted",
+  "review_missing",
+  "open_findings",
+  "node_failed",
+  "rate_limited",
+  "forbidden",
+  "runtime_required",
 ]);
 
 const ERROR_KINDS: Record<string, ClientErrorKind> = {

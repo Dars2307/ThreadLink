@@ -104,7 +104,7 @@ describe("chat list rows", () => {
       name: "Prism Review",
       project: "Prism",
       modeBadge: "TEAM",
-      participants: "Claude Code + Codex",
+      participants: "Claude + Codex",
       state: "Ready",
     });
     expect(
@@ -154,11 +154,13 @@ describe("chat list rows", () => {
     expect(chatSections(many, "recent")[0]!.rows).toHaveLength(50);
   });
 
-  it("builds the header 'Prism · Team · Claude Code + Codex' and the host line", () => {
+  it("builds the compact header 'Prism · Claude · Codex', the mode badge and the host", () => {
     expect(chatHeader(item() as never)).toMatchObject({
       name: "Prism Review",
-      sub: "Prism · Team · Claude Code + Codex",
-      host: "Runs on Nickron's PC · online",
+      modeBadge: "TEAM",
+      sub: "Prism · Claude · Codex",
+      host: { name: "Nickron's PC", text: "Nickron's PC · Online", thisComputer: false },
+      status: { text: "Ready" },
     });
   });
 });
@@ -222,7 +224,7 @@ describe("identities", () => {
         },
         [claude],
       ),
-    ).toMatchObject({ label: "Claude Code · builder", activity: "building" });
+    ).toMatchObject({ label: "Claude · builder", activity: "building" });
   });
 });
 
@@ -408,7 +410,7 @@ describe("ChatService (main's chat IPC, without Electron)", () => {
     const opened = await svc.open(CHAT);
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    expect(opened.chat.sub).toBe("Prism · Team · Claude Code + Codex");
+    expect(opened.chat.sub).toBe("Prism · Claude · Codex");
     expect(opened.page.events.map((e) => e.seq)).toEqual([1]);
     expect(opened.page.events[0]!.identity.label).toBe("Codex · reviewer");
     await svc.events(CHAT, { after: 2 });
@@ -468,7 +470,7 @@ describe("the IPC surface", () => {
       expect(MAIN_TS).toContain(`ipcMain.handle("${ch}"`);
       expect(PRELOAD).toContain(`"${ch}"`);
     }
-    expect(MAIN_TS).toContain("chats.send(chatId, body, key)");
+    expect(MAIN_TS).toContain("chats.send(chatId, body, key, lane)");
     // The credential stays in main: the preload never exposes a token or the client.
     expect(PRELOAD).not.toMatch(/token|chatClientFor|Authorization/i);
   });
@@ -632,9 +634,8 @@ describe("the Chats screen", () => {
     await settle();
     const rows = [...document.querySelectorAll(".chat-row")].map((r) => r.textContent);
     expect(rows[0]).toContain("Prism Review");
-    expect(rows[0]).toContain("Prism · Claude Code + Codex");
+    expect(rows[0]).toContain("Prism · Claude + Codex");
     expect(rows[0]).toContain("TEAM");
-    expect(rows[0]).toContain("Ready");
     expect(rows[1]).toContain("<img src=x onerror=alert(1)>");
     expect(rows[1]).toContain("Needs you");
     expect(document.querySelector("#view img")).toBeNull();
@@ -658,9 +659,8 @@ describe("an open chat", () => {
   it("shows the header, the timeline and identities", async () => {
     await openFirstChat();
     expect(document.getElementById("chat-title")?.textContent).toBe("Prism Review");
-    expect(document.getElementById("chat-sub")?.textContent).toBe(
-      "Prism · Team · Claude Code + Codex",
-    );
+    expect(document.getElementById("chat-sub")?.textContent).toBe("Prism · Claude · Codex");
+    expect(document.getElementById("chat-mode")?.textContent).toBe("TEAM");
     const msgs = [...document.querySelectorAll(".msg")];
     expect(msgs).toHaveLength(2);
     expect(msgs[0]!.classList.contains("id-agent")).toBe(true);
@@ -749,9 +749,10 @@ describe("an open chat", () => {
     expect(document.querySelector("#view b")).toBeNull();
     expect(document.querySelector(".msg pre.code-block code")?.textContent).toBe("rm -rf <b>");
     expect(document.querySelector(".msg-text")?.textContent).toBe("<script>alert(1)</script>");
-    expect(document.getElementById("chat-live")?.textContent).toContain(
-      "Claude Code · builder · building",
+    expect(document.querySelector("#chat-live .live-name")?.textContent).toBe(
+      "Claude Code · builder",
     );
+    expect(document.getElementById("chat-live")?.textContent).toContain("building");
     const more = document.querySelector(".msg-more") as HTMLButtonElement;
     more.dispatchEvent(new Event("click"));
     expect(document.querySelector(".msg-body")?.textContent).toBe("full text");

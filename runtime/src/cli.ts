@@ -31,6 +31,7 @@ import {
   agentRowsFromProfiles,
   formatAgents,
   formatStatus,
+  readOnlyEngine,
   runChats,
   runNew,
   type AgentRow,
@@ -51,7 +52,7 @@ Conversations:
 
 Chats:
   threadlink chats           your chats (pinned first)
-  threadlink chat "<name>"   open a chat: follow it and send messages (/quit leaves)
+  threadlink chat "<name>"   open a chat: follow it and send messages (/quit leaves, --all activity)
   threadlink new --project P --mode team [--name N]
   threadlink agents          agents on this computer and their health (--check to re-check)
 
@@ -78,6 +79,7 @@ const { values, positionals } = parseArgs({
     mode: { type: "string" },
     name: { type: "string" },
     check: { type: "boolean", default: false },
+    all: { type: "boolean", default: false },
     fresh: { type: "boolean", default: false },
     once: { type: "boolean", default: false },
     yes: { type: "boolean", default: false },
@@ -348,7 +350,7 @@ async function chatCommand(command: string): Promise<number> {
     let rows: AgentRow[];
     if (cmd.check) {
       say("Checking each agent with a real signed-in call...");
-      rows = agentRowsFromLocal(await engineFor(api).checkProviders());
+      rows = agentRowsFromLocal(await readOnlyEngine(engineFor(api)).checkProviders());
     } else {
       rows = await serverAgents(api);
     }
@@ -365,7 +367,7 @@ async function chatCommand(command: string): Promise<number> {
   }
   const detail = await client.getChat(found.value.chatId).catch(() => found.value);
   const rl = createLineReader({ input: stdin, output: stdout, terminal: tty, prompt: "> " });
-  const session = new ChatSession(detail, client, promptSafePrinter(rl));
+  const session = new ChatSession(detail, client, promptSafePrinter(rl), { all: cmd.all });
   await runChatSession(session, rl);
   return 0;
 }
@@ -423,7 +425,12 @@ async function main(): Promise<number> {
 
   const api = await signedInApi(ctx);
   if (!api) throw new Error("Not signed in. Run `threadlink setup`.");
-  const engine = engineFor(api);
+  // Only `run` (and `setup`, `attach`) act as this computer's
+  // Runtime. Every other command gets an engine that cannot register,
+  // heartbeat or deliver (0.11 §4): the execution host is the desktop app or
+  // `threadlink run`, never a terminal command.
+  const runtimeCommand = command === "run" || command === "attach";
+  const engine = runtimeCommand ? engineFor(api) : readOnlyEngine(engineFor(api));
   await engine.loadWorkspaces();
 
   if (command === "run") {
@@ -443,6 +450,7 @@ async function main(): Promise<number> {
     // workspaces come from this computer's own saved state.
     const client = await chatClientFor(ctx, "terminal");
     const host = client ? await client.runtimeInfo().catch(() => null) : null;
+    const connected = Boolean(host);
     await engine.loadWorkspaces();
     const snap = engine.snapshot();
     for (const line of formatStatus({
@@ -457,6 +465,8 @@ async function main(): Promise<number> {
       updateRequired: host?.updateRequired ?? false,
       agents: await serverAgents(api),
       working: workingAgents(snap.team),
+      presence: host?.presence ?? null,
+      connected,
     }))
       say(line);
     if (!host) say("ThreadLink could not be reached; presence is unknown.");
@@ -468,7 +478,6 @@ async function main(): Promise<number> {
   }
 
   if (command === "sessions") {
-    await engine.register();
     for (const c of await engine.discoverConversations(workspace)) {
       say(
         `${c.title ?? "Untitled conversation"} · used ${ago(c.lastUsedAt)} · ${maskSessionId(c.nativeSessionId)}${c.busy ? " · in use" : ""}${c.attached ? " · attached" : ""}`,
@@ -503,8 +512,9 @@ async function main(): Promise<number> {
   }
 
   if (command === "links" || command === "approve" || command === "decline") {
-    await engine.register();
-    await engine.sync();
+    // Answering needs this computer's attached conversations on ThreadLink;
+    // listing does not change anything.
+    if (command !== "links") await engine.sync();
     const pending = await engine.refreshPendingLinks();
     if (command === "links") {
       if (!pending.length) say("No link requests waiting.");

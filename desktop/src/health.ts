@@ -82,7 +82,11 @@ function isoOrNull(v: unknown): string | null {
 }
 
 /** The health value on one row, tolerating `health`, `healthStatus` or `health: { status }`. */
-function healthOf(row: Row): { health: Health | null; checkedAt: string | null } {
+function healthOf(row: Row): {
+  health: Health | null;
+  checkedAt: string | null;
+  resetsAt: string | null;
+} {
   const raw = row.health ?? row.healthStatus ?? row.health_status;
   const nested = obj(raw);
   const value = nested ? (nested.status ?? nested.value ?? nested.health) : raw;
@@ -92,7 +96,13 @@ function healthOf(row: Row): { health: Health | null; checkedAt: string | null }
     nested?.checkedAt ??
     nested?.checked_at ??
     row.checkedAt;
-  return { health: isHealth(value) ? value : null, checkedAt: isoOrNull(checked) };
+  // 0.11 §5: only when the provider actually reported it; never invented.
+  const resets = row.resetsAt ?? row.resets_at ?? nested?.resetsAt ?? nested?.resets_at;
+  return {
+    health: isHealth(value) ? value : null,
+    checkedAt: isoOrNull(checked),
+    resetsAt: isoOrNull(resets),
+  };
 }
 
 /** Rows keyed by provider, from a list or a `{ provider: row }` record. */
@@ -133,6 +143,8 @@ export type HealthView = {
   when: string | null;
   /** "Ready · checked 23 s ago" / "Stale · last checked 2 h ago". */
   status: string;
+  /** 0.11: when an exhausted plan resets, ISO — only when the provider reported it. */
+  resetsAt?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -249,10 +261,13 @@ export function healthViews(snapshot: unknown, now = Date.now()): HealthView[] {
     const fromTeam = team.get(provider);
     const found =
       (fromExtra && healthOf(fromExtra).health ? healthOf(fromExtra) : null) ??
-      (fromTeam ? healthOf(fromTeam) : { health: null, checkedAt: null });
+      (fromTeam ? healthOf(fromTeam) : { health: null, checkedAt: null, resetsAt: null });
     let health: Health = found.health ?? "unknown";
     if (!found.health && fromTeam?.installed === false) health = "not_installed";
-    return healthView(provider, health, found.checkedAt, now);
+    const view: HealthView = healthView(provider, health, found.checkedAt, now);
+    return health === "usage_exhausted" && found.resetsAt
+      ? { ...view, resetsAt: found.resetsAt }
+      : view;
   });
 }
 

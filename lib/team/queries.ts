@@ -54,6 +54,7 @@ export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   cancelled: "Cancelled",
   interrupted: "Interrupted",
   paused: "Paused",
+  review_pending: "Work complete · review pending",
 };
 
 export const NODE_STATUS_LABELS: Record<NodeStatus, string> = {

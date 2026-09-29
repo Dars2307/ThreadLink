@@ -118,7 +118,9 @@ describe("the server's enums are the Runtime's enums", () => {
   // 0.10 additions the server accepts first (a Runtime that does not know them
   // yet never sends them). Once the Runtime lists them too, equality holds again.
   const SERVER_FIRST: Record<string, readonly string[]> = {
-    JOB_STATUSES: ["interrupted", "paused"],
+    // 0.11: review_pending / REVIEW_PENDING (the Runtime adds them with its failover work).
+    JOB_STATUSES: ["interrupted", "paused", "review_pending"],
+    JOB_VERDICTS: ["REVIEW_PENDING"],
     FINDING_STATUSES: ["accepted", "disputed", "fixed", "dismissed"],
   };
   it.each(pairs)("%s", (name, server, runtime) => {
@@ -127,7 +129,9 @@ describe("the server's enums are the Runtime's enums", () => {
     if (runtimeHasAll) {
       expect([...server]).toEqual([...runtime]);
     } else {
-      expect([...runtime]).toEqual([...server].filter((x) => !extra.includes(x)));
+      expect([...runtime]).toEqual(
+        [...server].filter((x) => !extra.includes(x) || (runtime as readonly string[]).includes(x)),
+      );
     }
   });
 
@@ -143,6 +147,7 @@ describe("the server's enums are the Runtime's enums", () => {
     "20260926000100_collaboration_chat.sql",
     "20260927000100_chat_first.sql",
     "20260927000200_threadlink_0_10.sql",
+    "20260929000100_threadlink_0_11.sql",
   ].map((f) =>
     readFileSync(fileURLToPath(new URL(`../supabase/migrations/${f}`, import.meta.url)), "utf8"),
   );
@@ -294,8 +299,13 @@ describe("runtime write operations (the Runtime's shapes)", () => {
   });
 
   it("set_status can never claim a verdict status", () => {
-    for (const status of ["completed", "needs_fix", "blocked", "needs_user_decision", "failed"]) {
+    for (const status of ["needs_fix", "blocked", "needs_user_decision", "review_pending"]) {
       expect(ok({ op: "set_status", payload: { status } })).toBe(false);
+    }
+    // 0.11: a Fast Chat job ends completed | failed (no verdict). The database
+    // refuses both for a work job (pgTAP 020), so the wire only lets them through.
+    for (const status of ["completed", "failed"]) {
+      expect(ok({ op: "set_status", payload: { status } })).toBe(true);
     }
   });
 
