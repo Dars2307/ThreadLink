@@ -6,7 +6,12 @@
 # Patterns are anchored: an unanchored `supabase` would also drop lib/supabase/.
 /tests
 /desktop
-/runtime
+# runtime/: everything except the one dependency-free module the web app
+# shares with the desktop and terminal (runtime/src/chat-presentation.ts).
+/runtime/*
+!/runtime/src
+/runtime/src/*
+!/runtime/src/chat-presentation.ts
 /supabase
 /docs
 /scripts
