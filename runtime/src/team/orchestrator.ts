@@ -834,8 +834,13 @@ export class TeamOrchestrator {
           `${who} did not review this work: its included usage ran out during the job.`,
         );
       }
-      await this.#finish(outcome.verdict, outcome.summary, outcome.reason, pendingFor);
-      return outcome;
+      const recorded = await this.#finish(
+        outcome.verdict,
+        outcome.summary,
+        outcome.reason,
+        pendingFor,
+      );
+      return { ...outcome, ...recorded };
     } catch (error) {
       // Not a verdict: the executor asks the owner (resume / stop).
       if (error instanceof InterruptedRefusal) throw error;
@@ -1385,8 +1390,6 @@ export class TeamOrchestrator {
     await this.#write("set_spec", { spec: redactDeep(spec) });
     this.#specDone = true;
     await this.#checkStop();
-    await this.#setStatus("reviewing", "Read-only review");
-    const record = await this.#d.worktrees.create(set, "review");
     const lead =
       this.#mode === "team"
         ? (this.#roles?.builders[0] ?? this.#participants[0]!)
@@ -1397,13 +1400,80 @@ export class TeamOrchestrator {
         : this.#mode === "pair"
           ? this.#reviewer
           : (this.#roles?.reviewers.find((p) => p !== lead) ?? null);
+
+    // 0.11.2: a one-unit plan, recorded and approved the way a pair job's is,
+    // so the job has the plan and unit a PASS needs on the server. No build
+    // step, commit, code change or integration follows from it.
+    await this.#setStatus("planning", "Recording the read-only review");
+    const unitKey = "review";
+    const plan: Plan = {
+      summary: second
+        ? `Read-only review by ${providerName(lead)}, checked independently by ${providerName(second)}. No files are changed.`
+        : `Read-only review by ${providerName(lead)}. No files are changed.`,
+      nodes: [
+        {
+          key: unitKey,
+          title: "Read-only review",
+          scope: "Inspect and report as the owner asked. No files are changed.",
+          files: [],
+          dependsOn: [],
+          suggestedOwner: lead,
+          rationale: "The owner asked that no files be changed.",
+          complexity: "medium",
+          risk: { ...NO_RISK },
+        },
+      ],
+      risks: [],
+    };
+    const planHash = sha256(JSON.stringify(plan));
+    this.#evidence.planHash = planHash;
+    await this.#write("set_plan", {
+      plan: redactDeep(plan),
+      planHash,
+      approvedBy: second ? [lead, second] : [lead],
+    });
+    this.#planApproved = true;
+    const node: NodeState = {
+      plan: plan.nodes[0]!,
+      owner: lead,
+      reviewer: second,
+      status: "pending",
+      worktree: null,
+      failures: 0,
+      authoredBy: new Set([lead]),
+      reviewedBy: new Set(),
+      commits: [],
+      openFindings: [],
+      disputed: false,
+    };
+    this.#nodes.set(unitKey, node);
+    await this.#write("upsert_nodes", {
+      nodes: [
+        {
+          key: unitKey,
+          title: node.plan.title,
+          scope: node.plan.scope,
+          files: [],
+          dependsOn: [],
+          owner: lead,
+          reviewer: second,
+          status: "pending",
+        },
+      ],
+    });
+    await this.#checkStop();
+
+    await this.#setStatus("reviewing", "Read-only review");
+    const record = await this.#d.worktrees.create(set, "review");
+    node.worktree = record;
+    await this.#nodeStatus(node, "running");
     const schema = reviewSchema(this.#participants);
     const raised: TrackedFinding[] = [];
 
     this.#doing.set(lead, "Reviewing, read-only");
     const first = await this.#call(lead, "investigator", {
       step: "review",
-      unit: null,
+      unit: unitKey,
       round: 0,
       cwd: record.path,
       worktree: record,
@@ -1414,17 +1484,20 @@ export class TeamOrchestrator {
       route: { complexity: "medium", risk: NO_RISK },
     });
     this.#doing.delete(lead);
-    const firstMessage = await this.#message(first, second ?? "threadlink", "review", 0);
+    const firstMessage = await this.#message(first, second ?? "threadlink", "review", 0, {
+      node: unitKey,
+    });
     for (const f of (first.structured as Review).findings ?? []) {
-      raised.push(await this.#finding(null, 0, "review", f, first.provider, first.runId));
+      raised.push(await this.#finding(unitKey, 0, "review", f, first.provider, first.runId));
     }
     await this.#checkStop();
 
     if (second) {
+      await this.#nodeStatus(node, "in_review");
       this.#doing.set(second, "Reviewing independently, read-only");
       const reviewed = await this.#reviewOrSkip(second, "reviewer", {
         step: "review",
-        unit: null,
+        unit: unitKey,
         round: 0,
         cwd: record.path,
         worktree: record,
@@ -1441,11 +1514,15 @@ export class TeamOrchestrator {
       });
       this.#doing.delete(second);
       if (reviewed) {
+        node.reviewedBy.add(reviewed.provider);
         await this.#message(reviewed, first.provider, "review", 0, {
+          node: unitKey,
           replyTo: firstMessage?.id ? { kind: "message", id: firstMessage.id } : null,
         });
         for (const f of (reviewed.structured as Review).findings ?? []) {
-          raised.push(await this.#finding(null, 0, "review", f, reviewed.provider, reviewed.runId));
+          raised.push(
+            await this.#finding(unitKey, 0, "review", f, reviewed.provider, reviewed.runId),
+          );
         }
       }
     }
@@ -1463,33 +1540,51 @@ export class TeamOrchestrator {
       );
     }
 
-    const blocking = raised.filter((f) => f.finding.severity === "blocking");
-    const important = raised.filter((f) => f.finding.severity === "important");
-    const failed = this.#evidence.tests.filter((t) => !t.ok);
-    const parts = ["Read-only review, as you asked: no files were changed."];
-    parts.push(
-      raised.length
-        ? `${raised.length} finding${raised.length === 1 ? "" : "s"} (${blocking.length} blocking, ${important.length} important).`
-        : "No findings.",
+    // 0.11.2: blocking AND important findings stay open for the owner, so both
+    // mean NEEDS_FIX (the server refuses PASS with either open).
+    const problems = raised.filter(
+      (f) => f.finding.severity === "blocking" || f.finding.severity === "important",
     );
-    if (blocking.length) {
-      parts.push(
-        `To fix: ${blocking
-          .slice(0, 5)
-          .map((f) => redactText(f.finding.summary, 160))
-          .join("; ")}.`,
+    const minor = raised.length - problems.length;
+    const failed = this.#evidence.tests.filter((t) => !t.ok);
+    const head = "Read-only review, as you asked: no files were changed.";
+    const checks = this.#evidence.tests.length
+      ? failed.length
+        ? ` Checks failed: ${failed.map((t) => t.command).join(", ")}.`
+        : " ThreadLink ran your checks and they passed."
+      : "";
+    if (problems.length) {
+      await this.#nodeStatus(node, "changes_requested");
+      const titles = problems
+        .slice(0, 5)
+        .map((f) => redactText(f.finding.summary, 160))
+        .join("; ");
+      return this.#verdict(
+        "NEEDS_FIX",
+        `${head} ${problems.length} problem${problems.length === 1 ? "" : "s"} for you to fix: ${titles}${problems.length > 5 ? "; …" : ""}.${checks}`,
+        "review_not_passed",
       );
     }
-    if (this.#evidence.tests.length) {
-      parts.push(
-        failed.length
-          ? `Checks failed: ${failed.map((t) => t.command).join(", ")}.`
-          : "ThreadLink ran your checks and they passed.",
+    if (failed.length) {
+      await this.#nodeStatus(node, "changes_requested");
+      return this.#verdict("NEEDS_FIX", `${head}${checks}`, "tests_failed");
+    }
+    const minorText = minor
+      ? ` ${minor} minor finding${minor === 1 ? "" : "s"}, nothing to fix.`
+      : " No problems found.";
+    if (this.#mode === "solo" && !this.#job.verifyCommands.length) {
+      // The server refuses PASS for a solo job that nothing independent
+      // checked (no reviewer, no project checks). Nothing needs fixing, so the
+      // honest answer is: it is the owner's call whether that is enough.
+      await this.#nodeStatus(node, "approved");
+      return this.#verdict(
+        "NEEDS_USER_DECISION",
+        `${head}${minorText} Nothing independent verified this review: there was no second reviewer and no project checks to run.`,
+        "no_review_or_tests",
       );
     }
-    if (blocking.length) return this.#verdict("NEEDS_FIX", parts.join(" "), "review_not_passed");
-    if (failed.length) return this.#verdict("NEEDS_FIX", parts.join(" "), "tests_failed");
-    return this.#verdict("PASS", parts.join(" "));
+    await this.#nodeStatus(node, "approved");
+    return this.#verdict("PASS", `${head}${minorText}${checks}`);
   }
 
   /** The specification for a job with no normalising step: the owner's own words. */
@@ -3630,7 +3725,7 @@ export class TeamOrchestrator {
     summary: string,
     reason?: VerdictReason,
     provider: AgentProvider | null = null,
-  ): Promise<void> {
+  ): Promise<{ verdict: JobVerdict; summary: string; reason?: VerdictReason }> {
     this.#finalVerdict = verdict;
     this.#finalReason = reason && verdict !== "PASS" ? reason : null;
     this.#status = verdict === "PASS" ? "completed" : verdict.toLowerCase();
@@ -3657,9 +3752,39 @@ export class TeamOrchestrator {
       evidence: this.#evidence,
     });
     this.#d.journal?.finalComputed(JSON.parse(JSON.stringify(payload)));
-    await this.#write("set_final", payload);
+    try {
+      await this.#write("set_final", payload);
+    } catch (error) {
+      // 0.11.2: a verdict the server refuses (409 conflict: its conditions
+      // for a PASS were not met) is not an "unexpected error". The job ends
+      // with the strongest verdict the server accepts, and says why.
+      const fallback = refusedVerdictFallback(error, verdict);
+      if (!fallback) throw error;
+      this.#evidence.uncertainty.push(
+        `ThreadLink could not record this job as ${verdict === "PASS" ? "a pass" : verdict}: ${fallback.why}`,
+      );
+      const retry = setFinalPayload({
+        verdict: fallback.verdict,
+        summary: redactText(
+          `${summary} ThreadLink could not record this as a pass: ${fallback.why}`,
+          2_000,
+        ),
+        reason: fallback.reason,
+        provider,
+        evidence: this.#evidence,
+      });
+      this.#finalVerdict = fallback.verdict;
+      this.#finalReason = fallback.reason;
+      this.#status = fallback.verdict.toLowerCase();
+      this.#d.journal?.finalComputed(JSON.parse(JSON.stringify(retry)));
+      await this.#write("set_final", retry);
+      this.#d.journal?.finalSynced(null);
+      this.#progress(`${fallback.verdict}: ${fallback.why}`);
+      return { verdict: fallback.verdict, summary: String(retry.summary), reason: fallback.reason };
+    }
     this.#d.journal?.finalSynced(null);
     this.#progress(`${verdict}: ${summarize(summary) ?? verdict}`);
+    return { verdict, summary, reason };
   }
 
   /** The final report (§4), from job data only. */
@@ -3744,6 +3869,41 @@ export class TeamOrchestrator {
         reason: this.#finalReason,
       }),
     });
+  }
+}
+
+/**
+ * 0.11.2: the verdict to record instead when the server refused one (409
+ * conflict; its fixed hint, if any, says why). Only a PASS or REVIEW_PENDING
+ * is ever replaced, and never by anything better. Null: not a refusal of that
+ * kind -- the caller rethrows.
+ */
+export function refusedVerdictFallback(
+  error: unknown,
+  verdict: JobVerdict,
+): { verdict: JobVerdict; reason: VerdictReason; why: string } | null {
+  if (verdict !== "PASS" && verdict !== "REVIEW_PENDING") return null;
+  const e = (error ?? {}) as { status?: unknown; kind?: unknown; reason?: unknown };
+  if (e.status !== 409 && e.kind !== "conflict") return null;
+  switch (e.reason) {
+    case "solo_unverified":
+      return {
+        verdict: "NEEDS_USER_DECISION",
+        reason: "no_review_or_tests",
+        why: "nothing independent reviewed or tested this solo job.",
+      };
+    case "review_missing":
+      return {
+        verdict: "NEEDS_FIX",
+        reason: "review_not_passed",
+        why: "the independent review this job needed did not happen.",
+      };
+    default:
+      return {
+        verdict: "NEEDS_FIX",
+        reason: "review_not_passed",
+        why: "ThreadLink's conditions for a pass were not met (open problems, unfinished work or a decision waiting for you).",
+      };
   }
 }
 

@@ -475,8 +475,8 @@ describe("the tray", () => {
   });
 });
 
-it("is version 0.11.1", () => {
-  expect(PKG.version).toBe("0.11.1");
+it("is version 0.11.2", () => {
+  expect(PKG.version).toBe("0.11.2");
 });
 
 // ---------------------------------------------------------------------------

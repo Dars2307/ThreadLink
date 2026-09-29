@@ -82,7 +82,7 @@ export type * from "./chat-client.ts";
 // this package) places rows exactly like the web and the terminal.
 export { agentShortName, chatPlacement, humanSystemText } from "./chat-presentation.ts";
 
-export const RUNTIME_VERSION = "0.11.1";
+export const RUNTIME_VERSION = "0.11.2";
 
 export type RuntimeContext = {
   configDir: string;

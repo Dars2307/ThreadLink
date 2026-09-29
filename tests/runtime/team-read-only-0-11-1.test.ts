@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseTeamJob, type TeamJobDefinition } from "../../runtime/src/team/job.ts";
 import {
+  refusedVerdictFallback,
   TeamOrchestrator,
   type AgentRunRequest,
   type AgentRunResult,
@@ -228,7 +229,8 @@ function harness(script: {
   return { calls, ops, deps, verified };
 }
 
-const NEVER = ["add_change", "upsert_nodes", "open_round", "set_node_status"] as const;
+// 0.11.2: a one-unit plan and node are recorded (a PASS needs them); nothing is built.
+const NEVER = ["add_change", "open_round"] as const;
 
 describe("a read-only work job (0.11.1)", () => {
   it("reports blocking findings for the owner to fix: no fix round, no code change, nothing integrated", async () => {
@@ -300,7 +302,7 @@ describe("a read-only work job (0.11.1)", () => {
     ).run(repo);
     expect(h.calls).toHaveLength(2);
     expect(new Set(h.calls.map((c) => c.provider)).size).toBe(2);
-    expect(h.ops.filter((o) => o.op === "set_plan")).toHaveLength(0);
+    expect(h.ops.filter((o) => o.op === "set_plan")).toHaveLength(1);
     expect(outcome.verdict).toBe("PASS");
   });
 
@@ -310,5 +312,162 @@ describe("a read-only work job (0.11.1)", () => {
       repo,
     );
     expect(h.calls.some((c) => c.role === "builder" && c.access === "workspace-write")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.11.2: against a fake server that enforces the real set_final PASS rules
+// (team_job_write set_final, migrations 0.10 + 0.11).
+// ---------------------------------------------------------------------------
+
+class Refused extends Error {
+  readonly status = 409;
+  readonly kind = "conflict";
+  constructor(readonly reason: string | null) {
+    super("ThreadLink request failed (409 conflict)");
+  }
+}
+
+/** The server's set_final PASS checks, over the ops the Runtime sent. */
+function strictSink(
+  base: (op: TeamOp, payload: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  job: TeamJobDefinition,
+  extra: { refuseAll?: string | null } = {},
+) {
+  const findings = new Map<string, { severity: string; status: string }>();
+  const nodes = new Map<string, { status: string; reviewer: string | null }>();
+  const runs = new Map<string, { provider: string; role: string; status: string }>();
+  let planApproved = false;
+  let seq = 0;
+  const finals: Record<string, unknown>[] = [];
+  const sink = async (op: TeamOp, payload: Record<string, unknown>) => {
+    const answer = await base(op, payload);
+    switch (op) {
+      case "set_plan":
+        planApproved = Array.isArray(payload.approvedBy) && payload.approvedBy.length > 0;
+        break;
+      case "upsert_nodes":
+        for (const n of payload.nodes as { key: string; status: string; reviewer: string | null }[])
+          nodes.set(n.key, { status: n.status, reviewer: n.reviewer });
+        break;
+      case "set_node_status":
+        nodes.get(String(payload.key))!.status = String(payload.status);
+        break;
+      case "add_finding": {
+        const id = `tlfnd_${String(++seq).padStart(32, "0")}`;
+        findings.set(id, { severity: String(payload.severity), status: "open" });
+        return { ...answer, findingId: id };
+      }
+      case "set_finding_status":
+        findings.get(String(payload.findingId))!.status = String(payload.status);
+        break;
+      case "run_started":
+        runs.set(String(answer.runId), {
+          provider: String(payload.provider),
+          role: String(payload.role),
+          status: "running",
+        });
+        break;
+      case "run_finished":
+        runs.get(String(payload.runId))!.status = String(payload.status);
+        break;
+      case "set_final": {
+        if (payload.verdict === "PASS") {
+          if (extra.refuseAll !== undefined) throw new Refused(extra.refuseAll);
+          if (job.mode === "solo" && job.verifyCommands.length === 0)
+            throw new Refused("solo_unverified");
+          const open = ["open", "accepted", "disputed", "fixed"];
+          if (
+            [...findings.values()].some(
+              (f) => open.includes(f.status) && ["blocking", "important"].includes(f.severity),
+            )
+          )
+            throw new Refused(null);
+          if (
+            !nodes.size ||
+            [...nodes.values()].some(
+              (n) => !["approved", "integrated", "skipped"].includes(n.status),
+            )
+          )
+            throw new Refused(null);
+          if (!planApproved) throw new Refused(null);
+          for (const n of nodes.values()) {
+            if (
+              n.reviewer &&
+              ![...runs.values()].some(
+                (r) =>
+                  r.provider === n.reviewer && r.status === "completed" && r.role === "reviewer",
+              )
+            )
+              throw new Refused("review_missing");
+          }
+        }
+        finals.push(payload);
+        break;
+      }
+    }
+    return answer;
+  };
+  return { sink, finals };
+}
+
+describe("a read-only job's verdict is one the server accepts (0.11.2)", () => {
+  it("an important finding is a problem for the owner: NEEDS_FIX, accepted", async () => {
+    const h = harness({
+      findings: (p) =>
+        p === "codex" ? [finding("important", "Passwords are logged on failure")] : [],
+    });
+    const strict = strictSink(h.deps.sink, job());
+    const outcome = await new TeamOrchestrator(job(), { ...h.deps, sink: strict.sink }).run(repo);
+    expect(outcome.verdict).toBe("NEEDS_FIX");
+    expect(outcome.reason).toBe("review_not_passed");
+    expect(outcome.summary).toContain(
+      "Read-only review, as you asked: no files were changed. 1 problem for you to fix: Passwords are logged on failure",
+    );
+    expect(strict.finals.map((f) => f.verdict)).toEqual(["NEEDS_FIX"]);
+  });
+
+  it("only minor findings and passing checks: PASS, and the server accepts it (plan, unit, review on record)", async () => {
+    const h = harness({ findings: () => [finding("non_blocking", "Naming could be clearer")] });
+    const strict = strictSink(h.deps.sink, job());
+    const outcome = await new TeamOrchestrator(job(), { ...h.deps, sink: strict.sink }).run(repo);
+    expect(outcome.verdict).toBe("PASS");
+    expect(strict.finals.map((f) => f.verdict)).toEqual(["PASS"]);
+    expect(h.ops.filter((o) => o.op === "add_change")).toHaveLength(0);
+    expect(h.calls.every((c) => c.access === "read-only")).toBe(true);
+  });
+
+  it("solo with no checks and nothing to fix: NEEDS_USER_DECISION (nothing verified it), which the server accepts", async () => {
+    const solo = job({ mode: "solo", builder: "codex", reviewer: null, verifyCommands: [] });
+    const h = harness({});
+    const strict = strictSink(h.deps.sink, solo);
+    const outcome = await new TeamOrchestrator(solo, { ...h.deps, sink: strict.sink }).run(repo);
+    expect(outcome).toMatchObject({ verdict: "NEEDS_USER_DECISION", reason: "no_review_or_tests" });
+    expect(outcome.summary).toMatch(/Nothing independent verified this review/);
+    expect(strict.finals.map((f) => f.verdict)).toEqual(["NEEDS_USER_DECISION"]);
+  });
+
+  it("a refused PASS falls back to the strongest accepted verdict, never 'unexpected error'", async () => {
+    const h = harness({});
+    const strict = strictSink(h.deps.sink, job(), { refuseAll: "review_missing" });
+    const outcome = await new TeamOrchestrator(job(), { ...h.deps, sink: strict.sink }).run(repo);
+    expect(outcome.verdict).toBe("NEEDS_FIX");
+    expect(outcome.reason).toBe("review_not_passed");
+    expect(outcome.summary).toMatch(/could not record this as a pass: the independent review/);
+    expect(outcome.evidence.uncertainty.join(" ")).toMatch(/could not record this job as a pass/);
+    expect(strict.finals.map((f) => f.verdict)).toEqual(["NEEDS_FIX"]);
+    expect(JSON.stringify(outcome)).not.toMatch(/unexpected error/);
+  });
+
+  it("maps refusals to fixed verdicts and leaves other errors alone", () => {
+    expect(refusedVerdictFallback(new Refused("solo_unverified"), "PASS")).toMatchObject({
+      verdict: "NEEDS_USER_DECISION",
+      reason: "no_review_or_tests",
+    });
+    expect(refusedVerdictFallback(new Refused(null), "REVIEW_PENDING")).toMatchObject({
+      verdict: "NEEDS_FIX",
+    });
+    expect(refusedVerdictFallback(new Refused(null), "NEEDS_FIX")).toBeNull();
+    expect(refusedVerdictFallback({ status: 500, kind: "unavailable" }, "PASS")).toBeNull();
   });
 });

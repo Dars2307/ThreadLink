@@ -803,6 +803,13 @@ decided only by message like any other.
 
 - **0.11.1: a stop request is final.** Production: "@team stop" was posted while Claude was reviewing; the review then timed out and ThreadLink asked "Retry this step · Give it more time · Stop". Now, after any failed step (timeout, provider error, usage exhausted, sign-in), the Runtime re-reads the job control, and if a stop was requested (`stop_now` or `cancel_queued`/`stopRequestedAt`) the job ends NEEDS_USER_DECISION `stopped_by_owner`. Nothing is retried, and no `timeout`, `provider_failure`, `usage_exhausted` or `plan_disagreement` choice is asked. `#ask` refuses to ask after a stop, and a pending choice or a usage wait ends as soon as a stop is seen (`FailoverDeps.shouldStop`).
 
+- **0.11.2: read-only verdicts the server accepts.** In Production a read-only job reported PASS and the server refused it with 409, because PASS needs an approved plan, at least one unit, and no open blocking or important finding. The Runtime turned the refusal into BLOCKED "unexpected error". Now:
+  - The read-only job records a one-unit plan ("Read-only review"), approved by its agents, with that unit's node, the same way a pair job does. Nothing is built, committed, recorded as a change or integrated.
+  - Any open blocking or important finding means NEEDS_FIX (`review_not_passed`), with the summary "Read-only review, as you asked: no files were changed. N problems for you to fix: …" (up to 5 titles). Failed checks mean NEEDS_FIX (`tests_failed`). Only minor findings or none, with the checks passing, means PASS.
+  - A solo read-only job with no checks and nothing to fix cannot PASS on the server (`solo_unverified`). NEEDS_FIX would claim there is something to fix, so it ends NEEDS_USER_DECISION `no_review_or_tests`, the same as a normal solo job with no checks, and the summary says "Nothing independent verified this review".
+  - A refused PASS or REVIEW_PENDING (409 conflict) never becomes "unexpected error". `refusedVerdictFallback` records the strongest verdict the server accepts: `solo_unverified` becomes NEEDS_USER_DECISION `no_review_or_tests`, anything else NEEDS_FIX `review_not_passed`. A fixed sentence is added to the summary and the uncertainty. Any other error still ends the job as before.
+  - Runtime 0.11.2.
+
 ### Database + server engineer — final (deviations and limitations)
 
 Migration `supabase/migrations/20260929000100_threadlink_0_11.sql`; pgTAP
