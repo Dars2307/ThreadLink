@@ -71,7 +71,11 @@ export function redactExportText(input: string): string {
     /(\b[A-Za-z0-9_]*(KEY|PASS|CREDS?|CREDENTIALS?|Key|Pass|Creds?|Credentials?|_key|_pass|_creds?|_credentials?)["']?\s*[:=]\s*)[^\n]+/g,
     `$1${R}`,
   );
-  t = t.replace(/(\b([A-Za-z0-9_-]*(credentials?|creds)|pass)["']?\s*[:=]\s*)[^\n]+/gi, `$1${R}`);
+  t = t.replace(/(\b[A-Za-z0-9_-]*(credentials?|creds)["']?\s*[:=]\s*)[^\n]+/gi, `$1${R}`);
+  // A bare "pass": "pass=" anywhere, "pass:" only as a label at the start of
+  // a line; "a deeper pass: ..." is prose (0.11.3, as the database does).
+  t = t.replace(/(\bpass["']?\s*=\s*)[^\n]+/gi, `$1${R}`);
+  t = t.replace(/((^|\n)[ \t]*([-*•][ \t]*)?pass["']?[ \t]*:[ \t]*)[^\n]+/gi, `$1${R}`);
   t = t.replace(/\b(sk|pk|rk)[-_][A-Za-z0-9_-]{12,}/gi, R);
   t = t.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, R);
   t = t.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, R);
