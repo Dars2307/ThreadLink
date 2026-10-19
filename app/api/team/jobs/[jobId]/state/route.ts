@@ -3,6 +3,7 @@ import { writeTeamState } from "@/lib/team/client-api";
 import { TEAM_SIZE_LIMITS } from "@/lib/team/model";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /**
  * Runtime only: one write to a team job's structured state.

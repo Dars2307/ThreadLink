@@ -1671,7 +1671,7 @@ export class RuntimeEngine {
               error instanceof ApiError &&
               (error.status === 404 || error.status === 405 || error.kind === "not-threadlink");
             this.#wakeSupported = false;
-            this.#wakeRetryAt = Date.now() + (older ? 10 * 60_000 : 30_000);
+            this.#wakeRetryAt = Date.now() + 30_000;
             if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
               this.#fatal ??= error;
             }

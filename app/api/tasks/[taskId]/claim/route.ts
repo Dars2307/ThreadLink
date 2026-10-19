@@ -2,6 +2,7 @@ import { handleClientRequest, readJsonBody } from "@/lib/client-api/handler";
 import { claimTask } from "@/lib/client-api/tasks";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Exact target agent: atomically claim a queued task (`{ sessionId, claimRef }`). */
 export async function POST(

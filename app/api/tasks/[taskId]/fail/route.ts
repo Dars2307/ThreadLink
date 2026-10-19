@@ -3,6 +3,7 @@ import { failTask } from "@/lib/client-api/tasks";
 import { TASK_LIMITS } from "@/lib/tasks/model";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Claiming worker: fail with an error message; routed to the origin. */
 export async function POST(

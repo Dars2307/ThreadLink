@@ -2,6 +2,7 @@ import { handleClientRequest, readJsonBody } from "@/lib/client-api/handler";
 import { renewTaskLease } from "@/lib/client-api/tasks";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Claiming worker: renew the claim lease (`{ sessionId, claimRef }`). */
 export async function POST(
