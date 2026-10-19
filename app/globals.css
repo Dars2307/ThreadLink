@@ -313,6 +313,36 @@ details > summary::-webkit-details-marker {
   display: none;
 }
 
+/* Form baseline: ensure inputs inherit the foreground color in all themes. */
+input,
+textarea,
+select {
+  color: var(--foreground);
+}
+
+/* Checkbox / radio: tint with the accent so they match the design system. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* Subtle scrollbars on WebKit / Blink so the sidebar rail doesn't
+   flash a heavy OS scrollbar over the backdrop. */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
 /* 0.11 §8: on a chat the timeline is the only scroll surface; the page never scrolls. */
 html:has(#tl-timeline),
 body:has(#tl-timeline) {

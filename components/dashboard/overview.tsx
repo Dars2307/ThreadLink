@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { Badge, Card, CardTitle, EmptyState, type Tone } from "@/components/ui";
+import { Badge, Card, CardTitle, cx, EmptyState, type Tone } from "@/components/ui";
 import type { deriveDashboard, LinkActivity, LinkCard } from "@/lib/dashboard/view-model";
 
 type View = ReturnType<typeof deriveDashboard>;
@@ -52,14 +52,28 @@ export function ConnectedApps({ apps }: { apps: View["apps"] }) {
   );
 }
 
+const APP_MARKS: Record<string, { letter: string; bg: string; fg: string }> = {
+  chatgpt: { letter: "G", bg: "bg-success-soft", fg: "text-success" },
+  "claude-code": { letter: "C", bg: "bg-claude-bg", fg: "text-claude-fg" },
+  "generic-mcp": { letter: "M", bg: "bg-codex-bg", fg: "text-codex-fg" },
+};
+
 function AppMark({ platform }: { platform: string }) {
-  const letter = platform === "chatgpt" ? "G" : platform === "generic-mcp" ? "M" : "C";
+  const mark = APP_MARKS[platform] ?? {
+    letter: (platform[0] ?? "?").toUpperCase(),
+    bg: "bg-surface-muted",
+    fg: "text-muted",
+  };
   return (
     <span
       aria-hidden
-      className="bg-surface-muted text-muted flex size-9 shrink-0 items-center justify-center rounded-xl text-sm font-semibold"
+      className={cx(
+        "flex size-9 shrink-0 items-center justify-center rounded-xl text-sm font-semibold",
+        mark.bg,
+        mark.fg,
+      )}
     >
-      {letter}
+      {mark.letter}
     </span>
   );
 }
