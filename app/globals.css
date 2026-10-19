@@ -238,6 +238,32 @@
   color-scheme: dark;
 }
 
+/*
+ * Marketing pages (landing, sign-in, sign-up): always dark regardless of the
+ * user's system theme. Applied by app/(marketing)/layout.tsx via .tl-marketing.
+ * Child elements inherit these overrides through normal CSS custom-property
+ * inheritance — no component changes needed.
+ */
+.tl-marketing {
+  --background: #07070e;
+  --surface: #0e0e1a;
+  --surface-muted: #13131f;
+  --border: #1e1e2e;
+  --border-strong: #28283a;
+  --foreground: #f2f2f5;
+  --muted: #b0b0be;
+  --subtle: #8888a0;
+  --accent: #8b8cff;
+  --accent-hover: #a3a4ff;
+  --accent-foreground: #0c0c10;
+  --accent-soft: #1a1a33;
+  --ring: #8b8cff;
+  --line-soft: rgba(255, 255, 255, 0.08);
+  --side: rgba(12, 12, 17, 0.82);
+  --head: rgba(7, 7, 14, 0.82);
+  color-scheme: dark;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
@@ -293,6 +319,7 @@
   --shadow-glow: var(--glow);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-space-grotesk, var(--font-geist-sans, ui-sans-serif));
 }
 
 body {

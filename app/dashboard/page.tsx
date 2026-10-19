@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { PageHeader, Shell, StatGrid, StatTile } from "@/components/dashboard/shell";
 import { ModeBadge } from "@/components/dashboard/chats";
+import { MissionControl } from "@/components/dashboard/mission-control";
 import { OnboardingCard } from "@/components/dashboard/onboarding";
 import { SetupWizard } from "@/components/dashboard/setup-wizard";
 import { Badge, buttonStyles, Card, CardTitle, EmptyState } from "@/components/ui";
@@ -52,8 +53,10 @@ export default async function HomePage() {
   const home = chats ? homeChats(chats, account.now) : null;
   const chatLink = (row: ChatRow) => chatHref(home!.handles[row.key]!.chatId!);
   const firstName = clerkUser.firstName ?? clerkUser.username ?? null;
-  // The setup steps need the session choices; they only render until setup is done.
-  const setup = view.setupComplete ? null : deriveDashboard(account);
+  // Always derive the full view model — activity goes to Mission Control, setup
+  // steps only render until setup is done.
+  const dashView = deriveDashboard(account);
+  const setup = view.setupComplete ? null : dashView;
   const origin = setup ? await requestOrigin() : "";
   // First run: connect agents → create the first chat. "Ready" counts only when freshly checked.
   const profiles = providers?.profiles ?? [];
@@ -166,6 +169,8 @@ export default async function HomePage() {
           <StatTile key={c.key} label={c.label} value={c.value} />
         ))}
       </StatGrid>
+
+      <MissionControl activity={dashView.activity} />
 
       {setup ? (
         <SetupWizard
