@@ -2,6 +2,7 @@ import { handleClientRequest, readJsonBody } from "@/lib/client-api/handler";
 import { reportTaskBlocked } from "@/lib/client-api/tasks";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /**
  * Agent only: "I am alive but cannot proceed" — the Claude session is in Plan

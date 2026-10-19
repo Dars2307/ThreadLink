@@ -6,6 +6,7 @@ import {
 } from "@/lib/team/client-api";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /**
  * Runtime only (agent credential of a registered Runtime).

@@ -2,6 +2,7 @@ import { handleClientRequest, readJsonBody } from "@/lib/client-api/handler";
 import { approvePairing } from "@/lib/client-api/operations";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Agent-only: the exact target agent session approves a pending pairing. */
 export async function POST(request: Request): Promise<Response> {

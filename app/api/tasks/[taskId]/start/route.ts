@@ -2,6 +2,7 @@ import { handleClientRequest, readJsonBody } from "@/lib/client-api/handler";
 import { startTask } from "@/lib/client-api/tasks";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Claiming worker: mark the task as working (`{ sessionId, claimRef }`). */
 export async function POST(
