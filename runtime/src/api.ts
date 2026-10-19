@@ -363,6 +363,26 @@ export class ThreadLinkApi {
     });
   }
 
+  /**
+   * Fire-and-forget: append one lifecycle event to a task. Never throws;
+   * event emission is best-effort and must not affect task execution.
+   */
+  emitEvent(
+    taskId: string,
+    event: {
+      speaker: "user" | "chatgpt" | "claude_code" | "system";
+      event_type: string;
+      content?: string;
+      payload?: Record<string, unknown>;
+    },
+  ): void {
+    void this.#request<unknown>(
+      "POST",
+      `/api/tasks/${encodeURIComponent(taskId)}/events`,
+      event,
+    ).catch(() => {});
+  }
+
   /** Decline (revoke) a pending link request for one of this runtime's conversations. */
   declinePairing(sessionId: string, linkId: string) {
     return this.#request<LinkView>("POST", "/api/pairing/revoke", { sessionId, linkId });

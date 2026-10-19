@@ -1518,6 +1518,7 @@ export class RuntimeEngine {
           },
         );
       },
+      emitEvent: ({ taskId, ...event }) => this.#o.api.emitEvent(taskId, event),
     };
   }
 
