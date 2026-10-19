@@ -11,9 +11,7 @@
 -- route enforces ownership at the application layer before every insert.
 
 create table public.task_events (
-  id text primary key
-    default threadlink_private.generate_id('tltev')
-    constraint task_events_id_format check (id ~ '^tltev_[0-9a-f]{32}$'),
+  id uuid primary key default gen_random_uuid(),
   task_id text not null,
   owner_user_id text not null,
   created_at timestamptz not null default now(),
