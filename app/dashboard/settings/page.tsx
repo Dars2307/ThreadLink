@@ -133,9 +133,12 @@ export default async function SettingsPage() {
           <Link
             key={m.href}
             href={m.href}
-            className="border-border bg-surface shadow-card hover:border-border-strong flex flex-col gap-1 rounded-2xl border p-5 transition-colors"
+            className="border-border bg-surface shadow-card hover:border-border-strong hover:bg-surface-muted/50 group flex flex-col gap-1.5 rounded-2xl border p-5 transition-colors"
           >
-            <span className="text-sm font-semibold">{m.title} →</span>
+            <span className="text-sm font-semibold">
+              {m.title}
+              <span aria-hidden className="text-subtle ml-1 transition-transform group-hover:translate-x-0.5 inline-block">→</span>
+            </span>
             <span className="text-muted text-sm">{m.text}</span>
           </Link>
         ))}

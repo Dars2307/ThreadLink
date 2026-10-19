@@ -24,10 +24,10 @@ export function SettingsNav({ current }: { current: SettingsSection }) {
               href={s.href}
               aria-current={current === s.href ? "page" : undefined}
               className={cx(
-                "-mb-px inline-block border-b-2 px-3 py-2 text-sm whitespace-nowrap transition-colors",
+                "-mb-px inline-block border-b-2 px-3 py-2.5 text-sm whitespace-nowrap transition-colors",
                 current === s.href
                   ? "border-accent text-foreground font-medium"
-                  : "text-muted hover:text-foreground border-transparent",
+                  : "text-muted hover:text-foreground hover:border-border-strong border-transparent",
               )}
             >
               {s.label}

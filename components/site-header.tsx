@@ -3,16 +3,33 @@ import Link from "next/link";
 
 import { buttonStyles } from "@/components/ui";
 
+const LOGO_MARK = (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M9 7H7a5 5 0 0 0 0 10h2" />
+    <path d="M15 7h2a5 5 0 0 1 0 10h-2" />
+    <path d="M8 12h8" />
+  </svg>
+);
+
 export function SiteHeader() {
   return (
-    <header className="border-border bg-background/85 sticky top-0 z-10 border-b backdrop-blur">
+    <header className="border-border bg-background/85 sticky top-0 z-10 border-b backdrop-blur-md">
       <nav className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
         <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
           <span
-            aria-hidden
-            className="bg-accent text-accent-foreground flex size-6 items-center justify-center rounded-md text-xs"
+            className="bg-accent text-accent-foreground shadow-glow flex size-7 items-center justify-center rounded-lg"
           >
-            ⇄
+            {LOGO_MARK}
           </span>
           ThreadLink
         </Link>

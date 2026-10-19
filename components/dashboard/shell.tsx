@@ -27,8 +27,8 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-3">
-      {eyebrow ? <p className="text-muted text-sm">{eyebrow}</p> : null}
+    <header className="flex flex-col gap-2">
+      {eyebrow ? <p className="text-subtle text-xs font-medium tracking-wide uppercase">{eyebrow}</p> : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
@@ -36,7 +36,7 @@ export function PageHeader({
         </div>
         {actions}
       </div>
-      {description ? <p className="text-muted max-w-2xl text-sm">{description}</p> : null}
+      {description ? <p className="text-muted max-w-2xl text-sm leading-relaxed">{description}</p> : null}
     </header>
   );
 }
@@ -57,7 +57,7 @@ export function LoadError({ what }: { what: string }) {
 export function StatTile({ label, value, hint }: { label: string; value: number; hint?: string }) {
   return (
     <div className="border-border bg-surface shadow-card flex flex-col gap-1 rounded-2xl border px-4 py-3">
-      <span className="text-2xl font-semibold tracking-tight tabular-nums">{value}</span>
+      <span className="text-accent text-2xl font-semibold tracking-tight tabular-nums">{value}</span>
       <span className="text-muted text-xs">{label}</span>
       {hint ? <span className="text-subtle text-[0.7rem]">{hint}</span> : null}
     </div>
