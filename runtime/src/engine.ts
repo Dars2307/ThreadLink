@@ -316,7 +316,7 @@ type Api = Pick<
   | "reportProviderDetection"
 > &
   // Optional so embedded engines and older test doubles need not provide them.
-  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan" | "wake">>;
+  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan" | "wake" | "emitEvent">>;
 
 export type EngineOptions = {
   api: Api;
@@ -1518,7 +1518,7 @@ export class RuntimeEngine {
           },
         );
       },
-      emitEvent: ({ taskId, ...event }) => this.#o.api.emitEvent(taskId, event),
+      emitEvent: ({ taskId, ...event }) => this.#o.api.emitEvent?.(taskId, event),
     };
   }
 
