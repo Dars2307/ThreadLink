@@ -373,7 +373,8 @@ export const Composer = memo(function Composer({
         </ul>
       ) : null}
 
-      <div className="tl-glass border-field shadow-float focus-within:border-accent/60 relative flex flex-col gap-2.5 rounded-[22px] border py-2 pr-2 pl-3.5 transition-colors motion-reduce:transition-none sm:rounded-2xl sm:pt-3 sm:pr-3 sm:pb-2.5 sm:pl-4">
+      <div className="tl-composer-beam shadow-float">
+      <div className="tl-glass border-field relative flex flex-col gap-2.5 rounded-[22px] border py-2 pr-2 pl-3.5 sm:rounded-2xl sm:pt-3 sm:pr-3 sm:pb-2.5 sm:pl-4">
         <label htmlFor={COMPOSER_ID} className="sr-only">
           Message
         </label>
@@ -507,6 +508,7 @@ export const Composer = memo(function Composer({
             </button>
           </div>
         </div>
+      </div>
       </div>
       <p className="text-subtle hidden text-center text-[11px] sm:block">
         {lane === "auto"
