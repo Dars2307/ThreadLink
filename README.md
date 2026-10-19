@@ -15,6 +15,19 @@ session-binding, routing, task, message and return-path layer.
 > [`THREADLINK_MASTER_GUIDE.md`](THREADLINK_MASTER_GUIDE.md). Operating rules for coding agents are in
 > [`CLAUDE.md`](CLAUDE.md).
 
+## Alpha Status & Known Limitations
+
+> **This is Alpha v0.1 software.** It is functional for its intended use case but has known
+> limitations that will be addressed in upcoming phases. Read these before deploying or connecting
+> sensitive AI clients.
+
+| Limitation | Detail |
+| ----------------------------------- | ----------------------------------------------------------- |
+| **OAuth tokens do not expire** | Tokens issued to AI clients (ChatGPT, etc.) via the OAuth 2.1 flow are permanent until manually revoked. Revoke them from the Connections dashboard if access is no longer needed. |
+| **No per-IP rate limiting at the edge** | Route-level rate limits exist, but no IP-based edge limiting is in place. This is planned for Phase 8. |
+| **End-to-end task round trip not yet complete** | The infrastructure for routing tasks between AI sessions is built; the end-to-end proof of a real task completing is the next milestone (Phase 7). |
+| **Phase 8 (production hardening) not done** | Vercel deployment, per-IP rate limiting, and full production hardening are planned but not yet complete. |
+
 ## Stack
 
 | Concern            | Choice                                             |

@@ -70,12 +70,15 @@ export default async function TasksPage() {
                 key={t.key}
                 className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
               >
-                <div className="min-w-0">
+                <Link
+                  href={`/dashboard/tasks/${handles[t.key]!.taskId}`}
+                  className="min-w-0 hover:underline"
+                >
                   <p className="truncate text-sm font-medium">{t.title}</p>
                   <p className="text-muted text-xs">
                     {t.route} · {t.when}
                   </p>
-                </div>
+                </Link>
                 <Badge tone={t.tone}>{t.status}</Badge>
               </li>
             ))}

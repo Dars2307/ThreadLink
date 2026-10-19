@@ -58,6 +58,18 @@ export type WorkerDeps = {
     reason?: string;
     summary?: string | null;
   }) => void;
+  /**
+   * Best-effort lifecycle event emission for Mission Control. Never throws;
+   * call sites use void or fire-and-forget — task execution is never blocked
+   * on event delivery.
+   */
+  emitEvent?: (event: {
+    taskId: string;
+    speaker: "user" | "chatgpt" | "claude_code" | "system";
+    event_type: string;
+    content?: string;
+    payload?: Record<string, unknown>;
+  }) => void;
 };
 
 export type Outcome = "none" | "completed" | "failed" | "lost" | "skipped" | "blocked";
@@ -135,6 +147,7 @@ export async function runClaimedTask(deps: WorkerDeps, task: TaskEnvelope): Prom
   }
   // Only now is the task really ours and really running.
   deps.onStarted?.({ taskId: task.taskId, title: task.title });
+  deps.emitEvent?.({ taskId: task.taskId, speaker: "claude_code", event_type: "task_started" });
 
   const heartbeat = setInterval(() => {
     api.heartbeat(task.taskId, sessionId, claimRef).catch((error: unknown) => {
@@ -181,6 +194,7 @@ export async function runClaimedTask(deps: WorkerDeps, task: TaskEnvelope): Prom
         result.artifacts,
       );
       log(`completed ${task.taskId}`);
+      deps.emitEvent?.({ taskId: task.taskId, speaker: "claude_code", event_type: "task_completed" });
       deps.onOutcome?.({
         taskId: task.taskId,
         title: task.title,
@@ -201,6 +215,12 @@ export async function runClaimedTask(deps: WorkerDeps, task: TaskEnvelope): Prom
     if (result.reason) await api.fail(task.taskId, sessionId, claimRef, error, result.reason);
     else await api.fail(task.taskId, sessionId, claimRef, error);
     log(`failed ${task.taskId}${result.reason ? ` (${result.reason})` : ""}`);
+    deps.emitEvent?.({
+      taskId: task.taskId,
+      speaker: "system",
+      event_type: "task_failed",
+      ...(result.reason ? { payload: { reason: result.reason } } : {}),
+    });
     deps.onOutcome?.({
       taskId: task.taskId,
       title: task.title,
