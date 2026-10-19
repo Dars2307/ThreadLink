@@ -3,7 +3,7 @@
   "version": "0.11.2",
   "description": "ThreadLink Runtime: connects your ChatGPT conversations to your Claude Code conversations on this machine, SSH host or cloud dev environment.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "bin": {
     "threadlink": "./dist/cli.js",
     "threadlink-bridge": "./dist/cli.js"
