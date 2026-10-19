@@ -316,7 +316,7 @@ type Api = Pick<
   | "reportProviderDetection"
 > &
   // Optional so embedded engines and older test doubles need not provide them.
-  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan" | "wake">>;
+  Partial<Pick<ThreadLinkApi, "providerProfiles" | "setDeclaredPlan" | "wake" | "emitEvent">>;
 
 export type EngineOptions = {
   api: Api;
@@ -1518,6 +1518,7 @@ export class RuntimeEngine {
           },
         );
       },
+      emitEvent: ({ taskId, ...event }) => this.#o.api.emitEvent?.(taskId, event),
     };
   }
 
@@ -1670,7 +1671,7 @@ export class RuntimeEngine {
               error instanceof ApiError &&
               (error.status === 404 || error.status === 405 || error.kind === "not-threadlink");
             this.#wakeSupported = false;
-            this.#wakeRetryAt = Date.now() + (older ? 10 * 60_000 : 30_000);
+            this.#wakeRetryAt = Date.now() + 30_000;
             if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
               this.#fatal ??= error;
             }

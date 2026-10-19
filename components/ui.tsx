@@ -99,9 +99,9 @@ export function Badge({ tone, children }: { tone: Tone; children: ReactNode }) {
 
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="border-border-strong bg-surface-muted/50 rounded-xl border border-dashed px-4 py-6 text-center">
+    <div className="border-border-strong bg-surface-muted/50 rounded-xl border border-dashed px-4 py-8 text-center">
       <p className="text-sm font-medium">{title}</p>
-      {children ? <div className="text-muted mt-1 text-sm">{children}</div> : null}
+      {children ? <div className="text-muted mx-auto mt-1 max-w-sm text-sm">{children}</div> : null}
     </div>
   );
 }

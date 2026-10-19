@@ -340,6 +340,36 @@ details > summary::-webkit-details-marker {
   display: none;
 }
 
+/* Form baseline: ensure inputs inherit the foreground color in all themes. */
+input,
+textarea,
+select {
+  color: var(--foreground);
+}
+
+/* Checkbox / radio: tint with the accent so they match the design system. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* Subtle scrollbars on WebKit / Blink so the sidebar rail doesn't
+   flash a heavy OS scrollbar over the backdrop. */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
 /* 0.11 §8: on a chat the timeline is the only scroll surface; the page never scrolls. */
 html:has(#tl-timeline),
 body:has(#tl-timeline) {
@@ -762,5 +792,58 @@ body:has(#tl-timeline) {
   .tl-ping,
   .tl-shimmer-win {
     display: none;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Composer beam: a rotating conic-gradient glow that sweeps the border.    */
+/* @property lets the angle itself animate — no oversized spinning element  */
+/* needed, so the mention dropdown (absolute, above the composer) is never  */
+/* clipped.                                                                  */
+/* ------------------------------------------------------------------------ */
+
+@property --beam-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.tl-composer-beam {
+  position: relative;
+  padding: 1.5px;
+  border-radius: 22px;
+}
+
+@media (min-width: 640px) {
+  .tl-composer-beam {
+    border-radius: 16px;
+  }
+}
+
+.tl-composer-beam::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--beam-angle),
+    transparent 0deg,
+    rgba(45, 212, 191, 0.65) 50deg,
+    rgba(99, 102, 241, 0.55) 100deg,
+    transparent 180deg
+  );
+  animation: tl-beam-spin 4s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes tl-beam-spin {
+  to {
+    --beam-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-composer-beam::before {
+    animation: none !important;
   }
 }

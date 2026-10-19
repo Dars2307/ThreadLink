@@ -54,9 +54,14 @@ export default async function ConnectPage({ searchParams }: PageProps<"/connect"
                 in your own terminal and it shows this code:
               </p>
             </div>
-            <p className="bg-surface-muted rounded-xl py-4 text-center font-mono text-2xl font-semibold tracking-[0.3em]">
-              {formatUserCode(pending.code)}
-            </p>
+            <div className="bg-surface-muted flex flex-col items-center gap-1 rounded-xl px-4 py-5">
+              <span className="text-subtle mb-1 text-xs font-medium tracking-wide uppercase">
+                Confirmation code
+              </span>
+              <p className="font-mono text-2xl font-semibold tracking-[0.3em]">
+                {formatUserCode(pending.code)}
+              </p>
+            </div>
             <ul className="text-muted list-disc pl-5 text-sm">
               <li>It will receive tasks from conversations you explicitly link to it.</li>
               <li>It cannot read your other sessions or manage your account.</li>

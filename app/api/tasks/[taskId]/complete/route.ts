@@ -3,6 +3,7 @@ import { completeTask } from "@/lib/client-api/tasks";
 import { TASK_LIMITS } from "@/lib/tasks/model";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Claiming worker: complete with a result and artifact references; routed to the origin. */
 export async function POST(

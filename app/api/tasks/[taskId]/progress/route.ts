@@ -3,6 +3,7 @@ import { reportProgress } from "@/lib/client-api/tasks";
 import { TASK_LIMITS } from "@/lib/tasks/model";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /** Claiming worker: progress message routed back to the origin (`{ sessionId, claimRef, content }`). */
 export async function POST(

@@ -2,6 +2,7 @@ import { handleClientRequest } from "@/lib/client-api/handler";
 import { listSessionLinks } from "@/lib/client-api/operations";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 /**
  * Links involving one of the caller's sessions (`?sessionId=tlses_...`):
